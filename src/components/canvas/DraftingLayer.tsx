@@ -22,12 +22,60 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   isApartmentTool,
   isShaftTool,
 }) => {
-  if (draftVertices.length === 0) return null;
+  // Визуализация магнитной привязки ДАЖЕ на первой точке
+  const renderSnapIndicator = () => {
+    if (!activeSnap.isSnapped) return null;
+
+    const snapPoint = activeSnap.point;
+    const isNode = activeSnap.snapType === 'vertex';
+
+    return (
+      <Group x={snapPoint.x} y={snapPoint.y}>
+        {/* Кольцо магнита */}
+        <Circle
+          radius={(isNode ? 10 : 8) / zoom}
+          stroke={isNode ? '#22c55e' : '#38bdf8'}
+          strokeWidth={2 / zoom}
+          fill={isNode ? 'rgba(34, 197, 94, 0.25)' : 'rgba(56, 189, 248, 0.25)'}
+        />
+        {/* Текстовая метка типа привязки */}
+        <Text
+          text={activeSnap.label || 'Магнит'}
+          fontSize={11 / zoom}
+          fontFamily="monospace"
+          fontStyle="bold"
+          fill={isNode ? '#4ade80' : '#38bdf8'}
+          x={13 / zoom}
+          y={-6 / zoom}
+          shadowColor="#000"
+          shadowBlur={5 / zoom}
+        />
+      </Group>
+    );
+  };
+
+  // Если точек еще нет — отображаем только магнит на курсоре
+  if (draftVertices.length === 0) {
+    return (
+      <Layer listening={false}>
+        {renderSnapIndicator()}
+        {/* Подсказка для первой точки */}
+        <Circle
+          x={cursorPosMm.x}
+          y={cursorPosMm.y}
+          radius={5 / zoom}
+          fill="#fbbf24"
+          stroke="#000"
+          strokeWidth={1.5 / zoom}
+        />
+      </Layer>
+    );
+  }
 
   const lastVertex = draftVertices[draftVertices.length - 1];
   const firstVertex = draftVertices[0];
 
-  // Точка курсора: если есть активная привязка (магнит), берем ее, иначе свободный курсор
+  // Целевая точка: привязка имеет приоритет
   const targetPoint = activeSnap.isSnapped && dynamicInput.lockedLength === null
     ? activeSnap.point
     : cursorPosMm;
@@ -40,12 +88,23 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
       ? dynamicInput.lockedAngle
       : snapAngle(rawAngle, 6);
 
-  const effectiveLength =
-    dynamicInput.lockedLength !== null
-      ? dynamicInput.lockedLength
-      : rawDist;
+  // Шаг прибавления длины 100 мм по умолчанию (если длина не введена через Tab)
+  let effectiveLength: number;
+  if (dynamicInput.lockedLength !== null) {
+    effectiveLength = dynamicInput.lockedLength;
+  } else if (activeSnap.isSnapped && activeSnap.snapType === 'vertex') {
+    effectiveLength = rawDist; // к конкретному узлу примагничиваем точную длину
+  } else {
+    // Шаг 100 мм
+    effectiveLength = Math.max(100, Math.round(rawDist / 100) * 100);
+  }
 
   let nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
+
+  // Если примагничен конкретный узел — точные координаты
+  if (activeSnap.isSnapped && activeSnap.snapType === 'vertex' && dynamicInput.lockedLength === null) {
+    nextVertex = { ...activeSnap.point };
+  }
 
   // Проверка замыкания контура на первую точку
   const distToStart = distance(nextVertex, firstVertex);
@@ -62,7 +121,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
 
   return (
     <Layer listening={false}>
-      {/* Направляющая линия привязки (лучи X / Y) */}
+      {/* Направляющая линия привязки по осям */}
       {activeSnap.guideLine && (
         <Line
           points={[
@@ -78,7 +137,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         />
       )}
 
-      {/* Зафиксированные сегменты */}
+      {/* Зафиксированные сегменты чертежа */}
       <Line
         points={confirmedPoints}
         stroke={colorPrimary}
@@ -121,27 +180,8 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         />
       )}
 
-      {/* Индикатор магнитной привязки (Snap target ring) */}
-      {activeSnap.isSnapped && (
-        <Group x={activeSnap.point.x} y={activeSnap.point.y}>
-          <Circle
-            radius={9 / zoom}
-            stroke="#22c55e"
-            strokeWidth={2 / zoom}
-            fill="rgba(34, 197, 94, 0.2)"
-          />
-          <Text
-            text={activeSnap.label || 'Магнит'}
-            fontSize={10 / zoom}
-            fontFamily="monospace"
-            fill="#22c55e"
-            x={12 / zoom}
-            y={-5 / zoom}
-            shadowColor="#000"
-            shadowBlur={4 / zoom}
-          />
-        </Group>
-      )}
+      {/* Индикатор магнитной привязки */}
+      {renderSnapIndicator()}
 
       {/* Точка курсора */}
       <Circle

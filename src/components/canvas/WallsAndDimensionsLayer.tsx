@@ -1,7 +1,11 @@
 import React from 'react';
 import { Layer, Line, Text, Group } from 'react-konva';
 import type { ApartmentBoundary, RoomZone, Point2D } from '../../types';
-import { distance, angleDeg } from '../../core/geometry/math';
+import {
+  distance,
+  angleDeg,
+  computeOutwardWallPolygon,
+} from '../../core/geometry/math';
 
 interface WallsAndDimensionsLayerProps {
   apartment: ApartmentBoundary | null;
@@ -47,7 +51,7 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
       const midX = (dimP1.x + dimP2.x) / 2;
       const midY = (dimP1.y + dimP2.y) / 2;
 
-      const tickLen = 70;
+      const tickLen = 65;
       const tickRad = ((angle + 45) * Math.PI) / 180;
       const tdx = (Math.cos(tickRad) * tickLen) / 2;
       const tdy = (Math.sin(tickRad) * tickLen) / 2;
@@ -59,7 +63,7 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
 
       elements.push(
         <Group key={`${keyPrefix}-dim-${i}`}>
-          {/* Выносные линии */}
+          {/* Выносные засечки */}
           <Line
             points={[p1.x, p1.y, dimP1.x, dimP1.y]}
             stroke="#475569"
@@ -92,7 +96,7 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
             strokeWidth={2 / zoom}
           />
 
-          {/* Число размера в мм */}
+          {/* Размер в миллиметрах */}
           <Group x={midX} y={midY} rotation={textAngle}>
             <Text
               text={distMm.toLocaleString('ru-RU')}
@@ -118,60 +122,68 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
 
   return (
     <Layer listening={false}>
-      {/* 1. Наружные несущие стены квартиры (толщина 250 мм, рисуются наружу) */}
-      {apartment && apartment.vertices.length >= 3 && (
-        <Group>
-          {/* Контур наружных стен */}
-          <Line
-            points={apartment.vertices.flatMap((v) => [v.x, v.y])}
-            closed
-            stroke="#64748b"
-            strokeWidth={apartment.exteriorWallThicknessMm || 250}
-            lineCap="square"
-            lineJoin="miter"
-            opacity={0.7}
-          />
-          {/* Внутренняя чистовая граница контура квартиры */}
-          <Line
-            points={apartment.vertices.flatMap((v) => [v.x, v.y])}
-            closed
-            stroke="#e2e8f0"
-            strokeWidth={2 / zoom}
-          />
-          {/* Габаритные размеры квартиры снаружи (Золотистый цвет) */}
-          {renderDimensionChain(
-            apartment.vertices,
-            'apt',
-            '#fbbf24',
-            (apartment.exteriorWallThicknessMm || 250) + 250
-          )}
-        </Group>
-      )}
+      {/* 1. Наружные несущие стены квартиры (Строго наружу от чистового контура) */}
+      {apartment && apartment.vertices.length >= 3 && (() => {
+        const extThickness = apartment.exteriorWallThicknessMm || 250;
+        const outerApt = computeOutwardWallPolygon(apartment.vertices, extThickness);
 
-      {/* 2. Межкомнатные стены и размеры комнат */}
+        return (
+          <Group>
+            {/* Массив толщины наружной стены (заливка между внутренним и внешним контуром) */}
+            <Line
+              points={outerApt.flatMap((v) => [v.x, v.y])}
+              closed
+              fill="#1e293b"
+              stroke="#64748b"
+              strokeWidth={2 / zoom}
+            />
+
+            {/* Внутренняя чистовая грань стен квартиры (граница пола) */}
+            <Line
+              points={apartment.vertices.flatMap((v) => [v.x, v.y])}
+              closed
+              stroke="#cbd5e1"
+              strokeWidth={2 / zoom}
+            />
+
+            {/* Внешние габаритные размеры квартиры снаружи */}
+            {renderDimensionChain(
+              apartment.vertices,
+              'apt-ext',
+              '#fbbf24',
+              extThickness + 220
+            )}
+          </Group>
+        );
+      })()}
+
+      {/* 2. Межкомнатные стены комнат (Толщина строго наружу от контура пола) */}
       {rooms.map((room) => {
         const thickness = room.wallThicknessMm || defaultWallThicknessMm;
+        const outerRoom = computeOutwardWallPolygon(room.vertices, thickness);
+
         return (
-          <Group key={room.id}>
-            {/* Отрисовка перегородок наружу чистового контура */}
+          <Group key={`walls-${room.id}`}>
+            {/* Внешний контур толщины стены (перегородки) */}
             <Line
-              points={room.vertices.flatMap((v) => [v.x, v.y])}
+              points={outerRoom.flatMap((v) => [v.x, v.y])}
               closed
               stroke="#475569"
-              strokeWidth={thickness}
-              lineCap="square"
-              lineJoin="miter"
+              strokeWidth={1.5 / zoom}
+              dash={[6 / zoom, 3 / zoom]}
               opacity={0.8}
             />
-            {/* Чистовой внутренний контур */}
+
+            {/* Внутренняя чистовая грань стены комнаты */}
             <Line
               points={room.vertices.flatMap((v) => [v.x, v.y])}
               closed
               stroke="#94a3b8"
-              strokeWidth={1.5 / zoom}
+              strokeWidth={2 / zoom}
             />
-            {/* Внутренние размеры комнат (Голубой цвет) */}
-            {renderDimensionChain(room.vertices, room.id, '#38bdf8', 220)}
+
+            {/* Внутренние размеры комнат */}
+            {renderDimensionChain(room.vertices, room.id, '#38bdf8', 190)}
           </Group>
         );
       })}

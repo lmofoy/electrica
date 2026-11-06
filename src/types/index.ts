@@ -29,7 +29,7 @@ export interface RoomZone {
   type: RoomType;
   vertices: Point2D[]; // внутренние чистовые границы комнаты в мм
   color: string;
-  wallThicknessMm: number; // толщина межкомнатных перегородок (например, 100-150 мм)
+  wallThicknessMm: number; // толщина межкомнатных перегородок (например, 100-120 мм)
 }
 
 export interface ShaftCutout {
@@ -69,4 +69,34 @@ export interface SnapResult {
   snapType: 'none' | 'vertex' | 'ortho_align' | 'wall_edge';
   guideLine?: { from: Point2D; to: Point2D };
   label?: string;
+}
+
+// -------------------------------------------------------------
+// Архитектурная модель электроточек (для следующего шага)
+// -------------------------------------------------------------
+export type DeviceType =
+  | 'socket_single'
+  | 'socket_double'
+  | 'socket_wet'
+  | 'switch_1k'
+  | 'switch_2k'
+  | 'light_ceiling'
+  | 'cooktop'
+  | 'oven'
+  | 'water_heater'
+  | 'ac'
+  | 'panel_board';
+
+export interface ElectricalDevice {
+  id: string;
+  type: DeviceType;
+  name: string;
+  roomId: string; // Привязка к КОНКРЕТНОЙ комнате (решает проблему смежных стен!)
+  wallEdgeIndex?: number; // Индекс ребра стены в полигоне комнаты
+  wallOffsetT?: number; // Параметр положения вдоль стены от 0 до 1
+  position: Point2D; // Мировые координаты в мм
+  heightFromFloorMm: number; // Высота от чистового пола (300 мм розетки, 900 мм выключатели)
+  inwardNormalAngleDeg: number; // Угол разворота внутрь комнаты
+  powerWatts: number;
+  circuitId?: string; // К какой группе щитка подключено
 }
