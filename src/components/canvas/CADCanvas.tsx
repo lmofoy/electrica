@@ -9,7 +9,9 @@ import { DraftingLayer } from './DraftingLayer';
 import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
 import { snapToGrid, distance, polarToPoint, angleDeg, snapAngle } from '../../core/geometry/math';
+import { findBestSnap } from '../../core/geometry/snapping';
 import type { Point2D } from '../../types';
+import { Home } from 'lucide-react';
 
 export const CADCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -17,10 +19,16 @@ export const CADCanvas: React.FC = () => {
 
   const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight });
 
+  // Состояние перетаскивания холста колесиком мыши (Middle Click Drag)
+  const isMiddleDraggingRef = useRef(false);
+  const dragStartPosRef = useRef({ clientX: 0, clientY: 0, stageX: 0, stageY: 0 });
+
   const {
+    apartment,
     rooms,
     shafts,
     selectedRoomId,
+    settings,
     activeTool,
     zoom,
     stagePos,
@@ -29,10 +37,12 @@ export const CADCanvas: React.FC = () => {
     draftVertices,
     cursorPosMm,
     dynamicInput,
+    activeSnap,
     setZoom,
     setStagePos,
     setCursorPosMm,
     setSelectedRoomId,
+    setActiveSnap,
     addDraftVertex,
     popDraftVertex,
     finishDraft,
@@ -41,9 +51,10 @@ export const CADCanvas: React.FC = () => {
     closeDynamicInput,
     setLockedLength,
     setDynamicInputValues,
+    startApartmentDrawing,
   } = useProjectStore();
 
-  // Отслеживание размера окна
+  // Ресайз контейнера
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
@@ -58,7 +69,7 @@ export const CADCanvas: React.FC = () => {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Перевод координат экрана -> мировые миллиметры
+  // Перевод экранных пикселей в миллиметры
   const screenToWorld = useCallback(
     (screenX: number, screenY: number): Point2D => {
       return {
@@ -69,7 +80,13 @@ export const CADCanvas: React.FC = () => {
     [stagePos, zoom]
   );
 
-  // Обработка колесика мыши (Зум относительно позиции курсора)
+  // Сбор всех существующих вершин для магнитных привязок
+  const existingVertices = [
+    ...(apartment ? apartment.vertices : []),
+    ...rooms.flatMap((r) => r.vertices),
+  ];
+
+  // Масштабирование колесиком (зум)
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
     const stage = stageRef.current;
@@ -81,7 +98,7 @@ export const CADCanvas: React.FC = () => {
 
     const scaleBy = 1.12;
     const newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
-    const clampedScale = Math.min(Math.max(newScale, 0.02), 1.5); // зум от 0.02 до 1.5
+    const clampedScale = Math.min(Math.max(newScale, 0.02), 1.5);
 
     const mousePointTo = {
       x: (pointer.x - stagePos.x) / oldScale,
@@ -95,8 +112,34 @@ export const CADCanvas: React.FC = () => {
     });
   };
 
-  // Движение мыши по холсту
-  const handleMouseMove = () => {
+  // Нажатие мыши (включая клик на колесико - кнопка 1)
+  const handleMouseDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // 1 = колесико мыши (Middle Mouse Button), или инструмент 'pan'
+    if (e.evt.button === 1 || activeTool === 'pan') {
+      e.evt.preventDefault();
+      isMiddleDraggingRef.current = true;
+      dragStartPosRef.current = {
+        clientX: e.evt.clientX,
+        clientY: e.evt.clientY,
+        stageX: stagePos.x,
+        stageY: stagePos.y,
+      };
+    }
+  };
+
+  // Движение мыши
+  const handleMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Если идет перетаскивание холста колесиком
+    if (isMiddleDraggingRef.current) {
+      const dx = e.evt.clientX - dragStartPosRef.current.clientX;
+      const dy = e.evt.clientY - dragStartPosRef.current.clientY;
+      setStagePos({
+        x: dragStartPosRef.current.stageX + dx,
+        y: dragStartPosRef.current.stageY + dy,
+      });
+      return;
+    }
+
     const stage = stageRef.current;
     if (!stage) return;
     const pointer = stage.getPointerPosition();
@@ -104,19 +147,50 @@ export const CADCanvas: React.FC = () => {
 
     let worldPos = screenToWorld(pointer.x, pointer.y);
 
-    if (gridSnap && dynamicInput.lockedLength === null) {
+    const isDrawing =
+      activeTool === 'draw_apartment' ||
+      activeTool === 'draw_room' ||
+      activeTool === 'draw_shaft';
+
+    // Поиск магнитных привязок к существующим точкам и осям
+    if (isDrawing) {
+      const snap = findBestSnap(worldPos, {
+        existingVertices,
+        draftVertices,
+        zoom,
+        wallThicknessMm: settings.defaultWallThicknessMm,
+      });
+
+      setActiveSnap(snap);
+
+      if (snap.isSnapped && dynamicInput.lockedLength === null) {
+        worldPos = snap.point;
+      } else if (gridSnap && dynamicInput.lockedLength === null) {
+        worldPos = snapToGrid(worldPos, gridStepMm);
+      }
+    } else if (gridSnap) {
       worldPos = snapToGrid(worldPos, gridStepMm);
     }
 
     setCursorPosMm(worldPos);
   };
 
-  // Клик по холсту для построения
-  const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    // Если клик был для перетаскивания холста — игнорируем
-    if (activeTool === 'pan' || e.evt.button === 1 || e.evt.button === 2) return;
+  // Отпускание кнопки мыши
+  const handleMouseUp = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button === 1 || isMiddleDraggingRef.current) {
+      isMiddleDraggingRef.current = false;
+    }
+  };
 
-    const isDrawing = activeTool === 'draw_room' || activeTool === 'draw_shaft';
+  // Клик левой кнопкой мыши для добавления точки
+  const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Игнорируем среднюю и правую кнопки
+    if (e.evt.button !== 0 || activeTool === 'pan' || activeTool === 'select') return;
+
+    const isDrawing =
+      activeTool === 'draw_apartment' ||
+      activeTool === 'draw_room' ||
+      activeTool === 'draw_shaft';
     if (!isDrawing) return;
 
     const stage = stageRef.current;
@@ -125,21 +199,24 @@ export const CADCanvas: React.FC = () => {
     if (!pointer) return;
 
     let clickPoint = screenToWorld(pointer.x, pointer.y);
-    if (gridSnap && dynamicInput.lockedLength === null) {
+
+    // Учитываем магнит привязки
+    if (activeSnap.isSnapped && dynamicInput.lockedLength === null) {
+      clickPoint = activeSnap.point;
+    } else if (gridSnap && dynamicInput.lockedLength === null) {
       clickPoint = snapToGrid(clickPoint, gridStepMm);
     }
 
-    // Если это первая вершина
+    // Первая вершина контура
     if (draftVertices.length === 0) {
       addDraftVertex(clickPoint);
       return;
     }
 
-    // Если уже есть вершины
     const firstVertex = draftVertices[0];
     const lastVertex = draftVertices[draftVertices.length - 1];
 
-    // Проверяем, не кликнули ли в первую вершину (замыкание)
+    // Проверка клика в первую вершину (замыкание)
     const distToFirst = distance(clickPoint, firstVertex);
     if (draftVertices.length >= 2 && distToFirst < 30 / zoom && dynamicInput.lockedLength === null) {
       finishDraft();
@@ -164,19 +241,20 @@ export const CADCanvas: React.FC = () => {
     addDraftVertex(snappedVertex);
   };
 
-  // Обработка горячих клавиш (Tab, Esc, Backspace, Enter)
+  // Горячие клавиши (Tab, Esc, Backspace, Enter)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      const isDrawing = activeTool === 'draw_room' || activeTool === 'draw_shaft';
+      const isDrawing =
+        activeTool === 'draw_apartment' ||
+        activeTool === 'draw_room' ||
+        activeTool === 'draw_shaft';
 
-      // Нажатие Tab переключает на параметрический ввод длины
       if (e.key === 'Tab' && isDrawing && draftVertices.length > 0) {
         e.preventDefault();
         openDynamicInput('length');
         return;
       }
 
-      // Отмена текущей операции (Escape)
       if (e.key === 'Escape') {
         if (dynamicInput.isOpen || dynamicInput.lockedLength !== null) {
           closeDynamicInput();
@@ -188,14 +266,12 @@ export const CADCanvas: React.FC = () => {
         return;
       }
 
-      // Удаление последней вершины (Backspace)
       if (e.key === 'Backspace' && isDrawing && draftVertices.length > 0 && !dynamicInput.isOpen) {
         e.preventDefault();
         popDraftVertex();
         return;
       }
 
-      // Завершение контура по нажатию Enter, если точек >= 3
       if (e.key === 'Enter' && isDrawing && draftVertices.length >= 3 && !dynamicInput.isOpen) {
         e.preventDefault();
         finishDraft();
@@ -225,7 +301,7 @@ export const CADCanvas: React.FC = () => {
       ref={containerRef}
       className="relative w-full h-full overflow-hidden bg-slate-950 select-none cursor-crosshair"
     >
-      {/* Линейки */}
+      {/* Линейки по периметру */}
       <Rulers
         width={dimensions.width}
         height={dimensions.height}
@@ -234,26 +310,21 @@ export const CADCanvas: React.FC = () => {
         cursorPosMm={cursorPosMm}
       />
 
-      {/* Konva Stage */}
+      {/* Интерактивный холст Konva */}
       <Stage
         ref={stageRef}
         width={dimensions.width}
         height={dimensions.height}
-        draggable={activeTool === 'pan'}
         onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
         onClick={handleStageClick}
-        onDragEnd={(e) => {
-          if (activeTool === 'pan') {
-            setStagePos({ x: e.target.x(), y: e.target.y() });
-          }
-        }}
         scaleX={zoom}
         scaleY={zoom}
         x={stagePos.x}
         y={stagePos.y}
       >
-        {/* Сетка */}
         <GridLayer
           width={dimensions.width}
           height={dimensions.height}
@@ -261,8 +332,8 @@ export const CADCanvas: React.FC = () => {
           stagePos={stagePos}
         />
 
-        {/* Комнаты и шахты */}
         <RoomsLayer
+          apartment={apartment}
           rooms={rooms}
           shafts={shafts}
           selectedRoomId={selectedRoomId}
@@ -270,20 +341,46 @@ export const CADCanvas: React.FC = () => {
           zoom={zoom}
         />
 
-        {/* Стены и размеры в мм */}
-        <WallsAndDimensionsLayer rooms={rooms} zoom={zoom} />
+        <WallsAndDimensionsLayer
+          apartment={apartment}
+          rooms={rooms}
+          defaultWallThicknessMm={settings.defaultWallThicknessMm}
+          zoom={zoom}
+        />
 
-        {/* Слой активного черчения */}
         <DraftingLayer
           draftVertices={draftVertices}
           cursorPosMm={cursorPosMm}
           dynamicInput={dynamicInput}
+          activeSnap={activeSnap}
           zoom={zoom}
+          isApartmentTool={activeTool === 'draw_apartment'}
           isShaftTool={activeTool === 'draw_shaft'}
         />
       </Stage>
 
-      {/* Всплывающий параметрический ввод (Tab -> Length -> Enter -> Angle -> Enter) */}
+      {/* Сообщение-призыв, если квартира еще не создана */}
+      {!apartment && activeTool !== 'draw_apartment' && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
+          <div className="bg-slate-900/90 border border-slate-700/80 p-8 rounded-2xl shadow-2xl backdrop-blur-md max-w-md text-center pointer-events-auto">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 mx-auto flex items-center justify-center mb-4">
+              <Home size={28} />
+            </div>
+            <h2 className="text-lg font-bold text-white mb-2">Начните с контура квартиры</h2>
+            <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+              Сначала очертите внешние границы вашей квартиры. Этот контур станет рабочей областью, внутри которой вы будете планировать комнаты.
+            </p>
+            <button
+              onClick={startApartmentDrawing}
+              className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-lg shadow-amber-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              ⚡ Начертить контур квартиры
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Всплывающий параметрический ввод CAD (Tab -> Length -> Enter -> Angle -> Enter) */}
       {draftVertices.length > 0 && (
         <CadFloatingInput
           lastVertex={lastVertex}
@@ -300,7 +397,7 @@ export const CADCanvas: React.FC = () => {
         />
       )}
 
-      {/* Информационная полоса внизу холста */}
+      {/* Статусная полоса внизу */}
       <div className="absolute bottom-3 left-9 z-30 flex items-center gap-4 bg-slate-900/90 border border-slate-700/80 px-3 py-1.5 rounded-lg text-xs font-mono text-slate-400 backdrop-blur-sm pointer-events-none">
         <span>
           X: <strong className="text-sky-400">{Math.round(cursorPosMm.x).toLocaleString('ru-RU')}</strong> мм
@@ -313,8 +410,12 @@ export const CADCanvas: React.FC = () => {
           Масштаб: <strong className="text-amber-400">{Math.round(zoom * 100)}%</strong>
         </span>
         <span className="text-slate-600">|</span>
-        <span className="text-slate-500">
-          Сетка: {gridSnap ? `${gridStepMm} мм` : 'Выкл'}
+        <span className="text-slate-400">
+          Колесико (нажать и тянуть): <span className="text-slate-200">Панорама</span>
+        </span>
+        <span className="text-slate-600">|</span>
+        <span className="text-slate-400">
+          Магнит: {activeSnap.isSnapped ? <span className="text-emerald-400 font-bold">{activeSnap.label}</span> : 'Сетка'}
         </span>
       </div>
     </div>

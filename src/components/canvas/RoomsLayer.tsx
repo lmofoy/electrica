@@ -1,9 +1,10 @@
 import React from 'react';
 import { Layer, Line, Text, Group } from 'react-konva';
-import type { RoomZone, ShaftCutout } from '../../types';
+import type { ApartmentBoundary, RoomZone, ShaftCutout } from '../../types';
 import { calculateCentroid, calculatePolygonAreaM2 } from '../../core/geometry/math';
 
 interface RoomsLayerProps {
+  apartment: ApartmentBoundary | null;
   rooms: RoomZone[];
   shafts: ShaftCutout[];
   selectedRoomId: string | null;
@@ -12,6 +13,7 @@ interface RoomsLayerProps {
 }
 
 export const RoomsLayer: React.FC<RoomsLayerProps> = ({
+  apartment,
   rooms,
   shafts,
   selectedRoomId,
@@ -20,7 +22,21 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
 }) => {
   return (
     <Layer>
-      {/* Отрисовка комнат */}
+      {/* 1. Общий контур квартиры (Рабочая область) */}
+      {apartment && apartment.vertices.length >= 3 && (
+        <Group>
+          {/* Пол квартиры */}
+          <Line
+            points={apartment.vertices.flatMap((v) => [v.x, v.y])}
+            closed
+            fill="#090d16"
+            stroke="#475569"
+            strokeWidth={1 / zoom}
+          />
+        </Group>
+      )}
+
+      {/* 2. Комнаты внутри квартиры */}
       {rooms.map((room) => {
         const flatPoints = room.vertices.flatMap((v) => [v.x, v.y]);
         const centroid = calculateCentroid(room.vertices);
@@ -34,42 +50,43 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
               points={flatPoints}
               closed
               fill={room.color}
-              stroke={isSelected ? '#60a5fa' : '#334155'}
+              stroke={isSelected ? '#38bdf8' : '#334155'}
               strokeWidth={(isSelected ? 3 : 1) / zoom}
               opacity={0.9}
             />
 
-            {/* Метка с названием и площадью в м² по центру комнаты */}
+            {/* Метка по центру комнаты */}
             <Group x={centroid.x} y={centroid.y}>
               <Text
                 text={room.name}
-                fontSize={16 / zoom}
+                fontSize={15 / zoom}
                 fontStyle="bold"
                 fill="#f8fafc"
                 align="center"
                 offsetX={60 / zoom}
                 offsetY={20 / zoom}
                 width={120 / zoom}
-                shadowColor="rgba(0, 0, 0, 0.8)"
-                shadowBlur={4 / zoom}
+                shadowColor="rgba(0, 0, 0, 0.9)"
+                shadowBlur={5 / zoom}
               />
               <Text
                 text={`${areaM2.toFixed(2)} м²`}
                 fontSize={13 / zoom}
+                fontFamily="monospace"
                 fill="#94a3b8"
                 align="center"
                 offsetX={60 / zoom}
                 offsetY={0}
                 width={120 / zoom}
-                shadowColor="rgba(0, 0, 0, 0.8)"
-                shadowBlur={4 / zoom}
+                shadowColor="rgba(0, 0, 0, 0.9)"
+                shadowBlur={5 / zoom}
               />
             </Group>
           </Group>
         );
       })}
 
-      {/* Отрисовка вырезанных шахт / колонн */}
+      {/* 3. Отрисовка шахт и колонн */}
       {shafts.map((shaft) => {
         const flatPoints = shaft.vertices.flatMap((v) => [v.x, v.y]);
         const centroid = calculateCentroid(shaft.vertices);
@@ -79,25 +96,24 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
             <Line
               points={flatPoints}
               closed
-              fill="#0f172a"
+              fill="#020617"
               stroke="#ef4444"
               strokeWidth={2 / zoom}
-              dash={[10 / zoom, 5 / zoom]}
+              dash={[8 / zoom, 4 / zoom]}
             />
-            {/* Крест-накрест для обозначения шахты по чертежным стандартам */}
             {shaft.vertices.length >= 4 && (
               <>
                 <Line
                   points={[shaft.vertices[0].x, shaft.vertices[0].y, shaft.vertices[2].x, shaft.vertices[2].y]}
                   stroke="#ef4444"
                   strokeWidth={1 / zoom}
-                  opacity={0.4}
+                  opacity={0.5}
                 />
                 <Line
                   points={[shaft.vertices[1].x, shaft.vertices[1].y, shaft.vertices[3].x, shaft.vertices[3].y]}
                   stroke="#ef4444"
                   strokeWidth={1 / zoom}
-                  opacity={0.4}
+                  opacity={0.5}
                 />
               </>
             )}

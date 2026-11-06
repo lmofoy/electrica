@@ -4,6 +4,7 @@ import {
   Hand,
   PenTool,
   Scissors,
+  Home,
   Undo2,
   Redo2,
   ZoomIn,
@@ -21,6 +22,7 @@ interface ToolbarProps {
 
 export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   const {
+    apartment,
     activeTool,
     activeRoomType,
     zoom,
@@ -29,6 +31,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
     setZoom,
     setStagePos,
     resetProject,
+    startApartmentDrawing,
+    startRoomDrawing,
   } = useProjectStore();
 
   const handleUndo = () => {
@@ -40,18 +44,19 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   };
 
   const handleCenterView = () => {
-    setZoom(0.15);
-    setStagePos({ x: 100, y: 100 });
+    setZoom(0.12);
+    setStagePos({ x: 120, y: 120 });
   };
 
-  const roomTypes: { type: RoomType; label: string; color: string }[] = [
-    { type: 'living', label: 'Гостиная', color: '#3b82f6' },
-    { type: 'bedroom', label: 'Спальня', color: '#a855f7' },
-    { type: 'kitchen', label: 'Кухня', color: '#ea580c' },
-    { type: 'bathroom', label: 'Ванная', color: '#06b6d4' },
-    { type: 'toilet', label: 'Санузел', color: '#14b8a6' },
-    { type: 'corridor', label: 'Коридор', color: '#6b7280' },
-    { type: 'balcony', label: 'Балкон', color: '#22c55e' },
+  const roomTypes: { type: RoomType; label: string }[] = [
+    { type: 'living', label: 'Гостиная' },
+    { type: 'bedroom', label: 'Спальня' },
+    { type: 'kitchen', label: 'Кухня' },
+    { type: 'bathroom', label: 'Ванная' },
+    { type: 'toilet', label: 'Санузел' },
+    { type: 'corridor', label: 'Коридор' },
+    { type: 'balcony', label: 'Балкон' },
+    { type: 'storage', label: 'Гардеробная' },
   ];
 
   return (
@@ -63,75 +68,111 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         </div>
         <div>
           <h1 className="font-bold text-sm tracking-wide text-white leading-tight">ELECTRICA</h1>
-          <p className="text-[10px] text-slate-400 font-mono">CAD 230V • Шаг 1: Контур</p>
+          <p className="text-[10px] text-slate-400 font-mono">
+            {apartment ? 'Рабочая область: Квартира' : 'Создание контура квартиры'}
+          </p>
         </div>
       </div>
 
       {/* Основные инструменты */}
-      <div className="flex items-center gap-1 bg-slate-950/70 p-1 rounded-xl border border-slate-800">
+      <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
         <button
           onClick={() => setActiveTool('select')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
             activeTool === 'select'
-              ? 'bg-sky-500 text-white shadow-md'
+              ? 'bg-sky-500 text-white shadow'
               : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
-          title="Выбор и перемещение (V)"
+          title="Выбор элементов (V)"
         >
-          <MousePointer size={15} />
+          <MousePointer size={14} />
           <span>Выбор</span>
         </button>
 
         <button
           onClick={() => setActiveTool('pan')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
             activeTool === 'pan'
-              ? 'bg-sky-500 text-white shadow-md'
+              ? 'bg-sky-500 text-white shadow'
               : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
-          title="Панорама / Рука (H)"
+          title="Панорама / Рука (H) или клик на колесико мыши"
         >
-          <Hand size={15} />
+          <Hand size={14} />
           <span>Рука</span>
         </button>
 
         <div className="w-px h-5 bg-slate-800 mx-1" />
 
+        {/* Инструмент: Контур квартиры */}
         <button
-          onClick={() => setActiveTool('draw_room')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            activeTool === 'draw_room'
-              ? 'bg-emerald-500 text-white shadow-md'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          onClick={startApartmentDrawing}
+          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+            activeTool === 'draw_apartment'
+              ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-950/40'
+              : 'text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
           }`}
-          title="Нарисовать произвольный контур комнаты (P)"
+          title="Очертить внешний габарит помещения"
         >
-          <PenTool size={15} />
-          <span>Контур стен</span>
+          <Home size={14} />
+          <span>Контур квартиры</span>
         </button>
 
+        {/* Инструмент: Комната внутри квартиры */}
         <button
-          onClick={() => setActiveTool('draw_shaft')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-            activeTool === 'draw_shaft'
-              ? 'bg-rose-500 text-white shadow-md'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          onClick={() => {
+            if (!apartment) {
+              alert('Сначала начертите внешний контур квартиры!');
+              return;
+            }
+            startRoomDrawing();
+          }}
+          disabled={!apartment && activeTool !== 'draw_room'}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+            activeTool === 'draw_room'
+              ? 'bg-sky-500 text-white shadow'
+              : apartment
+              ? 'text-slate-300 hover:text-white hover:bg-slate-800'
+              : 'text-slate-600 cursor-not-allowed'
           }`}
-          title="Вырезать вентиляционную шахту или колонну"
+          title={apartment ? 'Нарисовать комнату внутри квартиры' : 'Сначала задайте контур квартиры'}
         >
-          <Scissors size={15} />
+          <PenTool size={14} />
+          <span>+ Комната</span>
+        </button>
+
+        {/* Инструмент: Вырезать шахту */}
+        <button
+          onClick={() => {
+            if (!apartment) {
+              alert('Сначала начертите контур квартиры!');
+              return;
+            }
+            setActiveTool('draw_shaft');
+          }}
+          disabled={!apartment}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+            activeTool === 'draw_shaft'
+              ? 'bg-rose-500 text-white shadow'
+              : apartment
+              ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+              : 'text-slate-600 cursor-not-allowed'
+          }`}
+          title="Вырезать вентшахту или несущую колонну"
+        >
+          <Scissors size={14} />
           <span>Вырезать шахту</span>
         </button>
       </div>
 
-      {/* Выбор типа рисуемой комнаты */}
+      {/* Выбор зоны при черчении комнаты */}
       {activeTool === 'draw_room' && (
-        <div className="flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1 rounded-xl border border-slate-800 animate-fadeIn">
-          <span className="text-[11px] text-slate-400">Зона:</span>
+        <div className="flex items-center gap-1.5 bg-slate-950/90 px-3 py-1 rounded-xl border border-slate-800 animate-fadeIn">
+          <span className="text-[11px] text-slate-400">Тип комнаты:</span>
           <select
             value={activeRoomType}
             onChange={(e) => setActiveRoomType(e.target.value as RoomType)}
-            className="bg-slate-800 text-xs text-white rounded px-2 py-1 border border-slate-700 focus:outline-none focus:border-sky-500"
+            className="bg-slate-800 text-xs text-white rounded px-2 py-1 border border-slate-700 focus:outline-none focus:border-sky-500 font-medium"
           >
             {roomTypes.map((rt) => (
               <option key={rt.type} value={rt.type}>
@@ -191,7 +232,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         <button
           onClick={onOpenSettings}
           className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg border border-slate-800 transition"
-          title="Параметры проекта (запас кабеля, высоты)"
+          title="Настройки стен и проекта"
         >
           <Settings size={16} />
         </button>
@@ -203,7 +244,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
             }
           }}
           className="p-2 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded-lg border border-slate-800 transition"
-          title="Очистить всё"
+          title="Очистить проект"
         >
           <Trash2 size={16} />
         </button>

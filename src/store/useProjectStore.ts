@@ -1,16 +1,33 @@
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Point2D, RoomZone, RoomType, ShaftCutout, ProjectSettings, CADTool, DynamicInputState } from '../types';
-import { subtractShaftFromRoom } from '../core/geometry/csg';
+import type {
+  Point2D,
+  ApartmentBoundary,
+  RoomZone,
+  RoomType,
+  ShaftCutout,
+  ProjectSettings,
+  CADTool,
+  DynamicInputState,
+  SnapResult,
+} from '../types';
+import {
+  clipRoomToApartment,
+  resolveRoomOverlaps,
+  subtractShaftFromRoom,
+} from '../core/geometry/csg';
 
 interface ProjectState {
-  // Данные проекта
-  settings: ProjectSettings;
-  rooms: RoomZone[];
-  shafts: ShaftCutout[];
+  // Данные иерархии проекта
+  apartment: ApartmentBoundary | null; // Контур квартиры (высший уровень)
+  rooms: RoomZone[];                   // Помещения внутри квартиры
+  shafts: ShaftCutout[];               // Шахты и монолитные колонны
   selectedRoomId: string | null;
 
-  // Инструменты и холст
+  // Настройки
+  settings: ProjectSettings;
+
+  // Холст и навигация
   activeTool: CADTool;
   activeRoomType: RoomType;
   zoom: number;
@@ -18,10 +35,11 @@ interface ProjectState {
   gridSnap: boolean;
   gridStepMm: number;
 
-  // Черчение в реальном времени
+  // Черчение и привязки
   draftVertices: Point2D[];
   cursorPosMm: Point2D;
   dynamicInput: DynamicInputState;
+  activeSnap: SnapResult;
 
   // Actions
   setSettings: (settings: Partial<ProjectSettings>) => void;
@@ -32,13 +50,16 @@ interface ProjectState {
   setCursorPosMm: (pos: Point2D) => void;
   setGridSnap: (enabled: boolean) => void;
   setSelectedRoomId: (id: string | null) => void;
+  setActiveSnap: (snap: SnapResult) => void;
 
-  // Черчение и параметрический ввод
+  // Черчение
+  startApartmentDrawing: () => void;
+  startRoomDrawing: (type?: RoomType) => void;
   addDraftVertex: (vertex: Point2D) => void;
   popDraftVertex: () => void;
   finishDraft: () => void;
   cancelDraft: () => void;
-  
+
   // Динамический ввод (Tab -> Length -> Enter -> Angle -> Enter)
   openDynamicInput: (step: 'length' | 'angle') => void;
   closeDynamicInput: () => void;
@@ -46,16 +67,16 @@ interface ProjectState {
   setLockedAngle: (deg: number | null) => void;
   setDynamicInputValues: (values: Partial<DynamicInputState>) => void;
 
-  // Операции с комнатами
-  addRoom: (room: RoomZone) => void;
+  // Управление элементами
+  setApartment: (apartment: ApartmentBoundary | null) => void;
   updateRoom: (id: string, updates: Partial<RoomZone>) => void;
   deleteRoom: (id: string) => void;
-  addShaft: (shaft: ShaftCutout) => void;
-  applyShaftCutout: (shaftVertices: Point2D[]) => void;
   resetProject: () => void;
 }
 
 const DEFAULT_SETTINGS: ProjectSettings = {
+  defaultWallThicknessMm: 120,    // Межкомнатные стены 120 мм
+  exteriorWallThicknessMm: 250,   // Наружные стены 250 мм
   ceilingHeightMm: 2700,
   floorLevelMm: 0,
   cableMarginPercent: 15,
@@ -71,50 +92,45 @@ const DEFAULT_DYNAMIC_INPUT: DynamicInputState = {
   currentAngleInput: '',
 };
 
+const DEFAULT_SNAP: SnapResult = {
+  point: { x: 0, y: 0 },
+  isSnapped: false,
+  snapType: 'none',
+};
+
 export const useProjectStore = create<ProjectState>()(
   temporal(
     (set, get) => ({
-      settings: DEFAULT_SETTINGS,
-      rooms: [
-        // Демонстрационная комната для старта
-        {
-          id: 'room-demo-1',
-          name: 'Гостиная',
-          type: 'living',
-          color: 'rgba(59, 130, 246, 0.15)',
-          wallThicknessMm: 150,
-          vertices: [
-            { x: 1000, y: 1000 },
-            { x: 6000, y: 1000 },
-            { x: 6000, y: 4500 },
-            { x: 1000, y: 4500 },
-          ],
-        },
-      ],
+      // При открытии поле абсолютно пустое
+      apartment: null,
+      rooms: [],
       shafts: [],
       selectedRoomId: null,
 
+      settings: DEFAULT_SETTINGS,
+
       activeTool: 'select',
       activeRoomType: 'living',
-      zoom: 0.15, // 1 пиксель экрана = ~6.6 мм в реальности
-      stagePos: { x: 80, y: 80 },
+      zoom: 0.12, // масштаб по умолчанию
+      stagePos: { x: 120, y: 120 },
       gridSnap: true,
-      gridStepMm: 100, // шаг привязки 100 мм
+      gridStepMm: 100,
 
       draftVertices: [],
       cursorPosMm: { x: 0, y: 0 },
       dynamicInput: DEFAULT_DYNAMIC_INPUT,
+      activeSnap: DEFAULT_SNAP,
 
       setSettings: (updates) =>
         set((state) => ({ settings: { ...state.settings, ...updates } })),
 
-      setActiveTool: (tool) => {
+      setActiveTool: (tool) =>
         set({
           activeTool: tool,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
-        });
-      },
+          activeSnap: DEFAULT_SNAP,
+        }),
 
       setActiveRoomType: (type) => set({ activeRoomType: type }),
 
@@ -131,6 +147,22 @@ export const useProjectStore = create<ProjectState>()(
       setCursorPosMm: (pos) => set({ cursorPosMm: pos }),
       setGridSnap: (enabled) => set({ gridSnap: enabled }),
       setSelectedRoomId: (id) => set({ selectedRoomId: id }),
+      setActiveSnap: (snap) => set({ activeSnap: snap }),
+
+      startApartmentDrawing: () =>
+        set({
+          activeTool: 'draw_apartment',
+          draftVertices: [],
+          dynamicInput: DEFAULT_DYNAMIC_INPUT,
+        }),
+
+      startRoomDrawing: (type) =>
+        set((state) => ({
+          activeTool: 'draw_room',
+          activeRoomType: type || state.activeRoomType,
+          draftVertices: [],
+          dynamicInput: DEFAULT_DYNAMIC_INPUT,
+        })),
 
       addDraftVertex: (vertex) =>
         set((state) => ({
@@ -153,7 +185,44 @@ export const useProjectStore = create<ProjectState>()(
           return;
         }
 
-        if (state.activeTool === 'draw_room' || state.activeTool === 'quick_rect') {
+        // 1. Создание общего контура квартиры
+        if (state.activeTool === 'draw_apartment') {
+          const newApt: ApartmentBoundary = {
+            id: `apartment-${Date.now()}`,
+            name: 'Контур квартиры',
+            vertices: state.draftVertices,
+            exteriorWallThicknessMm: state.settings.exteriorWallThicknessMm,
+          };
+
+          set({
+            apartment: newApt,
+            draftVertices: [],
+            dynamicInput: DEFAULT_DYNAMIC_INPUT,
+            activeTool: 'select',
+          });
+          return;
+        }
+
+        // 2. Создание комнаты внутри квартиры
+        if (state.activeTool === 'draw_room') {
+          let roomPolys = [state.draftVertices];
+
+          // Правило 2: Комната строго обрезается по границам квартиры
+          if (state.apartment && state.apartment.vertices.length >= 3) {
+            roomPolys = clipRoomToApartment(state.draftVertices, state.apartment.vertices);
+          }
+
+          if (roomPolys.length === 0 || roomPolys[0].length < 3) {
+            alert('Комната должна находиться внутри контура квартиры!');
+            set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
+            return;
+          }
+
+          const targetPoly = roomPolys[0];
+
+          // Правило 5: Автоматическое вычитание пересечений из старых комнат
+          const updatedOldRooms = resolveRoomOverlaps(state.rooms, targetPoly);
+
           const typeNames: Record<RoomType, string> = {
             living: 'Гостиная',
             bedroom: 'Спальня',
@@ -166,37 +235,59 @@ export const useProjectStore = create<ProjectState>()(
             custom: 'Помещение',
           };
           const colors: Record<RoomType, string> = {
-            living: 'rgba(59, 130, 246, 0.15)',
-            bedroom: 'rgba(168, 85, 247, 0.15)',
-            kitchen: 'rgba(234, 88, 12, 0.15)',
-            bathroom: 'rgba(6, 182, 212, 0.15)',
-            toilet: 'rgba(20, 184, 166, 0.15)',
-            corridor: 'rgba(107, 114, 128, 0.15)',
-            balcony: 'rgba(34, 197, 94, 0.15)',
-            storage: 'rgba(245, 158, 11, 0.15)',
-            custom: 'rgba(99, 102, 241, 0.15)',
+            living: 'rgba(59, 130, 246, 0.2)',
+            bedroom: 'rgba(168, 85, 247, 0.2)',
+            kitchen: 'rgba(234, 88, 12, 0.2)',
+            bathroom: 'rgba(6, 182, 212, 0.2)',
+            toilet: 'rgba(20, 184, 166, 0.2)',
+            corridor: 'rgba(107, 114, 128, 0.2)',
+            balcony: 'rgba(34, 197, 94, 0.2)',
+            storage: 'rgba(245, 158, 11, 0.2)',
+            custom: 'rgba(99, 102, 241, 0.2)',
           };
 
           const newRoom: RoomZone = {
             id: `room-${Date.now()}`,
-            name: `${typeNames[state.activeRoomType]} ${state.rooms.length + 1}`,
+            name: `${typeNames[state.activeRoomType]} ${updatedOldRooms.length + 1}`,
             type: state.activeRoomType,
             color: colors[state.activeRoomType],
-            wallThicknessMm: 150,
-            vertices: state.draftVertices,
+            wallThicknessMm: state.settings.defaultWallThicknessMm,
+            vertices: targetPoly,
           };
 
-          set((s) => ({
-            rooms: [...s.rooms, newRoom],
+          set({
+            rooms: [...updatedOldRooms, newRoom],
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
             selectedRoomId: newRoom.id,
-          }));
-        } else if (state.activeTool === 'draw_shaft') {
-          // Вычитание шахты из пересекающихся комнат
-          get().applyShaftCutout(state.draftVertices);
+          });
+          return;
+        }
+
+        // 3. Вырезание шахт
+        if (state.activeTool === 'draw_shaft') {
+          const { rooms } = state;
+          const updatedRooms: RoomZone[] = [];
+
+          for (const room of rooms) {
+            const cutPolys = subtractShaftFromRoom(room.vertices, state.draftVertices);
+            if (cutPolys.length > 0) {
+              updatedRooms.push({ ...room, vertices: cutPolys[0] });
+              for (let i = 1; i < cutPolys.length; i++) {
+                updatedRooms.push({
+                  ...room,
+                  id: `room-${Date.now()}-${i}`,
+                  name: `${room.name} (часть ${i + 1})`,
+                  vertices: cutPolys[i],
+                });
+              }
+            }
+          }
+
           set({
+            rooms: updatedRooms,
+            shafts: [...state.shafts, { id: `shaft-${Date.now()}`, vertices: state.draftVertices }],
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
@@ -204,12 +295,12 @@ export const useProjectStore = create<ProjectState>()(
         }
       },
 
-      cancelDraft: () => {
+      cancelDraft: () =>
         set({
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
-        });
-      },
+          activeSnap: DEFAULT_SNAP,
+        }),
 
       openDynamicInput: (step) =>
         set((state) => ({
@@ -244,7 +335,7 @@ export const useProjectStore = create<ProjectState>()(
           dynamicInput: { ...state.dynamicInput, ...values },
         })),
 
-      addRoom: (room) => set((s) => ({ rooms: [...s.rooms, room] })),
+      setApartment: (apartment) => set({ apartment }),
 
       updateRoom: (id, updates) =>
         set((s) => ({
@@ -257,50 +348,21 @@ export const useProjectStore = create<ProjectState>()(
           selectedRoomId: s.selectedRoomId === id ? null : s.selectedRoomId,
         })),
 
-      addShaft: (shaft) => set((s) => ({ shafts: [...s.shafts, shaft] })),
-
-      applyShaftCutout: (shaftVertices) => {
-        const { rooms } = get();
-        const updatedRooms: RoomZone[] = [];
-
-        for (const room of rooms) {
-          const cutPolys = subtractShaftFromRoom(room.vertices, shaftVertices);
-          if (cutPolys.length > 0) {
-            // Берем основной полигон комнаты
-            updatedRooms.push({
-              ...room,
-              vertices: cutPolys[0],
-            });
-            // Если шахта разрезала комнату на 2 части
-            for (let i = 1; i < cutPolys.length; i++) {
-              updatedRooms.push({
-                ...room,
-                id: `room-${Date.now()}-${i}`,
-                name: `${room.name} (часть ${i + 1})`,
-                vertices: cutPolys[i],
-              });
-            }
-          }
-        }
-
-        set({
-          rooms: updatedRooms,
-          shafts: [...get().shafts, { id: `shaft-${Date.now()}`, vertices: shaftVertices }],
-        });
-      },
-
       resetProject: () =>
         set({
+          apartment: null,
           rooms: [],
           shafts: [],
           selectedRoomId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
+          activeSnap: DEFAULT_SNAP,
         }),
     }),
     {
       limit: 50,
       equality: (pastState, currentState) =>
+        JSON.stringify(pastState.apartment) === JSON.stringify(currentState.apartment) &&
         JSON.stringify(pastState.rooms) === JSON.stringify(currentState.rooms),
     }
   )

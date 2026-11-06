@@ -13,7 +13,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden text-slate-200">
         <div className="flex items-center justify-between p-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
@@ -29,6 +29,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         </div>
 
         <div className="p-5 space-y-4 text-xs">
+          {/* Толщина стен */}
+          <div>
+            <label className="block text-slate-300 font-medium mb-1">
+              Базовая толщина межкомнатных перегородок (мм):
+            </label>
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              {[80, 100, 120].map((val) => (
+                <button
+                  key={val}
+                  type="button"
+                  onClick={() => setSettings({ defaultWallThicknessMm: val })}
+                  className={`py-1.5 rounded-lg border font-mono font-medium transition ${
+                    settings.defaultWallThicknessMm === val
+                      ? 'bg-sky-500 border-sky-400 text-white shadow'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {val} мм
+                </button>
+              ))}
+            </div>
+            <input
+              type="number"
+              value={settings.defaultWallThicknessMm}
+              onChange={(e) => setSettings({ defaultWallThicknessMm: Number(e.target.value) || 120 })}
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-sky-500"
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Стены рисуются наружу контура чистовой площади.
+            </p>
+          </div>
+
           {/* Высота потолка */}
           <div>
             <label className="block text-slate-300 font-medium mb-1">
@@ -38,11 +70,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               type="number"
               value={settings.ceilingHeightMm}
               onChange={(e) => setSettings({ ceilingHeightMm: Number(e.target.value) || 2700 })}
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-500"
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-sky-500"
             />
-            <p className="text-[10px] text-slate-500 mt-1">
-              Используется для автоматического расчета вертикальных спусков и подъемов кабеля.
-            </p>
           </div>
 
           {/* Запас кабеля */}
@@ -113,7 +142,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             onClick={onClose}
             className="px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white font-medium rounded-lg transition"
           >
-            Готово
+            Сохранить
           </button>
         </div>
       </div>

@@ -1,13 +1,15 @@
 import React from 'react';
 import { Layer, Line, Circle, Text, Group } from 'react-konva';
-import type { Point2D, DynamicInputState } from '../../types';
+import type { Point2D, DynamicInputState, SnapResult } from '../../types';
 import { distance, angleDeg, polarToPoint, snapAngle } from '../../core/geometry/math';
 
 interface DraftingLayerProps {
   draftVertices: Point2D[];
   cursorPosMm: Point2D;
   dynamicInput: DynamicInputState;
+  activeSnap: SnapResult;
   zoom: number;
+  isApartmentTool: boolean;
   isShaftTool: boolean;
 }
 
@@ -15,7 +17,9 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   draftVertices,
   cursorPosMm,
   dynamicInput,
+  activeSnap,
   zoom,
+  isApartmentTool,
   isShaftTool,
 }) => {
   if (draftVertices.length === 0) return null;
@@ -23,40 +27,58 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   const lastVertex = draftVertices[draftVertices.length - 1];
   const firstVertex = draftVertices[0];
 
-  // Вычисляем свободный угол и дистанцию от последней точки к курсору
-  let rawDist = distance(lastVertex, cursorPosMm);
-  let rawAngle = angleDeg(lastVertex, cursorPosMm);
+  // Точка курсора: если есть активная привязка (магнит), берем ее, иначе свободный курсор
+  const targetPoint = activeSnap.isSnapped && dynamicInput.lockedLength === null
+    ? activeSnap.point
+    : cursorPosMm;
 
-  // Применяем привязку угла (если угол не зафиксирован вручную)
+  let rawDist = distance(lastVertex, targetPoint);
+  let rawAngle = angleDeg(lastVertex, targetPoint);
+
   const effectiveAngle =
     dynamicInput.lockedAngle !== null
       ? dynamicInput.lockedAngle
       : snapAngle(rawAngle, 6);
 
-  // Применяем длину (если зафиксирована через Tab/Enter)
   const effectiveLength =
     dynamicInput.lockedLength !== null
       ? dynamicInput.lockedLength
       : rawDist;
 
-  // Итоговая вычисленная точка следующей вершины
   let nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
 
-  // Проверка привязки к стартовой точке (замыкание контура)
+  // Проверка замыкания контура на первую точку
   const distToStart = distance(nextVertex, firstVertex);
-  const isSnapToStart = draftVertices.length >= 2 && distToStart < (25 / zoom); // 25 пикселей экрана
+  const isSnapToStart = draftVertices.length >= 2 && distToStart < 25 / zoom;
   if (isSnapToStart && dynamicInput.lockedLength === null) {
     nextVertex = { ...firstVertex };
   }
 
-  // Все линии уже установленных сегментов
   const confirmedPoints = draftVertices.flatMap((v) => [v.x, v.y]);
 
-  const colorPrimary = isShaftTool ? '#ef4444' : '#22c55e';
+  let colorPrimary = '#38bdf8'; // Комнаты - голубой
+  if (isApartmentTool) colorPrimary = '#fbbf24'; // Квартира - золотистый
+  if (isShaftTool) colorPrimary = '#ef4444'; // Шахта - красный
 
   return (
     <Layer listening={false}>
-      {/* Уже зафиксированные сегменты */}
+      {/* Направляющая линия привязки (лучи X / Y) */}
+      {activeSnap.guideLine && (
+        <Line
+          points={[
+            activeSnap.guideLine.from.x,
+            activeSnap.guideLine.from.y,
+            activeSnap.guideLine.to.x,
+            activeSnap.guideLine.to.y,
+          ]}
+          stroke="#06b6d4"
+          strokeWidth={1 / zoom}
+          dash={[6 / zoom, 4 / zoom]}
+          opacity={0.8}
+        />
+      )}
+
+      {/* Зафиксированные сегменты */}
       <Line
         points={confirmedPoints}
         stroke={colorPrimary}
@@ -65,15 +87,15 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         lineJoin="round"
       />
 
-      {/* Вершины с точками */}
+      {/* Вершины */}
       {draftVertices.map((v, i) => (
         <Circle
           key={`draft-v-${i}`}
           x={v.x}
           y={v.y}
           radius={(i === 0 ? 8 : 5) / zoom}
-          fill={i === 0 ? '#38bdf8' : colorPrimary}
-          stroke="#0f172a"
+          fill={i === 0 ? '#fbbf24' : colorPrimary}
+          stroke="#090d16"
           strokeWidth={2 / zoom}
         />
       ))}
@@ -86,7 +108,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         dash={[8 / zoom, 4 / zoom]}
       />
 
-      {/* Окружность радиуса, если длина зафиксирована */}
+      {/* Окружность зафиксированной длины (CAD) */}
       {dynamicInput.lockedLength !== null && (
         <Circle
           x={lastVertex.x}
@@ -99,31 +121,53 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         />
       )}
 
-      {/* Текущая точка курсора */}
-      <Circle
-        x={nextVertex.x}
-        y={nextVertex.y}
-        radius={6 / zoom}
-        fill={isSnapToStart ? '#38bdf8' : '#fbbf24'}
-        stroke="#0f172a"
-        strokeWidth={2 / zoom}
-      />
-
-      {/* Подсказка о замыкании контура */}
-      {isSnapToStart && (
-        <Group x={firstVertex.x + 15 / zoom} y={firstVertex.y - 15 / zoom}>
+      {/* Индикатор магнитной привязки (Snap target ring) */}
+      {activeSnap.isSnapped && (
+        <Group x={activeSnap.point.x} y={activeSnap.point.y}>
+          <Circle
+            radius={9 / zoom}
+            stroke="#22c55e"
+            strokeWidth={2 / zoom}
+            fill="rgba(34, 197, 94, 0.2)"
+          />
           <Text
-            text="Кликните для замыкания"
-            fontSize={13 / zoom}
-            fontStyle="bold"
-            fill="#38bdf8"
+            text={activeSnap.label || 'Магнит'}
+            fontSize={10 / zoom}
+            fontFamily="monospace"
+            fill="#22c55e"
+            x={12 / zoom}
+            y={-5 / zoom}
             shadowColor="#000"
             shadowBlur={4 / zoom}
           />
         </Group>
       )}
 
-      {/* Подсказка длины и угла прямо на резиновой линии */}
+      {/* Точка курсора */}
+      <Circle
+        x={nextVertex.x}
+        y={nextVertex.y}
+        radius={6 / zoom}
+        fill={isSnapToStart ? '#22c55e' : '#fbbf24'}
+        stroke="#090d16"
+        strokeWidth={2 / zoom}
+      />
+
+      {/* Текст замыкания контура */}
+      {isSnapToStart && (
+        <Group x={firstVertex.x + 15 / zoom} y={firstVertex.y - 15 / zoom}>
+          <Text
+            text="Замкнуть контур (Клик)"
+            fontSize={13 / zoom}
+            fontStyle="bold"
+            fill="#22c55e"
+            shadowColor="#000"
+            shadowBlur={4 / zoom}
+          />
+        </Group>
+      )}
+
+      {/* Размер и угол на резиновой линии */}
       {!isSnapToStart && (
         <Group
           x={(lastVertex.x + nextVertex.x) / 2}
@@ -134,12 +178,12 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
             fontSize={12 / zoom}
             fontFamily="monospace"
             fontStyle="bold"
-            fill="#fbbf24"
+            fill={colorPrimary}
             align="center"
             offsetX={60 / zoom}
             width={120 / zoom}
             shadowColor="#090d16"
-            shadowBlur={5 / zoom}
+            shadowBlur={6 / zoom}
           />
         </Group>
       )}
