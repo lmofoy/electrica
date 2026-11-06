@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layer, Line, Text, Group } from 'react-konva';
+import { Layer, Line, Text, Group, Circle } from 'react-konva';
 import type { ApartmentBoundary, RoomZone, ShaftCutout } from '../../types';
 import { calculateCentroid, calculatePolygonAreaM2 } from '../../core/geometry/math';
 
@@ -22,15 +22,14 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
 }) => {
   return (
     <Layer>
-      {/* 1. Общий контур квартиры (Рабочая область) */}
+      {/* 1. Общий контур пола квартиры */}
       {apartment && apartment.vertices.length >= 3 && (
         <Group>
-          {/* Пол квартиры */}
           <Line
             points={apartment.vertices.flatMap((v) => [v.x, v.y])}
             closed
             fill="#090d16"
-            stroke="#475569"
+            stroke="#334155"
             strokeWidth={1 / zoom}
           />
         </Group>
@@ -45,41 +44,59 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
 
         return (
           <Group key={room.id} onClick={() => onSelectRoom(room.id)}>
-            {/* Заливка пола комнаты */}
+            {/* Заливка пола комнаты (ярче при выборе) */}
             <Line
               points={flatPoints}
               closed
-              fill={room.color}
+              fill={isSelected ? 'rgba(56, 189, 248, 0.35)' : room.color}
               stroke={isSelected ? '#38bdf8' : '#334155'}
-              strokeWidth={(isSelected ? 3 : 1) / zoom}
-              opacity={0.9}
+              strokeWidth={(isSelected ? 3.5 : 1) / zoom}
+              shadowColor={isSelected ? '#38bdf8' : undefined}
+              shadowBlur={isSelected ? 18 / zoom : 0}
+              shadowOpacity={0.9}
+              opacity={0.95}
             />
 
-            {/* Метка по центру комнаты */}
+            {/* Маркерные точки на углах выбранной комнаты */}
+            {isSelected &&
+              room.vertices.map((v, i) => (
+                <Circle
+                  key={`sel-v-${i}`}
+                  x={v.x}
+                  y={v.y}
+                  radius={5 / zoom}
+                  fill="#38bdf8"
+                  stroke="#020617"
+                  strokeWidth={2 / zoom}
+                />
+              ))}
+
+            {/* Метка по центру комнаты с подсветкой при выборе */}
             <Group x={centroid.x} y={centroid.y}>
               <Text
                 text={room.name}
-                fontSize={15 / zoom}
+                fontSize={(isSelected ? 16 : 14) / zoom}
                 fontStyle="bold"
-                fill="#f8fafc"
+                fill={isSelected ? '#38bdf8' : '#f8fafc'}
                 align="center"
                 offsetX={60 / zoom}
                 offsetY={20 / zoom}
                 width={120 / zoom}
                 shadowColor="rgba(0, 0, 0, 0.9)"
-                shadowBlur={5 / zoom}
+                shadowBlur={6 / zoom}
               />
               <Text
                 text={`${areaM2.toFixed(2)} м²`}
-                fontSize={13 / zoom}
+                fontSize={12 / zoom}
                 fontFamily="monospace"
-                fill="#94a3b8"
+                fontStyle={isSelected ? 'bold' : 'normal'}
+                fill={isSelected ? '#bae6fd' : '#94a3b8'}
                 align="center"
                 offsetX={60 / zoom}
                 offsetY={0}
                 width={120 / zoom}
                 shadowColor="rgba(0, 0, 0, 0.9)"
-                shadowBlur={5 / zoom}
+                shadowBlur={6 / zoom}
               />
             </Group>
           </Group>

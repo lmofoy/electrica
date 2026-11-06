@@ -1,5 +1,6 @@
 import polygonClipping, { type Polygon, type Ring } from 'polygon-clipping';
-import type { Point2D, RoomZone } from '../../types';
+import type { Point2D, RoomZone, ApartmentBoundary } from '../../types';
+import { computeOutwardWallPolygon } from './math';
 
 // Преобразование Point2D[] -> Ring [number, number][]
 function pointsToRing(points: Point2D[]): Ring {
@@ -44,7 +45,7 @@ export function isPointInPolygon(point: Point2D, polygon: Point2D[]): boolean {
 }
 
 /**
- * Обрезка комнаты по границам квартиры (комната не может выходить за пределы квартиры)
+ * Обрезка комнаты по границам квартиры
  */
 export function clipRoomToApartment(
   roomVertices: Point2D[],
@@ -85,11 +86,9 @@ export function resolveRoomOverlaps(
       const diffResult = polygonClipping.difference(polyOld, polyNew);
 
       if (diffResult.length === 0) {
-        // Старая комната была полностью поглощена новой — удаляем ее
         continue;
       }
 
-      // Если старая комната осталась одним куском
       const mainPoly = ringToPoints(diffResult[0][0]);
       if (mainPoly.length >= 3) {
         updatedRooms.push({
@@ -98,7 +97,6 @@ export function resolveRoomOverlaps(
         });
       }
 
-      // Если комната разрезалась на несколько частей
       for (let i = 1; i < diffResult.length; i++) {
         const subPoly = ringToPoints(diffResult[i][0]);
         if (subPoly.length >= 3) {
@@ -141,5 +139,68 @@ export function subtractShaftFromRoom(
   } catch (err) {
     console.error('Ошибка вычитания шахты:', err);
     return [roomVertices];
+  }
+}
+
+/**
+ * Вычисляет единый объединенный массив стен (CSG Union)
+ * Стены квартиры + стены всех комнат объединяются в единое монолитное тело!
+ */
+export function computeUnifiedWallPolygons(
+  apartment: ApartmentBoundary | null,
+  rooms: RoomZone[],
+  defaultWallThicknessMm: number
+): Point2D[][] {
+  try {
+    const wallPolygonsToUnion: Polygon[] = [];
+
+    // 1. Массив наружной стены квартиры (Внешний контур минус внутренний контур)
+    if (apartment && apartment.vertices.length >= 3) {
+      const extThickness = apartment.exteriorWallThicknessMm || 250;
+      const outerApt = computeOutwardWallPolygon(apartment.vertices, extThickness);
+      const outerRing = pointsToRing(outerApt);
+      const innerRing = pointsToRing(apartment.vertices);
+
+      // Полигон с внутренним отверстием (дыркой)
+      const aptWallGeom: Polygon = [outerRing, innerRing];
+      wallPolygonsToUnion.push(aptWallGeom);
+    }
+
+    // 2. Массивы перегородок комнат (Внешний контур комнаты минус внутренний контур)
+    for (const room of rooms) {
+      if (room.vertices.length < 3) continue;
+      const thickness = room.wallThicknessMm || defaultWallThicknessMm;
+      const outerRoom = computeOutwardWallPolygon(room.vertices, thickness);
+
+      const outerRing = pointsToRing(outerRoom);
+      const innerRing = pointsToRing(room.vertices);
+
+      const roomWallGeom: Polygon = [outerRing, innerRing];
+      wallPolygonsToUnion.push(roomWallGeom);
+    }
+
+    if (wallPolygonsToUnion.length === 0) return [];
+
+    // Объединяем все стены в один монолитный массив
+    let united = wallPolygonsToUnion[0];
+    for (let i = 1; i < wallPolygonsToUnion.length; i++) {
+      const nextGeom = wallPolygonsToUnion[i];
+      const res = polygonClipping.union(united, nextGeom);
+      if (res.length > 0) {
+        united = res[0];
+      }
+    }
+
+    // Преобразуем наружные и внутренние кольца в Point2D[][]
+    const result: Point2D[][] = [];
+    for (const ring of united) {
+      if (ring.length >= 3) {
+        result.push(ringToPoints(ring));
+      }
+    }
+    return result;
+  } catch (err) {
+    console.error('Ошибка объединения массива стен:', err);
+    return [];
   }
 }
