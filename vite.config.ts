@@ -8,4 +8,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  server: {
+    host: '0.0.0.0', // Принудительно слушаем IPv4 (127.0.0.1 и localhost)
+    port: 5173,
+    strictPort: true,
+  },
 });
