@@ -88,22 +88,20 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
       ? dynamicInput.lockedAngle
       : snapAngle(rawAngle, 6);
 
-  // Шаг прибавления длины 100 мм по умолчанию (если длина не введена через Tab)
+  // ПРИОРИТЕТ 1: Любой активный магнит 100% отменяет шаг 100 мм и притягивает точно
   let effectiveLength: number;
-  if (dynamicInput.lockedLength !== null) {
-    effectiveLength = dynamicInput.lockedLength;
-  } else if (activeSnap.isSnapped && activeSnap.snapType === 'vertex') {
-    effectiveLength = rawDist; // к конкретному узлу примагничиваем точную длину
-  } else {
-    // Шаг 100 мм
-    effectiveLength = Math.max(100, Math.round(rawDist / 100) * 100);
-  }
+  let nextVertex: Point2D;
 
-  let nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
-
-  // Если примагничен конкретный узел — точные координаты
-  if (activeSnap.isSnapped && activeSnap.snapType === 'vertex' && dynamicInput.lockedLength === null) {
+  if (activeSnap.isSnapped && dynamicInput.lockedLength === null) {
     nextVertex = { ...activeSnap.point };
+    effectiveLength = distance(lastVertex, activeSnap.point);
+  } else if (dynamicInput.lockedLength !== null) {
+    effectiveLength = dynamicInput.lockedLength;
+    nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
+  } else {
+    // Только при свободном черчении без привязки работает шаг 100 мм
+    effectiveLength = Math.max(100, Math.round(rawDist / 100) * 100);
+    nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
   }
 
   // Проверка замыкания контура на первую точку

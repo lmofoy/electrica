@@ -213,6 +213,12 @@ export const CADCanvas: React.FC = () => {
       return;
     }
 
+    // ПРИОРИТЕТ 1: Если есть ЛЮБОЙ активный магнит — он 100% приоритетнее шага 100!
+    if (activeSnap.isSnapped && dynamicInput.lockedLength === null) {
+      addDraftVertex(activeSnap.point);
+      return;
+    }
+
     // Если длина зафиксирована через Tab/Enter
     if (dynamicInput.lockedLength !== null) {
       const angle =
@@ -224,13 +230,7 @@ export const CADCanvas: React.FC = () => {
       return;
     }
 
-    // Если примагничен конкретный узел или точка на стене
-    if (activeSnap.isSnapped && (activeSnap.snapType === 'vertex' || activeSnap.snapType === 'wall_edge')) {
-      addDraftVertex(activeSnap.point);
-      return;
-    }
-
-    // Шаг прибавления длины 100 мм по умолчанию
+    // Только при свободном черчении без привязки применяется шаг 100 мм
     const angle = snapAngle(angleDeg(lastVertex, clickPoint), 6);
     const dist = distance(lastVertex, clickPoint);
     const steppedDist = Math.max(100, Math.round(dist / 100) * 100);
