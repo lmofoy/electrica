@@ -3,6 +3,24 @@ export interface Point2D {
   y: number; // в миллиметрах (мировые координаты)
 }
 
+// -------------------------------------------------------------
+// Графовая архитектура стен и узлов (Planar Straight-Line Graph)
+// -------------------------------------------------------------
+export interface Node2D {
+  id: string;
+  x: number;
+  y: number;
+}
+
+export interface Wall {
+  id: string;
+  nodeAId: string;
+  nodeBId: string;
+  thicknessMm: number;
+  isExterior: boolean;
+  roomIds: string[]; // к каким комнатам примыкает (2 комнаты = общая стена!)
+}
+
 export type RoomType =
   | 'living'
   | 'bedroom'
@@ -18,18 +36,20 @@ export type RoomType =
 export interface ApartmentBoundary {
   id: string;
   name: string;
+  nodeIds: string[]; // замкнутая цепочка узлов
   vertices: Point2D[]; // внутренние чистовые границы квартиры в мм
-  exteriorWallThicknessMm: number; // толщина наружных стен (например, 250 мм)
+  exteriorWallThicknessMm: number; // толщина наружных стен (250 мм)
 }
 
-// Комната внутри квартиры
+// Комната внутри квартиры (ссылается на общие узлы)
 export interface RoomZone {
   id: string;
   name: string;
   type: RoomType;
-  vertices: Point2D[]; // внутренние чистовые границы комнаты в мм
+  nodeIds: string[]; // замкнутый контур узлов: [node1, node2, node3, ...]
+  vertices: Point2D[]; // координаты вершин чистового пола в мм
   color: string;
-  wallThicknessMm: number; // толщина межкомнатных перегородок (например, 100-120 мм)
+  wallThicknessMm: number; // базовая толщина стен
 }
 
 export interface ShaftCutout {
@@ -38,8 +58,8 @@ export interface ShaftCutout {
 }
 
 export interface ProjectSettings {
-  defaultWallThicknessMm: number; // базовая толщина межкомнатных стен (по умолч. 120 мм)
-  exteriorWallThicknessMm: number; // толщина наружных стен квартиры (по умолч. 250 мм)
+  defaultWallThicknessMm: number; // базовая толщина межкомнатных перегородок (120 мм)
+  exteriorWallThicknessMm: number; // толщина наружных стен (250 мм)
   ceilingHeightMm: number; // высота потолка (2700 мм)
   floorLevelMm: number; // 0 мм
   cableMarginPercent: number; // настраиваемый запас кабеля (+15%)
@@ -67,10 +87,9 @@ export interface GuideLine {
   to: Point2D;
   type: 'polar' | 'align_x' | 'align_y' | 'edge';
   label?: string;
-  sourceNode?: Point2D; // узел, от которого построен луч
+  sourceNode?: Point2D;
 }
 
-// Информация о привязке (магните)
 export interface SnapResult {
   point: Point2D;
   isSnapped: boolean;
@@ -100,11 +119,11 @@ export interface ElectricalDevice {
   type: DeviceType;
   name: string;
   roomId: string; // Привязка к КОНКРЕТНОЙ комнате (решает проблему смежных стен!)
-  wallEdgeIndex?: number; // Индекс ребра стены в полигоне комнаты
-  wallOffsetT?: number; // Параметр положения вдоль стены от 0 до 1
+  wallId?: string; // Привязка к конкретной стене
+  wallOffsetT?: number; // Смещение вдоль стены (0..1)
   position: Point2D; // Мировые координаты в мм
   heightFromFloorMm: number; // Высота от чистового пола (300 мм розетки, 900 мм выключатели)
   inwardNormalAngleDeg: number; // Угол разворота внутрь комнаты
   powerWatts: number;
-  circuitId?: string; // К какой группе щитка подключено
+  circuitId?: string;
 }

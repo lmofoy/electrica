@@ -6,7 +6,7 @@ import {
   projectPointOnSegment,
   lineIntersection,
 } from './math';
-import { computeUnifiedWallPolygons } from './csg';
+import { buildMonolithicWallMesh } from './wallsGraph';
 
 interface AdvancedSnapContext {
   apartment: ApartmentBoundary | null;
@@ -70,15 +70,22 @@ export function findBestSnapAdvanced(
     }
   }
 
-  // 3. Единый массив стен (внешние грани, внутренние грани, стыки)
-  const unifiedWalls = computeUnifiedWallPolygons(apartment, rooms, defaultWallThicknessMm);
-  for (const ring of unifiedWalls) {
-    const len = ring.length;
-    for (let i = 0; i < len; i++) {
-      const p1 = ring[i];
-      const p2 = ring[(i + 1) % len];
-      allNodes.push({ point: p1, label: 'Узел стены' });
-      allSegments.push({ p1, p2 });
+  // 3. Единый монолитный массив стен (внешние грани, внутренние грани, перегородки)
+  const monolithicWalls = buildMonolithicWallMesh(
+    apartment,
+    rooms,
+    defaultWallThicknessMm,
+    apartment?.exteriorWallThicknessMm || 250
+  );
+  for (const poly of monolithicWalls) {
+    for (const ring of poly) {
+      const len = ring.length;
+      for (let i = 0; i < len; i++) {
+        const p1 = ring[i];
+        const p2 = ring[(i + 1) % len];
+        allNodes.push({ point: p1, label: 'Узел стены' });
+        allSegments.push({ p1, p2 });
+      }
     }
   }
 

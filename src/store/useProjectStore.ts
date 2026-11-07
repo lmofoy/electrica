@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { temporal } from 'zundo';
 import type {
   Point2D,
+  Node2D,
+  Wall,
   ApartmentBoundary,
   RoomZone,
   RoomType,
@@ -16,9 +18,12 @@ import {
   resolveRoomOverlaps,
   subtractShaftFromRoom,
 } from '../core/geometry/csg';
+import { extractGraphFromPlan } from '../core/geometry/wallsGraph';
 
 interface ProjectState {
-  // Данные иерархии проекта
+  // Графовая модель данных (Nodes + Walls + Rooms)
+  nodes: Record<string, Node2D>;        // Единый реестр узлов
+  walls: Wall[];                       // Единый реестр стен (без задвоений!)
   apartment: ApartmentBoundary | null; // Контур квартиры (высший уровень)
   rooms: RoomZone[];                   // Помещения внутри квартиры
   shafts: ShaftCutout[];               // Шахты и монолитные колонны
@@ -60,7 +65,7 @@ interface ProjectState {
   finishDraft: () => void;
   cancelDraft: () => void;
 
-  // Динамический ввод (Tab -> Length -> Enter -> Angle -> Enter)
+  // Динамический ввод
   openDynamicInput: (step: 'length' | 'angle') => void;
   closeDynamicInput: () => void;
   setLockedLength: (len: number | null) => void;
@@ -102,7 +107,8 @@ const DEFAULT_SNAP: SnapResult = {
 export const useProjectStore = create<ProjectState>()(
   temporal(
     (set, get) => ({
-      // При открытии поле абсолютно пустое
+      nodes: {},
+      walls: [],
       apartment: null,
       rooms: [],
       shafts: [],
@@ -112,7 +118,7 @@ export const useProjectStore = create<ProjectState>()(
 
       activeTool: 'select',
       activeRoomType: 'living',
-      zoom: 0.12, // масштаб по умолчанию
+      zoom: 0.12,
       stagePos: { x: 120, y: 120 },
       gridSnap: true,
       gridStepMm: 100,
@@ -186,17 +192,28 @@ export const useProjectStore = create<ProjectState>()(
           return;
         }
 
-        // 1. Создание общего контура квартиры
+        // 1. Создание контура квартиры
         if (state.activeTool === 'draw_apartment') {
-          const newApt: ApartmentBoundary = {
+          const rawApt: ApartmentBoundary = {
             id: `apartment-${Date.now()}`,
             name: 'Контур квартиры',
+            nodeIds: [],
             vertices: state.draftVertices,
             exteriorWallThicknessMm: state.settings.exteriorWallThicknessMm,
           };
 
+          const graph = extractGraphFromPlan(
+            rawApt,
+            state.rooms,
+            state.settings.defaultWallThicknessMm,
+            state.settings.exteriorWallThicknessMm
+          );
+
           set({
-            apartment: newApt,
+            apartment: graph.updatedApartment,
+            rooms: graph.updatedRooms,
+            nodes: graph.nodes,
+            walls: graph.walls,
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
@@ -208,7 +225,6 @@ export const useProjectStore = create<ProjectState>()(
         if (state.activeTool === 'draw_room') {
           let roomPolys = [state.draftVertices];
 
-          // Правило 2: Комната строго обрезается по границам квартиры
           if (state.apartment && state.apartment.vertices.length >= 3) {
             roomPolys = clipRoomToApartment(state.draftVertices, state.apartment.vertices);
           }
@@ -221,7 +237,7 @@ export const useProjectStore = create<ProjectState>()(
 
           const targetPoly = roomPolys[0];
 
-          // Правило 5: Автоматическое вычитание пересечений из старых комнат
+          // Правило: автоматическое вычитание пересечений из старых комнат
           const updatedOldRooms = resolveRoomOverlaps(state.rooms, targetPoly);
 
           const typeNames: Record<RoomType, string> = {
@@ -236,7 +252,6 @@ export const useProjectStore = create<ProjectState>()(
             custom: 'Помещение',
           };
 
-          // Сочная палитра контрастных цветов комнат
           const VIBRANT_ROOM_COLORS = [
             '#3b82f6', // Синий
             '#a855f7', // Фиолетовый
@@ -250,7 +265,6 @@ export const useProjectStore = create<ProjectState>()(
             '#14b8a6', // Морская волна
           ];
 
-          // Выбираем сочный цвет (по типу или следующий из яркой палитры)
           const roomIndex = updatedOldRooms.length;
           const assignedColor = VIBRANT_ROOM_COLORS[roomIndex % VIBRANT_ROOM_COLORS.length];
 
@@ -260,11 +274,25 @@ export const useProjectStore = create<ProjectState>()(
             type: state.activeRoomType,
             color: assignedColor,
             wallThicknessMm: state.settings.defaultWallThicknessMm,
+            nodeIds: [],
             vertices: targetPoly,
           };
 
+          const candidateRooms = [...updatedOldRooms, newRoom];
+
+          // Синхронизация с графом стен и узлов (объединение смежных стен в одну общую!)
+          const graph = extractGraphFromPlan(
+            state.apartment,
+            candidateRooms,
+            state.settings.defaultWallThicknessMm,
+            state.settings.exteriorWallThicknessMm
+          );
+
           set({
-            rooms: [...updatedOldRooms, newRoom],
+            apartment: graph.updatedApartment,
+            rooms: graph.updatedRooms,
+            nodes: graph.nodes,
+            walls: graph.walls,
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
@@ -287,14 +315,25 @@ export const useProjectStore = create<ProjectState>()(
                   ...room,
                   id: `room-${Date.now()}-${i}`,
                   name: `${room.name} (часть ${i + 1})`,
+                  nodeIds: [],
                   vertices: cutPolys[i],
                 });
               }
             }
           }
 
+          const graph = extractGraphFromPlan(
+            state.apartment,
+            updatedRooms,
+            state.settings.defaultWallThicknessMm,
+            state.settings.exteriorWallThicknessMm
+          );
+
           set({
-            rooms: updatedRooms,
+            apartment: graph.updatedApartment,
+            rooms: graph.updatedRooms,
+            nodes: graph.nodes,
+            walls: graph.walls,
             shafts: [...state.shafts, { id: `shaft-${Date.now()}`, vertices: state.draftVertices }],
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
@@ -343,21 +382,49 @@ export const useProjectStore = create<ProjectState>()(
           dynamicInput: { ...state.dynamicInput, ...values },
         })),
 
-      setApartment: (apartment) => set({ apartment }),
+      setApartment: (apt) => {
+        const state = get();
+        const graph = extractGraphFromPlan(
+          apt,
+          state.rooms,
+          state.settings.defaultWallThicknessMm,
+          state.settings.exteriorWallThicknessMm
+        );
+        set({
+          apartment: graph.updatedApartment,
+          rooms: graph.updatedRooms,
+          nodes: graph.nodes,
+          walls: graph.walls,
+        });
+      },
 
       updateRoom: (id, updates) =>
         set((s) => ({
           rooms: s.rooms.map((r) => (r.id === id ? { ...r, ...updates } : r)),
         })),
 
-      deleteRoom: (id) =>
-        set((s) => ({
-          rooms: s.rooms.filter((r) => r.id !== id),
-          selectedRoomId: s.selectedRoomId === id ? null : s.selectedRoomId,
-        })),
+      deleteRoom: (id) => {
+        const state = get();
+        const remainingRooms = state.rooms.filter((r) => r.id !== id);
+        const graph = extractGraphFromPlan(
+          state.apartment,
+          remainingRooms,
+          state.settings.defaultWallThicknessMm,
+          state.settings.exteriorWallThicknessMm
+        );
+        set({
+          apartment: graph.updatedApartment,
+          rooms: graph.updatedRooms,
+          nodes: graph.nodes,
+          walls: graph.walls,
+          selectedRoomId: state.selectedRoomId === id ? null : state.selectedRoomId,
+        });
+      },
 
       resetProject: () =>
         set({
+          nodes: {},
+          walls: [],
           apartment: null,
           rooms: [],
           shafts: [],
