@@ -235,23 +235,30 @@ export const useProjectStore = create<ProjectState>()(
             storage: 'Гардеробная',
             custom: 'Помещение',
           };
-          const colors: Record<RoomType, string> = {
-            living: 'rgba(59, 130, 246, 0.2)',
-            bedroom: 'rgba(168, 85, 247, 0.2)',
-            kitchen: 'rgba(234, 88, 12, 0.2)',
-            bathroom: 'rgba(6, 182, 212, 0.2)',
-            toilet: 'rgba(20, 184, 166, 0.2)',
-            corridor: 'rgba(107, 114, 128, 0.2)',
-            balcony: 'rgba(34, 197, 94, 0.2)',
-            storage: 'rgba(245, 158, 11, 0.2)',
-            custom: 'rgba(99, 102, 241, 0.2)',
-          };
+
+          // Сочная палитра контрастных цветов комнат
+          const VIBRANT_ROOM_COLORS = [
+            '#3b82f6', // Синий
+            '#a855f7', // Фиолетовый
+            '#f97316', // Оранжевый
+            '#06b6d4', // Бирюзовый
+            '#10b981', // Изумрудный
+            '#ec4899', // Розовый
+            '#eab308', // Золотисто-желтый
+            '#84cc16', // Салатовый
+            '#6366f1', // Индиго
+            '#14b8a6', // Морская волна
+          ];
+
+          // Выбираем сочный цвет (по типу или следующий из яркой палитры)
+          const roomIndex = updatedOldRooms.length;
+          const assignedColor = VIBRANT_ROOM_COLORS[roomIndex % VIBRANT_ROOM_COLORS.length];
 
           const newRoom: RoomZone = {
             id: `room-${Date.now()}`,
             name: `${typeNames[state.activeRoomType]} ${updatedOldRooms.length + 1}`,
             type: state.activeRoomType,
-            color: colors[state.activeRoomType],
+            color: assignedColor,
             wallThicknessMm: state.settings.defaultWallThicknessMm,
             vertices: targetPoly,
           };

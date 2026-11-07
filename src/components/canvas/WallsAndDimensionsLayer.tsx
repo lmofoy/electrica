@@ -11,13 +11,51 @@ interface WallsAndDimensionsLayerProps {
   zoom: number;
 }
 
+/**
+ * Создает изображение с архитектурной диагональной штриховкой 45°
+ */
+function createHatchImage(strokeColor = '#475569', bgColor = '#1e293b', size = 80): HTMLImageElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, size, size);
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+
+    // Диагональные линии под 45 градусов
+    ctx.moveTo(0, size);
+    ctx.lineTo(size, 0);
+
+    ctx.moveTo(-size / 2, size / 2);
+    ctx.lineTo(size / 2, -size / 2);
+
+    ctx.moveTo(size / 2, size * 1.5);
+    ctx.lineTo(size * 1.5, size / 2);
+
+    ctx.stroke();
+  }
+  const img = new Image();
+  img.src = canvas.toDataURL();
+  return img;
+}
+
 export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = ({
   apartment,
   rooms,
   defaultWallThicknessMm,
   zoom,
 }) => {
-  // Вычисляем объединенный монолитный массив стен (CSG Union всех стен квартиры и комнат)
+  // Архитектурная штриховка стен
+  const hatchPattern = useMemo(() => {
+    return createHatchImage('#475569', '#1e293b', 80);
+  }, []);
+
+  // Вычисляем единый монолитный массив стен (CSG Union)
   const unifiedWallPolygons = useMemo(() => {
     return computeUnifiedWallPolygons(apartment, rooms, defaultWallThicknessMm);
   }, [apartment, rooms, defaultWallThicknessMm]);
@@ -67,15 +105,15 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
         <Group key={`${keyPrefix}-dim-${i}`}>
           <Line
             points={[p1.x, p1.y, dimP1.x, dimP1.y]}
-            stroke="#475569"
+            stroke="#64748b"
             strokeWidth={1 / zoom}
-            opacity={0.4}
+            opacity={0.5}
           />
           <Line
             points={[p2.x, p2.y, dimP2.x, dimP2.y]}
-            stroke="#475569"
+            stroke="#64748b"
             strokeWidth={1 / zoom}
-            opacity={0.4}
+            opacity={0.5}
           />
 
           <Line
@@ -120,28 +158,29 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
 
   return (
     <Layer listening={false}>
-      {/* 1. ЕДИНЫЙ ОБЪЕДИНЕННЫЙ МАССИВ СТЕН (Все стены сливаются в один контур!) */}
+      {/* 1. ЕДИНЫЙ ОБЪЕДИНЕННЫЙ МАССИВ СТЕН СО ШТРИХОВКОЙ ПОД 45° */}
       {unifiedWallPolygons.map((ring, idx) => (
         <Line
           key={`unified-wall-mesh-${idx}`}
           points={ring.flatMap((v) => [v.x, v.y])}
           closed
-          fill="#1e293b"
-          stroke="#475569"
-          strokeWidth={1.5 / zoom}
+          fillPatternImage={hatchPattern}
+          fillPatternRepeat="repeat"
+          stroke="#64748b"
+          strokeWidth={2 / zoom}
           lineJoin="miter"
-          opacity={0.9}
+          opacity={0.95}
         />
       ))}
 
-      {/* 2. Чистовые внутренние грани комнат (четкая кромка чистового пола) */}
+      {/* 2. Чистовые внутренние грани комнат */}
       {rooms.map((room) => (
         <Group key={`room-clean-edges-${room.id}`}>
           <Line
             points={room.vertices.flatMap((v) => [v.x, v.y])}
             closed
-            stroke="#64748b"
-            strokeWidth={1.5 / zoom}
+            stroke="#94a3b8"
+            strokeWidth={2 / zoom}
           />
           {/* Внутренние размеры помещения */}
           {renderDimensionChain(room.vertices, room.id, '#38bdf8', 190)}
@@ -154,8 +193,8 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
           <Line
             points={apartment.vertices.flatMap((v) => [v.x, v.y])}
             closed
-            stroke="#94a3b8"
-            strokeWidth={2 / zoom}
+            stroke="#e2e8f0"
+            strokeWidth={2.5 / zoom}
           />
           {renderDimensionChain(
             apartment.vertices,
