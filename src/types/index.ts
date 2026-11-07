@@ -62,12 +62,20 @@ export interface DynamicInputState {
   currentAngleInput: string;
 }
 
+export interface GuideLine {
+  from: Point2D;
+  to: Point2D;
+  type: 'polar' | 'align_x' | 'align_y' | 'edge';
+  label?: string;
+  sourceNode?: Point2D; // узел, от которого построен луч
+}
+
 // Информация о привязке (магните)
 export interface SnapResult {
   point: Point2D;
   isSnapped: boolean;
-  snapType: 'none' | 'vertex' | 'ortho_align' | 'wall_edge';
-  guideLine?: { from: Point2D; to: Point2D };
+  snapType: 'none' | 'vertex' | 'polar' | 'alignment' | 'wall_edge';
+  guideLines: GuideLine[];
   label?: string;
 }
 

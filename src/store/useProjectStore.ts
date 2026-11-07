@@ -96,6 +96,7 @@ const DEFAULT_SNAP: SnapResult = {
   point: { x: 0, y: 0 },
   isSnapped: false,
   snapType: 'none',
+  guideLines: [],
 };
 
 export const useProjectStore = create<ProjectState>()(

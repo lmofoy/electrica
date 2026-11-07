@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layer, Line, Circle, Text, Group } from 'react-konva';
+import { Layer, Line, Circle, Text, Group, Rect } from 'react-konva';
 import type { Point2D, DynamicInputState, SnapResult } from '../../types';
 import { distance, angleDeg, polarToPoint, snapAngle } from '../../core/geometry/math';
 
@@ -22,52 +22,141 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   isApartmentTool,
   isShaftTool,
 }) => {
-  // Визуализация магнитной привязки ДАЖЕ на первой точке
+  // Визуализация маркера магнитной привязки
   const renderSnapIndicator = () => {
     if (!activeSnap.isSnapped) return null;
 
     const snapPoint = activeSnap.point;
-    const isNode = activeSnap.snapType === 'vertex';
+    const snapType = activeSnap.snapType;
 
     return (
       <Group x={snapPoint.x} y={snapPoint.y}>
-        {/* Кольцо магнита */}
-        <Circle
-          radius={(isNode ? 10 : 8) / zoom}
-          stroke={isNode ? '#22c55e' : '#38bdf8'}
-          strokeWidth={2 / zoom}
-          fill={isNode ? 'rgba(34, 197, 94, 0.25)' : 'rgba(56, 189, 248, 0.25)'}
-        />
-        {/* Текстовая метка типа привязки */}
+        {/* Уровень 1: Узел (Endpoints / Intersections) — Зеленый круг */}
+        {snapType === 'vertex' && (
+          <>
+            <Circle
+              radius={10 / zoom}
+              stroke="#22c55e"
+              strokeWidth={2.5 / zoom}
+              fill="rgba(34, 197, 94, 0.25)"
+            />
+            <Circle radius={3 / zoom} fill="#22c55e" />
+          </>
+        )}
+
+        {/* Уровень 2: Выравнивание / Polar — Голубой / Золотистый перекресток */}
+        {(snapType === 'polar' || snapType === 'alignment') && (
+          <>
+            <Line
+              points={[-8 / zoom, 0, 8 / zoom, 0]}
+              stroke="#38bdf8"
+              strokeWidth={2 / zoom}
+            />
+            <Line
+              points={[0, -8 / zoom, 0, 8 / zoom]}
+              stroke="#38bdf8"
+              strokeWidth={2 / zoom}
+            />
+            <Circle
+              radius={7 / zoom}
+              stroke="#38bdf8"
+              strokeWidth={1.5 / zoom}
+              dash={[4 / zoom, 2 / zoom]}
+            />
+          </>
+        )}
+
+        {/* Уровень 3: Стена (Edge Snap) — Ромб / Перпендикуляр */}
+        {snapType === 'wall_edge' && (
+          <Rect
+            x={-6 / zoom}
+            y={-6 / zoom}
+            width={12 / zoom}
+            height={12 / zoom}
+            rotation={45}
+            stroke="#06b6d4"
+            strokeWidth={2 / zoom}
+            fill="rgba(6, 182, 212, 0.2)"
+          />
+        )}
+
+        {/* Текстовый бейдж привязки */}
         <Text
           text={activeSnap.label || 'Магнит'}
           fontSize={11 / zoom}
           fontFamily="monospace"
           fontStyle="bold"
-          fill={isNode ? '#4ade80' : '#38bdf8'}
-          x={13 / zoom}
+          fill={
+            snapType === 'vertex'
+              ? '#4ade80'
+              : snapType === 'wall_edge'
+              ? '#22d3ee'
+              : '#38bdf8'
+          }
+          x={14 / zoom}
           y={-6 / zoom}
           shadowColor="#000"
-          shadowBlur={5 / zoom}
+          shadowBlur={6 / zoom}
         />
       </Group>
     );
   };
 
-  // Если точек еще нет — отображаем только магнит на курсоре
+  // Отрисовка направляющих лучей (Alignment Guides & Polar Rays)
+  const renderGuideLines = () => {
+    if (!activeSnap.guideLines || activeSnap.guideLines.length === 0) return null;
+
+    return (
+      <Group>
+        {activeSnap.guideLines.map((gl, i) => {
+          const isPolar = gl.type === 'polar';
+          const strokeColor = isPolar ? '#fbbf24' : '#38bdf8';
+
+          return (
+            <Group key={`guideline-${i}`}>
+              {/* Пунктирный луч от исходного узла к точке курсора */}
+              <Line
+                points={[gl.from.x, gl.from.y, gl.to.x, gl.to.y]}
+                stroke={strokeColor}
+                strokeWidth={1.5 / zoom}
+                dash={isPolar ? [8 / zoom, 4 / zoom] : [6 / zoom, 3 / zoom]}
+                opacity={0.85}
+              />
+
+              {/* Маркер на исходном узле, от которого строится луч */}
+              {gl.sourceNode && (
+                <Circle
+                  x={gl.sourceNode.x}
+                  y={gl.sourceNode.y}
+                  radius={5 / zoom}
+                  stroke="#38bdf8"
+                  strokeWidth={1.5 / zoom}
+                  fill="rgba(56, 189, 248, 0.4)"
+                />
+              )}
+            </Group>
+          );
+        })}
+      </Group>
+    );
+  };
+
+  // Если точек еще нет — отображаем направляющие и маркер магнита на свободном курсоре
   if (draftVertices.length === 0) {
     return (
       <Layer listening={false}>
+        {renderGuideLines()}
         {renderSnapIndicator()}
-        {/* Подсказка для первой точки */}
-        <Circle
-          x={cursorPosMm.x}
-          y={cursorPosMm.y}
-          radius={5 / zoom}
-          fill="#fbbf24"
-          stroke="#000"
-          strokeWidth={1.5 / zoom}
-        />
+        {!activeSnap.isSnapped && (
+          <Circle
+            x={cursorPosMm.x}
+            y={cursorPosMm.y}
+            radius={5 / zoom}
+            fill="#fbbf24"
+            stroke="#000"
+            strokeWidth={1.5 / zoom}
+          />
+        )}
       </Layer>
     );
   }
@@ -75,7 +164,6 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   const lastVertex = draftVertices[draftVertices.length - 1];
   const firstVertex = draftVertices[0];
 
-  // Целевая точка: привязка имеет приоритет
   const targetPoint = activeSnap.isSnapped && dynamicInput.lockedLength === null
     ? activeSnap.point
     : cursorPosMm;
@@ -88,7 +176,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
       ? dynamicInput.lockedAngle
       : snapAngle(rawAngle, 6);
 
-  // ПРИОРИТЕТ 1: Любой активный магнит 100% отменяет шаг 100 мм и притягивает точно
+  // Иерархия: Любой активный магнит 100% отменяет шаг 100 мм и притягивает точно
   let effectiveLength: number;
   let nextVertex: Point2D;
 
@@ -99,7 +187,6 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
     effectiveLength = dynamicInput.lockedLength;
     nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
   } else {
-    // Только при свободном черчении без привязки работает шаг 100 мм
     effectiveLength = Math.max(100, Math.round(rawDist / 100) * 100);
     nextVertex = polarToPoint(lastVertex, effectiveLength, effectiveAngle);
   }
@@ -119,21 +206,8 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
 
   return (
     <Layer listening={false}>
-      {/* Направляющая линия привязки по осям */}
-      {activeSnap.guideLine && (
-        <Line
-          points={[
-            activeSnap.guideLine.from.x,
-            activeSnap.guideLine.from.y,
-            activeSnap.guideLine.to.x,
-            activeSnap.guideLine.to.y,
-          ]}
-          stroke="#06b6d4"
-          strokeWidth={1 / zoom}
-          dash={[6 / zoom, 4 / zoom]}
-          opacity={0.8}
-        />
-      )}
+      {/* Направляющие лучи (Polar & Alignment) */}
+      {renderGuideLines()}
 
       {/* Зафиксированные сегменты чертежа */}
       <Line
@@ -144,7 +218,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         lineJoin="round"
       />
 
-      {/* Вершины */}
+      {/* Вершины чертежа */}
       {draftVertices.map((v, i) => (
         <Circle
           key={`draft-v-${i}`}
@@ -165,7 +239,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         dash={[8 / zoom, 4 / zoom]}
       />
 
-      {/* Окружность зафиксированной длины (CAD) */}
+      {/* Окружность зафиксированной длины (CAD Tab) */}
       {dynamicInput.lockedLength !== null && (
         <Circle
           x={lastVertex.x}
@@ -178,7 +252,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         />
       )}
 
-      {/* Индикатор магнитной привязки */}
+      {/* Индикатор магнита (Node, Edge, Polar, Alignment) */}
       {renderSnapIndicator()}
 
       {/* Точка курсора */}

@@ -154,11 +154,9 @@ export const CADCanvas: React.FC = () => {
 
       setActiveSnap(snap);
 
-      // Курсор ПРЫГАЕТ на точку привязки при приближении
-      if (snap.isSnapped && dynamicInput.lockedLength === null) {
+      // Курсор ПРЫГАЕТ на вычисленную точку привязки (Узел, Polar, Alignment, Edge или Сетка 100)
+      if (dynamicInput.lockedLength === null) {
         worldPos = snap.point;
-      } else if (gridSnap && dynamicInput.lockedLength === null) {
-        worldPos = snapToGrid(worldPos, gridStepMm);
       }
     } else if (gridSnap) {
       worldPos = snapToGrid(worldPos, gridStepMm);
