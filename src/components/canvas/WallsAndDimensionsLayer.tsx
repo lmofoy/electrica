@@ -1,8 +1,7 @@
 import React, { useMemo } from 'react';
-import { Layer, Line, Text, Group } from 'react-konva';
+import { Layer, Shape, Line, Text, Group } from 'react-konva';
 import type { ApartmentBoundary, RoomZone, Point2D } from '../../types';
-import { distance, angleDeg } from '../../core/geometry/math';
-import { computeUnifiedWallPolygons } from '../../core/geometry/csg';
+import { distance, angleDeg, computeOutwardWallPolygon } from '../../core/geometry/math';
 
 interface WallsAndDimensionsLayerProps {
   apartment: ApartmentBoundary | null;
@@ -12,9 +11,9 @@ interface WallsAndDimensionsLayerProps {
 }
 
 /**
- * Создает изображение с архитектурной диагональной штриховкой 45°
+ * Создает изображение с архитектурной диагональной штриховкой под 45°
  */
-function createHatchImage(strokeColor = '#475569', bgColor = '#1e293b', size = 80): HTMLImageElement {
+function createHatchImage(strokeColor = '#64748b', bgColor = '#1e293b', size = 80): HTMLImageElement {
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -50,15 +49,10 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
   defaultWallThicknessMm,
   zoom,
 }) => {
-  // Архитектурная штриховка стен
+  // Архитектурная штриховка
   const hatchPattern = useMemo(() => {
-    return createHatchImage('#475569', '#1e293b', 80);
+    return createHatchImage('#64748b', '#1e293b', 80);
   }, []);
-
-  // Вычисляем единый монолитный массив стен (CSG Union)
-  const unifiedWallPolygons = useMemo(() => {
-    return computeUnifiedWallPolygons(apartment, rooms, defaultWallThicknessMm);
-  }, [apartment, rooms, defaultWallThicknessMm]);
 
   // Отрисовка размерных цепочек
   const renderDimensionChain = (
@@ -158,52 +152,110 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
 
   return (
     <Layer listening={false}>
-      {/* 1. ЕДИНЫЙ ОБЪЕДИНЕННЫЙ МАССИВ СТЕН СО ШТРИХОВКОЙ ПОД 45° */}
-      {unifiedWallPolygons.map((ring, idx) => (
-        <Line
-          key={`unified-wall-mesh-${idx}`}
-          points={ring.flatMap((v) => [v.x, v.y])}
-          closed
-          fillPatternImage={hatchPattern}
-          fillPatternRepeat="repeat"
-          stroke="#64748b"
-          strokeWidth={2 / zoom}
-          lineJoin="miter"
-          opacity={0.95}
-        />
-      ))}
+      {/* 1. НАРУЖНЫЕ СТЕНЫ КВАРТИРЫ: Полое тело со штриховкой между наружным и внутренним контуром */}
+      {apartment && apartment.vertices.length >= 3 && (() => {
+        const extThickness = apartment.exteriorWallThicknessMm || 250;
+        const outerApt = computeOutwardWallPolygon(apartment.vertices, extThickness);
+        const innerApt = apartment.vertices;
 
-      {/* 2. Чистовые внутренние грани комнат */}
-      {rooms.map((room) => (
-        <Group key={`room-clean-edges-${room.id}`}>
-          <Line
-            points={room.vertices.flatMap((v) => [v.x, v.y])}
-            closed
-            stroke="#94a3b8"
-            strokeWidth={2 / zoom}
-          />
-          {/* Внутренние размеры помещения */}
-          {renderDimensionChain(room.vertices, room.id, '#38bdf8', 190)}
-        </Group>
-      ))}
+        return (
+          <Group key="apartment-walls-group">
+            {/* Полый контур стены со штриховкой под 45° (внутри квартиры штриховки НЕТ!) */}
+            <Shape
+              sceneFunc={(context, shape) => {
+                context.beginPath();
+                // Внешний контур
+                for (let i = 0; i < outerApt.length; i++) {
+                  if (i === 0) context.moveTo(outerApt[i].x, outerApt[i].y);
+                  else context.lineTo(outerApt[i].x, outerApt[i].y);
+                }
+                context.closePath();
 
-      {/* 3. Чистовой контур квартиры и внешние габаритные размеры */}
-      {apartment && apartment.vertices.length >= 3 && (
-        <Group>
-          <Line
-            points={apartment.vertices.flatMap((v) => [v.x, v.y])}
-            closed
-            stroke="#e2e8f0"
-            strokeWidth={2.5 / zoom}
-          />
-          {renderDimensionChain(
-            apartment.vertices,
-            'apt-ext',
-            '#fbbf24',
-            (apartment.exteriorWallThicknessMm || 250) + 220
-          )}
-        </Group>
-      )}
+                // Внутренний вырез (чистовой пол квартиры)
+                for (let i = 0; i < innerApt.length; i++) {
+                  if (i === 0) context.moveTo(innerApt[i].x, innerApt[i].y);
+                  else context.lineTo(innerApt[i].x, innerApt[i].y);
+                }
+                context.closePath();
+
+                // Правило evenodd заливает ТОЛЬКО толщину стены!
+                context.fillStrokeShape(shape);
+              }}
+              fillPatternImage={hatchPattern}
+              fillPatternRepeat="repeat"
+              fillRule="evenodd"
+              stroke="#64748b"
+              strokeWidth={2 / zoom}
+            />
+
+            {/* Внутренняя чистовая кромка стены квартиры */}
+            <Line
+              points={innerApt.flatMap((v) => [v.x, v.y])}
+              closed
+              stroke="#cbd5e1"
+              strokeWidth={2 / zoom}
+            />
+
+            {/* Внешние габаритные размеры квартиры */}
+            {renderDimensionChain(
+              apartment.vertices,
+              'apt-ext',
+              '#fbbf24',
+              extThickness + 220
+            )}
+          </Group>
+        );
+      })()}
+
+      {/* 2. ПЕРЕГОРОДКИ КОМНАТ: Полое тело перегородки со штриховкой */}
+      {rooms.map((room) => {
+        if (room.vertices.length < 3) return null;
+        const thickness = room.wallThicknessMm || defaultWallThicknessMm;
+        const outerRoom = computeOutwardWallPolygon(room.vertices, thickness);
+        const innerRoom = room.vertices;
+
+        return (
+          <Group key={`room-wall-group-${room.id}`}>
+            {/* Полая стена комнаты со штриховкой 45° */}
+            <Shape
+              sceneFunc={(context, shape) => {
+                context.beginPath();
+                // Наружная грань перегородки
+                for (let i = 0; i < outerRoom.length; i++) {
+                  if (i === 0) context.moveTo(outerRoom[i].x, outerRoom[i].y);
+                  else context.lineTo(outerRoom[i].x, outerRoom[i].y);
+                }
+                context.closePath();
+
+                // Внутренняя грань (чистовой пол комнаты)
+                for (let i = 0; i < innerRoom.length; i++) {
+                  if (i === 0) context.moveTo(innerRoom[i].x, innerRoom[i].y);
+                  else context.lineTo(innerRoom[i].x, innerRoom[i].y);
+                }
+                context.closePath();
+
+                context.fillStrokeShape(shape);
+              }}
+              fillPatternImage={hatchPattern}
+              fillPatternRepeat="repeat"
+              fillRule="evenodd"
+              stroke="#64748b"
+              strokeWidth={1.5 / zoom}
+            />
+
+            {/* Чистовая грань комнаты */}
+            <Line
+              points={innerRoom.flatMap((v) => [v.x, v.y])}
+              closed
+              stroke="#94a3b8"
+              strokeWidth={1.5 / zoom}
+            />
+
+            {/* Внутренние размеры помещения */}
+            {renderDimensionChain(room.vertices, room.id, '#38bdf8', 190)}
+          </Group>
+        );
+      })}
     </Layer>
   );
 };

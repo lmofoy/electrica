@@ -22,15 +22,15 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
 }) => {
   return (
     <Layer>
-      {/* 1. Общий пол квартиры — аккуратный серенький нейтральный цвет */}
+      {/* 1. Общий пол квартиры — чистый аккуратный серый цвет */}
       {apartment && apartment.vertices.length >= 3 && (
         <Group>
           <Line
             points={apartment.vertices.flatMap((v) => [v.x, v.y])}
             closed
             fill="#1e293b"
-            stroke="#475569"
-            strokeWidth={1.5 / zoom}
+            stroke="#334155"
+            strokeWidth={1 / zoom}
           />
         </Group>
       )}
@@ -44,20 +44,20 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
 
         return (
           <Group key={room.id} onClick={() => onSelectRoom(room.id)}>
-            {/* Заливка пола комнаты (при выделении яркость и сочность резко возрастают!) */}
+            {/* Заливка пола комнаты (при выделении максимальная яркость и контраст!) */}
             <Line
               points={flatPoints}
               closed
               fill={room.color}
-              opacity={isSelected ? 0.9 : 0.45}
-              stroke={isSelected ? '#38bdf8' : '#334155'}
+              opacity={isSelected ? 0.95 : 0.65}
+              stroke={isSelected ? '#38bdf8' : '#1e293b'}
               strokeWidth={(isSelected ? 4 : 1.5) / zoom}
               shadowColor={isSelected ? '#38bdf8' : undefined}
-              shadowBlur={isSelected ? 25 / zoom : 0}
+              shadowBlur={isSelected ? 30 / zoom : 0}
               shadowOpacity={1}
             />
 
-            {/* Маркерные узловые точки на углах выбранной комнаты */}
+            {/* Маркерные точки на углах выбранной комнаты */}
             {isSelected &&
               room.vertices.map((v, i) => (
                 <Circle
@@ -82,7 +82,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
                 offsetX={60 / zoom}
                 offsetY={20 / zoom}
                 width={120 / zoom}
-                shadowColor="rgba(0, 0, 0, 0.95)"
+                shadowColor="rgba(0, 0, 0, 0.9)"
                 shadowBlur={8 / zoom}
               />
               <Text
@@ -90,12 +90,12 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
                 fontSize={(isSelected ? 14 : 12) / zoom}
                 fontFamily="monospace"
                 fontStyle="bold"
-                fill={isSelected ? '#38bdf8' : '#e2e8f0'}
+                fill={isSelected ? '#38bdf8' : '#f1f5f9'}
                 align="center"
                 offsetX={60 / zoom}
                 offsetY={0}
                 width={120 / zoom}
-                shadowColor="rgba(0, 0, 0, 0.95)"
+                shadowColor="rgba(0, 0, 0, 0.9)"
                 shadowBlur={8 / zoom}
               />
             </Group>
@@ -103,7 +103,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
         );
       })}
 
-      {/* 3. Отрисовка шахт и колонн */}
+      {/* 3. Шахты и монолитные колонны */}
       {shafts.map((shaft) => {
         const flatPoints = shaft.vertices.flatMap((v) => [v.x, v.y]);
         const centroid = calculateCentroid(shaft.vertices);
