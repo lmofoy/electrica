@@ -26,6 +26,17 @@ export const CadFloatingInput: React.FC<CadFloatingInputProps> = ({
   const lengthInputRef = useRef<HTMLInputElement>(null);
   const angleInputRef = useRef<HTMLInputElement>(null);
 
+  // Автофокус при открытии — хук обязан вызываться до любого return
+  useEffect(() => {
+    if (dynamicInput.step === 'length' && lengthInputRef.current) {
+      lengthInputRef.current.focus();
+      lengthInputRef.current.select();
+    } else if (dynamicInput.step === 'angle' && angleInputRef.current) {
+      angleInputRef.current.focus();
+      angleInputRef.current.select();
+    }
+  }, [dynamicInput.step, dynamicInput.isOpen]);
+
   // Важно: окно отображается ТОЛЬКО если пользователь нажал Tab (dynamicInput.isOpen)
   if (!lastVertex || !dynamicInput.isOpen) return null;
 
@@ -37,17 +48,6 @@ export const CadFloatingInput: React.FC<CadFloatingInputProps> = ({
   const rawDist = distance(lastVertex, cursorPosMm);
   const currentSteppedDist = Math.max(100, Math.round(rawDist / 100) * 100);
   const currentAngle = Math.round(snapAngle(angleDeg(lastVertex, cursorPosMm), 6));
-
-  // Автофокус при открытии
-  useEffect(() => {
-    if (dynamicInput.step === 'length' && lengthInputRef.current) {
-      lengthInputRef.current.focus();
-      lengthInputRef.current.select();
-    } else if (dynamicInput.step === 'angle' && angleInputRef.current) {
-      angleInputRef.current.focus();
-      angleInputRef.current.select();
-    }
-  }, [dynamicInput.step]);
 
   const handleLengthKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {

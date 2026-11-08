@@ -60,6 +60,12 @@ export function calculatePolygonAreaM2(vertices: Point2D[]): number {
   return Math.abs(area / 2) / 1_000_000;
 }
 
+// Площадь многоугольника с вычетами (шахты, колонны)
+export function calculateNetAreaM2(vertices: Point2D[], holes: Point2D[][] = []): number {
+  const holesArea = holes.reduce((sum, hole) => sum + calculatePolygonAreaM2(hole), 0);
+  return Math.max(0, calculatePolygonAreaM2(vertices) - holesArea);
+}
+
 // Вычисление геометрического центра многоугольника
 export function calculateCentroid(vertices: Point2D[]): Point2D {
   if (vertices.length === 0) return { x: 0, y: 0 };
@@ -178,4 +184,29 @@ export function computeOutwardWallPolygon(
   }
 
   return outerVertices;
+}
+
+export function pointToSegmentDistance(p: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  if (l2 === 0) return distance(p, a);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return distance(p, { x: a.x + t * dx, y: a.y + t * dy });
+}
+
+export function isPointInPolygon(point: Point2D, polygon: Point2D[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    const intersect =
+      yi > point.y !== yj > point.y &&
+      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }

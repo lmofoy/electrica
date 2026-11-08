@@ -1,29 +1,51 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
-import { calculatePolygonAreaM2 } from '../../core/geometry/math';
-import { Trash2, Home, Layers, Info } from 'lucide-react';
+import { calculateNetAreaM2 } from '../../core/geometry/math';
+import { computeAutoFloors } from '../../core/geometry/autoLayout';
+import { Trash2, Home, Layers, Info, PenTool } from 'lucide-react';
 import type { RoomType } from '../../types';
 
 export const Sidebar: React.FC = () => {
   const {
     apartment,
     rooms,
+    shafts,
+    freePartitions,
+    settings,
+    boundaryMode,
     selectedRoomId,
     setSelectedRoomId,
     updateRoom,
     deleteRoom,
-    setApartment,
+    deleteApartment,
     startApartmentDrawing,
+    startRoomDrawing,
+    coveragePercent,
+    isCoverageValid,
   } = useProjectStore();
 
+  const autoFloors = useMemo(
+    () =>
+      boundaryMode === 'auto'
+        ? computeAutoFloors(rooms, shafts, freePartitions, settings.defaultWallThicknessMm)
+        : [],
+    [boundaryMode, rooms, shafts, freePartitions, settings.defaultWallThicknessMm]
+  );
+
+  const autoFloorAreaByRoom = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const floor of autoFloors) map.set(floor.roomId, floor.areaM2);
+    return map;
+  }, [autoFloors]);
+
   const apartmentAreaM2 = apartment
-    ? calculatePolygonAreaM2(apartment.vertices)
+    ? calculateNetAreaM2(apartment.vertices, apartment.holes ?? [])
     : 0;
 
-  const plannedRoomsAreaM2 = rooms.reduce(
-    (sum, r) => sum + calculatePolygonAreaM2(r.vertices),
-    0
-  );
+  const plannedRoomsAreaM2 =
+    boundaryMode === 'auto'
+      ? autoFloors.reduce((sum, floor) => sum + floor.areaM2, 0)
+      : rooms.reduce((sum, r) => sum + calculateNetAreaM2(r.vertices, r.holes ?? []), 0);
 
   const roomTypeLabels: Record<RoomType, string> = {
     living: 'Гостиная',
@@ -45,25 +67,73 @@ export const Sidebar: React.FC = () => {
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
             <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">
-              1. Квартира (Внешний контур)
+              {boundaryMode === 'auto'
+                ? '1. Квартира (Расчётный контур)'
+                : '1. Квартира (Внешний контур)'}
             </span>
           </div>
-          {apartment && (
-            <button
-              onClick={() => {
-                if (confirm('Удалить контур квартиры и все комнаты?')) {
-                  setApartment(null);
-                }
-              }}
-              className="text-slate-500 hover:text-rose-400 p-1 rounded"
-              title="Удалить контур квартиры"
-            >
-              <Trash2 size={13} />
-            </button>
-          )}
+          {boundaryMode === 'auto'
+            ? rooms.length > 0 && (
+                <button
+                  onClick={() => {
+                    if (confirm('Удалить все комнаты, шахты, проёмы и перегородки?')) {
+                      deleteApartment();
+                    }
+                  }}
+                  className="text-slate-500 hover:text-rose-400 p-1 rounded"
+                  title="Удалить все комнаты"
+                >
+                  <Trash2 size={13} />
+                </button>
+              )
+            : apartment && (
+                <button
+                  onClick={() => {
+                    if (confirm('Удалить контур квартиры, комнаты, проёмы и перегородки?')) {
+                      deleteApartment();
+                    }
+                  }}
+                  className="text-slate-500 hover:text-rose-400 p-1 rounded"
+                  title="Удалить контур квартиры"
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
         </div>
 
-        {apartment ? (
+        {boundaryMode === 'auto' ? (
+          rooms.length > 0 ? (
+            <div className="bg-slate-900 p-3 rounded-xl border border-amber-500/30 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] text-slate-400">Чистовая площадь комнат:</div>
+                <div className="text-xl font-bold font-mono text-amber-400">
+                  {plannedRoomsAreaM2.toFixed(2)}{' '}
+                  <span className="text-xs font-normal text-slate-400">м²</span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Внешний контур: {apartmentAreaM2.toFixed(2)} м²
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Толщина стен: {settings.defaultWallThicknessMm} мм
+                  {shafts.length > 0 && ` • Шахт: ${shafts.length}`}
+                </div>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                <Home size={20} />
+              </div>
+            </div>
+          ) : (
+            <div className="bg-slate-900/60 border border-dashed border-slate-700 rounded-xl p-3 text-center">
+              <p className="text-xs text-slate-400 mb-2">Расчётный контур появится после первой комнаты</p>
+              <button
+                onClick={() => startRoomDrawing()}
+                className="w-full py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold transition"
+              >
+                + Начертить комнату
+              </button>
+            </div>
+          )
+        ) : apartment ? (
           <div className="bg-slate-900 p-3 rounded-xl border border-amber-500/30 flex items-center justify-between">
             <div>
               <div className="text-[11px] text-slate-400">Внутренняя площадь:</div>
@@ -89,6 +159,28 @@ export const Sidebar: React.FC = () => {
             </button>
           </div>
         )}
+
+        {boundaryMode === 'manual' && apartment && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-[10px] text-slate-400">
+              <span>Покрытие комнатами</span>
+              <span className={isCoverageValid ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                {coveragePercent.toFixed(1)}%
+              </span>
+            </div>
+            <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mt-1">
+              <div
+                className={`h-full transition-all ${isCoverageValid ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                style={{ width: `${coveragePercent}%` }}
+              />
+            </div>
+            {!isCoverageValid && (
+              <p className="text-[10px] text-amber-400/90 mt-1 leading-snug">
+                Есть незаполненные зоны — проверьте площади комнат.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 2. Подчиненный уровень иерархии: Комнаты внутри квартиры */}
@@ -98,16 +190,35 @@ export const Sidebar: React.FC = () => {
             <Layers size={14} />
             <span>2. Комнаты ({rooms.length})</span>
           </div>
-          {apartment && (
-            <span className="text-[11px] font-mono text-slate-400">
-              {plannedRoomsAreaM2.toFixed(1)} / {apartmentAreaM2.toFixed(1)} м²
-            </span>
-          )}
+          {boundaryMode === 'auto'
+            ? rooms.length > 0 && (
+                <span className="text-[11px] font-mono text-slate-400">
+                  {plannedRoomsAreaM2.toFixed(1)} м²
+                </span>
+              )
+            : apartment && (
+                <span className="text-[11px] font-mono text-slate-400">
+                  {plannedRoomsAreaM2.toFixed(1)} / {apartmentAreaM2.toFixed(1)} м²
+                </span>
+              )}
         </div>
 
         {rooms.length === 0 ? (
           <div className="text-center py-8 text-slate-500 text-xs leading-relaxed">
-            {apartment ? (
+            {boundaryMode === 'auto' ? (
+              <>
+                Комнат пока нет.
+                <br />
+                Начните с первой комнаты — стены и контур квартиры построятся автоматически.
+                <button
+                  onClick={() => startRoomDrawing()}
+                  className="mt-3 mx-auto flex items-center justify-center gap-2 py-1.5 px-3 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-xs font-semibold transition"
+                >
+                  <PenTool size={13} />
+                  Начертить комнату
+                </button>
+              </>
+            ) : apartment ? (
               <>
                 Внутри квартиры пока нет комнат.
                 <br />
@@ -119,7 +230,10 @@ export const Sidebar: React.FC = () => {
           </div>
         ) : (
           rooms.map((room) => {
-            const area = calculatePolygonAreaM2(room.vertices);
+            const area =
+              boundaryMode === 'auto'
+                ? autoFloorAreaByRoom.get(room.id) ?? 0
+                : calculateNetAreaM2(room.vertices, room.holes ?? []);
             const isSelected = room.id === selectedRoomId;
 
             return (

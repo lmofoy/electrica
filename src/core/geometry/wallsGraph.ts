@@ -1,8 +1,16 @@
 import polygonClipping, { type Polygon, type Ring } from 'polygon-clipping';
-import type { Point2D, Node2D, Wall, RoomZone, ApartmentBoundary } from '../../types';
-import { distance, computeOutwardWallPolygon } from './math';
+import type {
+  Point2D,
+  Node2D,
+  Wall,
+  RoomZone,
+  ApartmentBoundary,
+  Opening,
+  FreePartition,
+} from '../../types';
+import { distance, isPolygonClockwise, lineIntersection, calculatePolygonAreaM2 } from './math';
 
-function pointsToRing(points: Point2D[]): Ring {
+export function pointsToRing(points: Point2D[]): Ring {
   const ring: Ring = points.map((p) => [p.x, p.y]);
   if (
     ring.length > 0 &&
@@ -61,26 +69,26 @@ function isPointInPolygon(point: Point2D, polygon: Point2D[]): boolean {
 }
 
 /**
- * Разбивает длинные ребра комнат в местах Т-образных стыков и примыканий
- * смежных комнат, чтобы общие участки стен имели строго совпадающие вершины.
+ * Разбивает длинные ребра комнат и контура квартиры в местах Т-образных стыков,
+ * чтобы общие участки стен имели строго совпадающие вершины.
  */
 export function splitEdgesAtCollinearVertices(
   rooms: RoomZone[],
   apartment: ApartmentBoundary | null
-): RoomZone[] {
+): { refinedRooms: RoomZone[]; refinedApartment: ApartmentBoundary | null } {
   const allPoints: Point2D[] = [];
   if (apartment && apartment.vertices.length >= 3) {
     apartment.vertices.forEach((v) => allPoints.push(v));
   }
   rooms.forEach((r) => r.vertices.forEach((v) => allPoints.push(v)));
 
-  return rooms.map((room) => {
+  const splitVertices = (vertices: Point2D[]): Point2D[] => {
     const newVertices: Point2D[] = [];
-    const n = room.vertices.length;
+    const n = vertices.length;
 
     for (let i = 0; i < n; i++) {
-      const p1 = room.vertices[i];
-      const p2 = room.vertices[(i + 1) % n];
+      const p1 = vertices[i];
+      const p2 = vertices[(i + 1) % n];
       newVertices.push(p1);
 
       const onSegment: Point2D[] = [];
@@ -99,9 +107,19 @@ export function splitEdgesAtCollinearVertices(
         }
       }
     }
+    return newVertices;
+  };
 
-    return { ...room, vertices: newVertices };
-  });
+  const refinedRooms = rooms.map((room) => ({
+    ...room,
+    vertices: splitVertices(room.vertices),
+  }));
+
+  const refinedApartment = apartment
+    ? { ...apartment, vertices: splitVertices(apartment.vertices) }
+    : null;
+
+  return { refinedRooms, refinedApartment };
 }
 
 export type MonolithicWallPolygon = Point2D[][]; // [OuterRing, HoleRing1, HoleRing2, ...]
@@ -162,7 +180,7 @@ export function extractGraphFromPlan(
   }
 
   // Сначала разбиваем ребра на стыках
-  const refinedRooms = splitEdgesAtCollinearVertices(rooms, updatedApartment);
+  const { refinedRooms, refinedApartment: finalApartment } = splitEdgesAtCollinearVertices(rooms, updatedApartment);
 
   // 2. Комнаты
   const updatedRooms: RoomZone[] = [];
@@ -201,8 +219,8 @@ export function extractGraphFromPlan(
   const walls: Wall[] = [];
 
   // Наружные стены
-  if (updatedApartment) {
-    const nIds = updatedApartment.nodeIds;
+  if (finalApartment) {
+    const nIds = finalApartment.nodeIds;
     for (let i = 0; i < nIds.length; i++) {
       const a = nIds[i];
       const b = nIds[(i + 1) % nIds.length];
@@ -215,7 +233,7 @@ export function extractGraphFromPlan(
         id: `wall-ext-${i + 1}`,
         nodeAId: a,
         nodeBId: b,
-        thicknessMm: updatedApartment.exteriorWallThicknessMm,
+        thicknessMm: finalApartment.exteriorWallThicknessMm,
         isExterior: true,
         roomIds,
       });
@@ -241,8 +259,88 @@ export function extractGraphFromPlan(
     nodes,
     walls,
     updatedRooms,
-    updatedApartment,
+    updatedApartment: finalApartment,
   };
+}
+
+interface PerimeterEdge {
+  p1: Point2D;
+  p2: Point2D;
+  nx: number;
+  ny: number;
+}
+
+/**
+ * Полосы наружных стен без «удлинения» граней.
+ * Удлинение каждой грани на полную толщину давало диагональные «пики» в углах:
+ * конец полосы уходил внутрь комнаты, а внешняя точка оставалась на miter-стыке.
+ * Здесь полосы стыкуются точно, а выпуклые углы закрываются отдельным заполнителем.
+ */
+export function buildPerimeterWallStrips(vertices: Point2D[], thickness: number): Polygon[] {
+  const n = vertices.length;
+  if (n < 3) return [];
+
+  const isCW = isPolygonClockwise(vertices);
+  const edges: PerimeterEdge[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const p1 = vertices[i];
+    const p2 = vertices[(i + 1) % n];
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return [];
+
+    edges.push({
+      p1,
+      p2,
+      nx: isCW ? -dy / len : dy / len,
+      ny: isCW ? dx / len : -dx / len,
+    });
+  }
+
+  const strips: Polygon[] = [];
+
+  // 1. Прямоугольная полоса на каждую грань, без удлинения
+  for (const e of edges) {
+    const a1 = { x: e.p1.x + e.nx * thickness, y: e.p1.y + e.ny * thickness };
+    const a2 = { x: e.p2.x + e.nx * thickness, y: e.p2.y + e.ny * thickness };
+    strips.push([pointsToRing([e.p1, e.p2, a2, a1])]);
+  }
+
+  // 2. Заполнитель только для выпуклых (внешних) углов.
+  //    Во входящих углах полосы и так перекрываются, а miter-точка лежит
+  //    с неверной стороны и превращает угол в самопересекающийся «бант».
+  for (let i = 0; i < n; i++) {
+    const p = vertices[i];
+    const prev = edges[(i - 1 + n) % n];
+    const curr = edges[i];
+
+    const v1x = p.x - prev.p1.x;
+    const v1y = p.y - prev.p1.y;
+    const v2x = curr.p2.x - p.x;
+    const v2y = curr.p2.y - p.y;
+    const cross = v1x * v2y - v1y * v2x;
+    const isConvex = isCW ? cross < 0 : cross > 0;
+    if (!isConvex) continue;
+
+    const aPrev = { x: p.x + prev.nx * thickness, y: p.y + prev.ny * thickness };
+    const aCurr = { x: p.x + curr.nx * thickness, y: p.y + curr.ny * thickness };
+    const miter = lineIntersection(
+      { x: prev.p1.x + prev.nx * thickness, y: prev.p1.y + prev.ny * thickness },
+      { x: prev.p2.x + prev.nx * thickness, y: prev.p2.y + prev.ny * thickness },
+      { x: curr.p1.x + curr.nx * thickness, y: curr.p1.y + curr.ny * thickness },
+      { x: curr.p2.x + curr.nx * thickness, y: curr.p2.y + curr.ny * thickness }
+    );
+
+    if (miter && distance(p, miter) <= thickness * 3) {
+      strips.push([pointsToRing([p, aPrev, miter, aCurr])]);
+    } else {
+      strips.push([pointsToRing([p, aPrev, aCurr])]);
+    }
+  }
+
+  return strips;
 }
 
 /**
@@ -255,30 +353,57 @@ export function extractGraphFromPlan(
 export function buildMonolithicWallMesh(
   apartment: ApartmentBoundary | null,
   rooms: RoomZone[],
+  openings: Opening[],
+  freePartitions: FreePartition[],
   defaultWallThicknessMm: number,
   exteriorWallThicknessMm: number
 ): MonolithicWallPolygon[] {
   try {
     const wallStripsToUnion: Polygon[] = [];
 
-    // 1. Наружные стены квартиры (полосы вокруг периметра квартиры наружу)
+    // 1. Наружные стены квартиры (толщина наружу от чистового контура)
     if (apartment && apartment.vertices.length >= 3) {
       const extThickness = apartment.exteriorWallThicknessMm || exteriorWallThicknessMm;
-      const outerApt = computeOutwardWallPolygon(apartment.vertices, extThickness);
-      const n = apartment.vertices.length;
-
-      for (let i = 0; i < n; i++) {
-        const p1 = apartment.vertices[i];
-        const p2 = apartment.vertices[(i + 1) % n];
-        const o2 = outerApt[(i + 1) % n];
-        const o1 = outerApt[i];
-        wallStripsToUnion.push([pointsToRing([p1, p2, o2, o1])]);
-      }
+      wallStripsToUnion.push(...buildPerimeterWallStrips(apartment.vertices, extThickness));
     }
 
-    // 2. Межкомнатные стены и перегородки
+    // 2. Свободные перегородки
+    for (const part of freePartitions) {
+      const dx = part.p2.x - part.p1.x;
+      const dy = part.p2.y - part.p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 10) continue;
+
+      const nx = -dy / len;
+      const ny = dx / len;
+      const half = part.thicknessMm / 2;
+      const ux = dx / len;
+      const uy = dy / len;
+      // Небольшое продление концов закрывает зазоры в стыках со стенами
+      const endExtension = half;
+      const q1 = {
+        x: part.p1.x - ux * endExtension - nx * half,
+        y: part.p1.y - uy * endExtension - ny * half,
+      };
+      const q2 = {
+        x: part.p2.x + ux * endExtension - nx * half,
+        y: part.p2.y + uy * endExtension - ny * half,
+      };
+      const q3 = {
+        x: part.p2.x + ux * endExtension + nx * half,
+        y: part.p2.y + uy * endExtension + ny * half,
+      };
+      const q4 = {
+        x: part.p1.x - ux * endExtension + nx * half,
+        y: part.p1.y - uy * endExtension + ny * half,
+      };
+      wallStripsToUnion.push([pointsToRing([q1, q2, q3, q4])]);
+    }
+
+    // 3. Межкомнатные стены и перегородки
     // Сначала разбиваем ребра на стыках смежных комнат
-    const refinedRooms = splitEdgesAtCollinearVertices(rooms, apartment);
+    const { refinedRooms, refinedApartment: finalApartment } = splitEdgesAtCollinearVertices(rooms, apartment);
+    const currentApartment = finalApartment || apartment;
 
     // Собираем все уникальные внутренние ребра
     const interiorEdges = new Map<
@@ -295,7 +420,7 @@ export function buildMonolithicWallMesh(
         const p2 = room.vertices[(i + 1) % n];
 
         // Пропускаем ребра, идущие вдоль наружной стены квартиры
-        if (apartment && isSegmentOnBoundary(p1, p2, apartment.vertices)) {
+        if (currentApartment && isSegmentOnBoundary(p1, p2, currentApartment.vertices)) {
           continue;
         }
 
@@ -323,24 +448,30 @@ export function buildMonolithicWallMesh(
       const len = Math.hypot(dx, dy);
       if (len < 10) continue;
 
+      const ux = dx / len;
+      const uy = dy / len;
       const nx = -dy / len;
       const ny = dx / len;
       const T = defaultWallThicknessMm;
 
-      if (roomIds.length >= 2) {
+      // Продлеваем полосу за узел, иначе на углах остаются квадратные дыры
+      const isShared = roomIds.length >= 2;
+      const endExtension = isShared ? T / 2 : T;
+      const a: Point2D = { x: p1.x - ux * endExtension, y: p1.y - uy * endExtension };
+      const b: Point2D = { x: p2.x + ux * endExtension, y: p2.y + uy * endExtension };
+
+      if (isShared) {
         // Смежная перегородка между двумя комнатами: центрирована на ребре (+/- T/2)
-        // Ровно 120 мм, без задвоения!
         const half = T / 2;
         const quad: Point2D[] = [
-          { x: p1.x - nx * half, y: p1.y - ny * half },
-          { x: p2.x - nx * half, y: p2.y - ny * half },
-          { x: p2.x + nx * half, y: p2.y + ny * half },
-          { x: p1.x + nx * half, y: p1.y + ny * half },
+          { x: a.x - nx * half, y: a.y - ny * half },
+          { x: b.x - nx * half, y: b.y - ny * half },
+          { x: b.x + nx * half, y: b.y + ny * half },
+          { x: a.x + nx * half, y: a.y + ny * half },
         ];
         wallStripsToUnion.push([pointsToRing(quad)]);
       } else {
-        // Перегородка одной комнаты, выходящая в коридор / свободную область квартиры:
-        // Строим полосу толщиной T наружу от комнаты
+        // Перегородка одной комнаты, выходящая в коридор: строим полосу T наружу
         const ownerRoom = refinedRooms.find((r) => r.id === roomIds[0]);
         const mid: Point2D = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
         const testPt: Point2D = { x: mid.x + nx * 10, y: mid.y + ny * 10 };
@@ -348,10 +479,10 @@ export function buildMonolithicWallMesh(
 
         const sign = isIn ? -1 : 1;
         const quad: Point2D[] = [
-          { x: p1.x, y: p1.y },
-          { x: p2.x, y: p2.y },
-          { x: p2.x + nx * sign * T, y: p2.y + ny * sign * T },
-          { x: p1.x + nx * sign * T, y: p1.y + ny * sign * T },
+          { x: a.x, y: a.y },
+          { x: b.x, y: b.y },
+          { x: b.x + nx * sign * T, y: b.y + ny * sign * T },
+          { x: a.x + nx * sign * T, y: a.y + ny * sign * T },
         ];
         wallStripsToUnion.push([pointsToRing(quad)]);
       }
@@ -359,13 +490,40 @@ export function buildMonolithicWallMesh(
 
     if (wallStripsToUnion.length === 0) return [];
 
-    // 3. Выполняем БУЛЕВО СЛИЯНИЕ (Union) всех стен в единый монолит
-    const united = polygonClipping.union(
+    // 3. Выполняем БУЛЕВО СЛИЯНИЕ (Union) всех полос в единый черновой массив
+    const rawUnion = polygonClipping.union(
       wallStripsToUnion[0],
       ...wallStripsToUnion.slice(1)
     );
 
-    // Преобразуем MultiPolygon в типизированную структуру
+    // 4. ВЫЧИТАЕМ ПРОЕМЫ (Двери и Окна).
+    //    Полы комнат НЕ вычитаем: общая стена двух комнат лежит ровно на их
+    //    границе, и вычитание полов удаляло её целиком.
+    const openingPolygons: Polygon[] = [];
+    for (const op of openings) {
+      const dx = op.p2.x - op.p1.x;
+      const dy = op.p2.y - op.p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1) continue;
+
+      const nx = -dy / len;
+      const ny = dx / len;
+      // Проем задан точками на чистовой грани: у наружных стен ось смещена наружу,
+      // поэтому режем с запасом в обе стороны. Лишнее попадёт в пустоту, а стена
+      // будет прорезана на всю толщину. Раньше резали на 1000 мм и задевали соседей.
+      const halfDepth = op.wallThicknessMm + 50;
+
+      openingPolygons.push([pointsToRing([
+        { x: op.p1.x - nx * halfDepth, y: op.p1.y - ny * halfDepth },
+        { x: op.p2.x - nx * halfDepth, y: op.p2.y - ny * halfDepth },
+        { x: op.p2.x + nx * halfDepth, y: op.p2.y + ny * halfDepth },
+        { x: op.p1.x + nx * halfDepth, y: op.p1.y + ny * halfDepth },
+      ])]);
+    }
+
+    const united = polygonClipping.difference(rawUnion, ...openingPolygons);
+
+    // Преобразуем MultiPolygon в типизированную структуру...
     const finalMesh: MonolithicWallPolygon[] = [];
     for (const poly of united) {
       const polyRings: Point2D[][] = [];
@@ -383,5 +541,75 @@ export function buildMonolithicWallMesh(
   } catch (err) {
     console.error('Ошибка создания монолитного массива стен:', err);
     return [];
+  }
+}
+
+function sumPolygonArea(polygons: Polygon[]): number {
+  let area = 0;
+  for (const poly of polygons) {
+    poly.forEach((ring, index) => {
+      const ringArea = calculatePolygonAreaM2(ringToPoints(ring));
+      area += index === 0 ? ringArea : -ringArea;
+    });
+  }
+  return Math.max(0, area);
+}
+
+/**
+ * Площадь квартиры, закрытая комнатами или стенами.
+ * Стены считаются «заполнением»: иначе при полностью расставленных комнатах
+ * процент покрытия занижается на площадь перегородок.
+ */
+export function calculateCoveredAreaM2(
+  apartment: ApartmentBoundary | null,
+  rooms: RoomZone[],
+  openings: Opening[],
+  freePartitions: FreePartition[],
+  defaultWallThicknessMm: number,
+  exteriorWallThicknessMm: number
+): number {
+  if (!apartment || apartment.vertices.length < 3) return 0;
+
+  try {
+    const apartmentPoly: Polygon = [
+      pointsToRing(apartment.vertices),
+      ...(apartment.holes ?? []).map((hole) => pointsToRing(hole)),
+    ];
+
+    const clippedParts: Polygon[] = [];
+    const clipToApartment = (part: Polygon) => {
+      try {
+        clippedParts.push(...polygonClipping.intersection(apartmentPoly, part));
+      } catch {
+        // Вырожденный/касательный контур (например, наружная стена вне квартиры)
+      }
+    };
+
+    for (const room of rooms) {
+      if (room.vertices.length < 3) continue;
+      clipToApartment([
+        pointsToRing(room.vertices),
+        ...(room.holes ?? []).map((hole) => pointsToRing(hole)),
+      ]);
+    }
+
+    for (const meshPoly of buildMonolithicWallMesh(
+      apartment,
+      rooms,
+      openings,
+      freePartitions,
+      defaultWallThicknessMm,
+      exteriorWallThicknessMm
+    )) {
+      clipToApartment(meshPoly.map((ring) => pointsToRing(ring)) as Polygon);
+    }
+
+    if (clippedParts.length === 0) return 0;
+
+    const united = polygonClipping.union(clippedParts[0], ...clippedParts.slice(1));
+    return sumPolygonArea(united);
+  } catch (err) {
+    console.error('Ошибка расчёта покрытия площади:', err);
+    return 0;
   }
 }

@@ -8,7 +8,8 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
-  const { settings, setSettings } = useProjectStore();
+  const { settings, setSettings, boundaryMode, rooms } = useProjectStore();
+  const thicknessLocked = boundaryMode === 'auto' && rooms.length > 0;
 
   if (!isOpen) return null;
 
@@ -32,19 +33,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           {/* Толщина стен */}
           <div>
             <label className="block text-slate-300 font-medium mb-1">
-              Базовая толщина межкомнатных перегородок (мм):
+              {boundaryMode === 'auto'
+                ? 'Толщина всех стен квартиры (мм):'
+                : 'Базовая толщина межкомнатных перегородок (мм):'}
             </label>
-            <div className="grid grid-cols-3 gap-2 mb-2">
-              {[80, 100, 120].map((val) => (
+            <div className="grid grid-cols-4 gap-2 mb-2">
+              {(boundaryMode === 'auto' ? [100, 120, 150, 200] : [80, 100, 120]).map((val) => (
                 <button
                   key={val}
                   type="button"
+                  disabled={thicknessLocked}
                   onClick={() => setSettings({ defaultWallThicknessMm: val })}
                   className={`py-1.5 rounded-lg border font-mono font-medium transition ${
                     settings.defaultWallThicknessMm === val
                       ? 'bg-sky-500 border-sky-400 text-white shadow'
                       : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                  }`}
+                  } ${thicknessLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   {val} мм
                 </button>
@@ -53,11 +57,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <input
               type="number"
               value={settings.defaultWallThicknessMm}
+              disabled={thicknessLocked}
               onChange={(e) => setSettings({ defaultWallThicknessMm: Number(e.target.value) || 120 })}
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-sky-500"
+              className={`w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-sky-500 ${
+                thicknessLocked ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
             />
-            <p className="text-[10px] text-slate-500 mt-1">
-              Стены рисуются наружу контура чистовой площади.
+            <p className={`text-[10px] mt-1 ${thicknessLocked ? 'text-amber-400/90' : 'text-slate-500'}`}>
+              {boundaryMode === 'auto'
+                ? thicknessLocked
+                  ? 'Толщина зафиксирована после первой комнаты: полы уже построены с этим зазором.'
+                  : 'Задаётся один раз до первой комнаты. Стены рисуются наружу от чистового пола.'
+                : 'Стены рисуются наружу контура чистовой площади.'}
             </p>
           </div>
 

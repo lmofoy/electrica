@@ -11,6 +11,8 @@ interface DraftingLayerProps {
   zoom: number;
   isApartmentTool: boolean;
   isShaftTool: boolean;
+  isOpeningTool: boolean;
+  isPartitionTool: boolean;
 }
 
 export const DraftingLayer: React.FC<DraftingLayerProps> = ({
@@ -21,6 +23,8 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   zoom,
   isApartmentTool,
   isShaftTool,
+  isOpeningTool,
+  isPartitionTool,
 }) => {
   // Визуализация маркера магнитной привязки
   const renderSnapIndicator = () => {
@@ -28,6 +32,8 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
 
     const snapPoint = activeSnap.point;
     const snapType = activeSnap.snapType;
+    const segmentStart =
+      draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
 
     return (
       <Group x={snapPoint.x} y={snapPoint.y}>
@@ -98,6 +104,20 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
           shadowColor="#000"
           shadowBlur={6 / zoom}
         />
+
+        {/* Длина текущего отрезка от последней точки до привязки */}
+        {segmentStart && (
+          <Text
+            text={`${Math.round(distance(segmentStart, snapPoint)).toLocaleString('ru-RU')} мм`}
+            fontSize={10 / zoom}
+            fontFamily="monospace"
+            fill="#e2e8f0"
+            x={14 / zoom}
+            y={9 / zoom}
+            shadowColor="#000"
+            shadowBlur={6 / zoom}
+          />
+        )}
       </Group>
     );
   };
@@ -203,6 +223,8 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   let colorPrimary = '#38bdf8'; // Комнаты - голубой
   if (isApartmentTool) colorPrimary = '#fbbf24'; // Квартира - золотистый
   if (isShaftTool) colorPrimary = '#ef4444'; // Шахта - красный
+  if (isOpeningTool) colorPrimary = '#a855f7'; // Проем - фиолетовый
+  if (isPartitionTool) colorPrimary = '#94a3b8'; // Перегородка - серый
 
   return (
     <Layer listening={false}>

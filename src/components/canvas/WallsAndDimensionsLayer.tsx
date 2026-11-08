@@ -1,14 +1,27 @@
 import React, { useMemo } from 'react';
-import { Layer, Shape, Line, Text, Group } from 'react-konva';
-import type { ApartmentBoundary, RoomZone, Point2D } from '../../types';
-import { distance, angleDeg } from '../../core/geometry/math';
+import { Layer, Shape, Line, Text, Group, Rect } from 'react-konva';
+import type {
+  ApartmentBoundary,
+  BoundaryMode,
+  RoomZone,
+  Point2D,
+  Opening,
+  FreePartition,
+  ProjectSettings,
+} from '../../types';
+import type { AutoLayout } from '../../core/geometry/autoLayout';
+import { distance, angleDeg, isPointInPolygon } from '../../core/geometry/math';
 import { buildMonolithicWallMesh } from '../../core/geometry/wallsGraph';
 
 interface WallsAndDimensionsLayerProps {
   apartment: ApartmentBoundary | null;
   rooms: RoomZone[];
-  defaultWallThicknessMm: number;
+  openings: Opening[];
+  freePartitions: FreePartition[];
+  settings: ProjectSettings;
   zoom: number;
+  boundaryMode: BoundaryMode;
+  autoLayout: AutoLayout | null;
 }
 
 /**
@@ -46,19 +59,50 @@ function createHatchImage(strokeColor = '#64748b', bgColor = '#334155', size = 6
 export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = ({
   apartment,
   rooms,
-  defaultWallThicknessMm,
+  openings,
+  freePartitions,
+  settings,
   zoom,
+  boundaryMode,
+  autoLayout,
 }) => {
   // Архитектурная штриховка
   const hatchPattern = useMemo(() => {
     return createHatchImage('#64748b', '#334155', 60);
   }, []);
 
-  // Генерация единого монолитного массива стен (Boolean Union + вычитание комнат)
+  // Генерация единого монолитного массива стен (Boolean Union + вычитание комнат + вычитание проемов)
   const monolithicWallPolys = useMemo(() => {
+    if (boundaryMode === 'auto') {
+      return autoLayout?.wallMesh ?? [];
+    }
     const extThickness = apartment?.exteriorWallThicknessMm || 250;
-    return buildMonolithicWallMesh(apartment, rooms, defaultWallThicknessMm, extThickness);
-  }, [apartment, rooms, defaultWallThicknessMm]);
+    return buildMonolithicWallMesh(
+      apartment,
+      rooms,
+      openings,
+      freePartitions,
+      settings.defaultWallThicknessMm,
+      extThickness
+    );
+  }, [
+    boundaryMode,
+    autoLayout,
+    apartment,
+    rooms,
+    openings,
+    freePartitions,
+    settings.defaultWallThicknessMm,
+  ]);
+
+  const floorByRoom = useMemo(() => {
+    const map = new Map<string, Point2D[][]>();
+    if (boundaryMode !== 'auto' || !autoLayout) return map;
+    for (const floor of autoLayout.floors) {
+      map.set(floor.roomId, floor.rings);
+    }
+    return map;
+  }, [boundaryMode, autoLayout]);
 
   // Отрисовка размерных цепочек
   const renderDimensionChain = (
@@ -191,17 +235,26 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
       ))}
 
       {/* 2. Чистовые внутренние кромки комнат */}
-      {rooms.map((room) => (
-        <Group key={`room-clean-edges-${room.id}`}>
-          <Line
-            points={room.vertices.flatMap((v) => [v.x, v.y])}
-            closed
-            stroke="#94a3b8"
-            strokeWidth={1.5 / zoom}
-          />
-          {renderDimensionChain(room.vertices, room.id, '#38bdf8', 190)}
-        </Group>
-      ))}
+      {rooms.map((room) => {
+        const floorRings =
+          boundaryMode === 'auto' ? floorByRoom.get(room.id) ?? [] : [room.vertices];
+
+        return (
+          <Group key={`room-clean-edges-${room.id}`}>
+            {floorRings.map((ring, index) => (
+              <Line
+                key={`room-clean-edge-${room.id}-${index}`}
+                points={ring.flatMap((v) => [v.x, v.y])}
+                closed
+                stroke="#94a3b8"
+                strokeWidth={1.5 / zoom}
+              />
+            ))}
+            {settings.showDimensions &&
+              renderDimensionChain(room.vertices, room.id, '#38bdf8', 190)}
+          </Group>
+        );
+      })}
 
       {/* 3. Чистовой контур квартиры и внешние габаритные размеры */}
       {apartment && apartment.vertices.length >= 3 && (
@@ -212,7 +265,7 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
             stroke="#e2e8f0"
             strokeWidth={2.5 / zoom}
           />
-          {renderDimensionChain(
+          {settings.showDimensions && renderDimensionChain(
             apartment.vertices,
             'apt-ext',
             '#fbbf24',
@@ -220,6 +273,66 @@ export const WallsAndDimensionsLayer: React.FC<WallsAndDimensionsLayerProps> = (
           )}
         </Group>
       )}
+
+      {/* 4. Символы проемов (Двери и Окна) */}
+      {openings.map((op) => {
+        const angle = angleDeg(op.p1, op.p2);
+        const mid = { x: (op.p1.x + op.p2.x) / 2, y: (op.p1.y + op.p2.y) / 2 };
+        const len = distance(op.p1, op.p2) || 1;
+        const nx = -(op.p2.y - op.p1.y) / len;
+        const ny = (op.p2.x - op.p1.x) / len;
+        const probe = 200;
+        const positiveInside = rooms.some((r) =>
+          isPointInPolygon({ x: mid.x + nx * probe, y: mid.y + ny * probe }, r.vertices)
+        );
+        const negativeInside = rooms.some((r) =>
+          isPointInPolygon({ x: mid.x - nx * probe, y: mid.y - ny * probe }, r.vertices)
+        );
+        // Полотно двери должно открываться в сторону комнаты, а не наружу
+        const swingSign = positiveInside && !negativeInside ? -1 : 1;
+
+        return (
+          <Group key={op.id} x={op.p1.x} y={op.p1.y} rotation={angle}>
+            {op.type === 'door' ? (
+              // Символ двери (четверть круга)
+              <>
+                <Line
+                  points={[0, 0, op.widthMm, 0]}
+                  stroke="#94a3b8"
+                  strokeWidth={1 / zoom}
+                  dash={[5 / zoom, 5 / zoom]}
+                />
+                <Group scaleY={swingSign}>
+                  <Shape
+                    sceneFunc={(ctx, shape) => {
+                      ctx.beginPath();
+                      ctx.moveTo(0, 0);
+                      ctx.lineTo(0, -op.widthMm);
+                      ctx.arc(0, 0, op.widthMm, -Math.PI / 2, 0);
+                      ctx.closePath();
+                      ctx.fillStrokeShape(shape);
+                    }}
+                    stroke="#cbd5e1"
+                    strokeWidth={1.5 / zoom}
+                    fill="#cbd5e122"
+                  />
+                </Group>
+              </>
+            ) : (
+              // Символ окна (параллельные линии)
+              <Rect
+                x={0}
+                y={-op.wallThicknessMm / 2}
+                width={op.widthMm}
+                height={op.wallThicknessMm}
+                stroke="#cbd5e1"
+                strokeWidth={1.5 / zoom}
+                fill="#38bdf822"
+              />
+            )}
+          </Group>
+        );
+      })}
     </Layer>
   );
 };

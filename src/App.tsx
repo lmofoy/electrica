@@ -3,12 +3,14 @@ import { Toolbar } from './components/toolbar/Toolbar';
 import { CADCanvas } from './components/canvas/CADCanvas';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsModal } from './components/sidebar/SettingsModal';
+import { ToastProvider } from './components/ToastProvider';
 
 export const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   return (
     <div className="flex flex-col w-screen h-screen overflow-hidden bg-slate-950 font-sans">
+      <ToastProvider />
       {/* Верхняя инженерная панель */}
       <Toolbar onOpenSettings={() => setIsSettingsOpen(true)} />
 

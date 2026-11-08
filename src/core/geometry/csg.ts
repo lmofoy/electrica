@@ -1,6 +1,6 @@
 import polygonClipping, { type Polygon, type Ring } from 'polygon-clipping';
 import type { Point2D, RoomZone, ApartmentBoundary } from '../../types';
-import { computeOutwardWallPolygon } from './math';
+import { calculatePolygonAreaM2, computeOutwardWallPolygon, distance, pointToSegmentDistance } from './math';
 
 function pointsToRing(points: Point2D[]): Ring {
   const ring: Ring = points.map((p) => [p.x, p.y]);
@@ -39,70 +39,215 @@ export function isPointInPolygon(point: Point2D, polygon: Point2D[]): boolean {
   return inside;
 }
 
+export interface ClippedRoom {
+  vertices: Point2D[];
+  holes: Point2D[][];
+}
+
 export function clipRoomToApartment(
   roomVertices: Point2D[],
-  apartmentVertices: Point2D[]
-): Point2D[][] {
+  apartmentVertices: Point2D[],
+  apartmentHoles: Point2D[][] = []
+): ClippedRoom[] {
   try {
     const polyRoom: Polygon = [pointsToRing(roomVertices)];
-    const polyApt: Polygon = [pointsToRing(apartmentVertices)];
+    const polyApt: Polygon = [
+      pointsToRing(apartmentVertices),
+      ...apartmentHoles.map((hole) => pointsToRing(hole)),
+    ];
     const result = polygonClipping.intersection(polyRoom, polyApt);
 
-    const resultingPolygons: Point2D[][] = [];
-    for (const multiPoly of result) {
-      if (multiPoly.length > 0) {
-        resultingPolygons.push(ringToPoints(multiPoly[0]));
-      }
-    }
-    return resultingPolygons;
+    return result
+      .filter((multiPoly) => multiPoly.length > 0)
+      .map((multiPoly) => ({
+        vertices: ringToPoints(multiPoly[0]),
+        holes: multiPoly.slice(1).map((hole) => ringToPoints(hole)),
+      }));
   } catch (err) {
     console.error('Ошибка ограничения комнаты квартирой:', err);
-    return [roomVertices];
+    return [{ vertices: roomVertices, holes: [] }];
   }
 }
 
-export function resolveRoomOverlaps(
-  existingRooms: RoomZone[],
-  newRoomVertices: Point2D[]
-): RoomZone[] {
-  const polyNew: Polygon = [pointsToRing(newRoomVertices)];
-  const updatedRooms: RoomZone[] = [];
+export function calculateRoomsOverlapAreaM2(
+  roomAVertices: Point2D[],
+  roomAHoles: Point2D[][],
+  roomBVertices: Point2D[],
+  roomBHoles: Point2D[][]
+): number {
+  try {
+    const polyA: Polygon = [
+      pointsToRing(roomAVertices),
+      ...roomAHoles.map((hole) => pointsToRing(hole)),
+    ];
+    const polyB: Polygon = [
+      pointsToRing(roomBVertices),
+      ...roomBHoles.map((hole) => pointsToRing(hole)),
+    ];
+    const result = polygonClipping.intersection(polyA, polyB);
 
-  for (const room of existingRooms) {
-    try {
-      const polyOld: Polygon = [pointsToRing(room.vertices)];
-      const diffResult = polygonClipping.difference(polyOld, polyNew);
+    let area = 0;
+    for (const multiPoly of result) {
+      multiPoly.forEach((ring, index) => {
+        const ringArea = calculatePolygonAreaM2(ringToPoints(ring));
+        area += index === 0 ? ringArea : -ringArea;
+      });
+    }
+    return Math.max(0, area);
+  } catch (err) {
+    console.error('Ошибка проверки пересечения комнат:', err);
+    return 0;
+  }
+}
 
-      if (diffResult.length === 0) {
-        continue;
-      }
+export interface RoomPart {
+  vertices: Point2D[];
+  holes: Point2D[][];
+}
 
-      const mainPoly = ringToPoints(diffResult[0][0]);
-      if (mainPoly.length >= 3) {
-        updatedRooms.push({
-          ...room,
-          vertices: mainPoly,
-        });
-      }
+interface LineCrossing {
+  point: Point2D;
+  edgeIndex: number;
+  lineT: number;
+}
 
-      for (let i = 1; i < diffResult.length; i++) {
-        const subPoly = ringToPoints(diffResult[i][0]);
-        if (subPoly.length >= 3) {
-          updatedRooms.push({
-            ...room,
-            id: `room-${Date.now()}-${i}`,
-            name: `${room.name} (часть ${i + 1})`,
-            vertices: subPoly,
-          });
-        }
-      }
-    } catch (err) {
-      console.error('Ошибка вычитания пересечения комнат:', err);
-      updatedRooms.push(room);
+const PARTITION_END_TOLERANCE_MM = 150;
+const MIN_ROOM_PART_AREA_M2 = 0.01;
+
+function distanceToOutline(point: Point2D, vertices: Point2D[]): number {
+  let min = Infinity;
+  for (let i = 0; i < vertices.length; i++) {
+    const d = pointToSegmentDistance(point, vertices[i], vertices[(i + 1) % vertices.length]);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+function dedupePoints(points: Point2D[]): Point2D[] {
+  return points.filter((point, index) => index === 0 || distance(point, points[index - 1]) > 0.01);
+}
+
+/**
+ * Разрезает комнату по линии перегородки на две части.
+ * Возвращает null, если перегородка не доходит до стен или линия не делит комнату.
+ */
+export function splitRoomByPartition(
+  room: RoomZone,
+  p1: Point2D,
+  p2: Point2D
+): RoomPart[] | null {
+  const vertices = room.vertices;
+  const n = vertices.length;
+  if (n < 3) return null;
+
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 50) return null;
+
+  // Перегородка должна упираться в стены комнаты: иначе это простенок, а не разделение
+  if (
+    distanceToOutline(p1, vertices) > PARTITION_END_TOLERANCE_MM ||
+    distanceToOutline(p2, vertices) > PARTITION_END_TOLERANCE_MM
+  ) {
+    return null;
+  }
+
+  const ux = dx / length;
+  const uy = dy / length;
+  const crossings: LineCrossing[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const a = vertices[i];
+    const b = vertices[(i + 1) % n];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const denom = ux * ey - uy * ex;
+    if (Math.abs(denom) < 1e-9) continue;
+
+    const ax = p1.x - a.x;
+    const ay = p1.y - a.y;
+    const edgeT = (ux * ay - uy * ax) / denom;
+    if (edgeT < -1e-6 || edgeT > 1 + 1e-6) continue;
+
+    const t = Math.min(1, Math.max(0, edgeT));
+    const point = {
+      x: Math.round(a.x + t * ex),
+      y: Math.round(a.y + t * ey),
+    };
+
+    if (!crossings.some((c) => distance(c.point, point) <= 1)) {
+      crossings.push({
+        point,
+        edgeIndex: i,
+        lineT: (point.x - p1.x) * ux + (point.y - p1.y) * uy,
+      });
     }
   }
 
-  return updatedRooms;
+  if (crossings.length !== 2) return null;
+  crossings.sort((a, b) => a.lineT - b.lineT);
+  const [first, second] = crossings;
+  if (first.edgeIndex === second.edgeIndex) return null;
+
+  const cutMidpoint = {
+    x: (first.point.x + second.point.x) / 2,
+    y: (first.point.y + second.point.y) / 2,
+  };
+  if (!isPointInPolygon(cutMidpoint, vertices)) return null;
+
+  const collectBoundary = (from: LineCrossing, to: LineCrossing): Point2D[] => {
+    const result: Point2D[] = [{ ...from.point }];
+    let i = (from.edgeIndex + 1) % n;
+    for (let step = 0; step < n; step++) {
+      result.push({ ...vertices[i] });
+      if (i === to.edgeIndex) break;
+      i = (i + 1) % n;
+    }
+    result.push({ ...to.point });
+    return dedupePoints(result);
+  };
+
+  const partA = collectBoundary(first, second);
+  const partB = collectBoundary(second, first);
+
+  if (
+    calculatePolygonAreaM2(partA) < MIN_ROOM_PART_AREA_M2 ||
+    calculatePolygonAreaM2(partB) < MIN_ROOM_PART_AREA_M2
+  ) {
+    return null;
+  }
+
+  const sideOf = (point: Point2D) => (point.x - p1.x) * -uy + (point.y - p1.y) * ux;
+  const sideOfPart = (part: Point2D[]): number => {
+    for (const vertex of part) {
+      const side = sideOf(vertex);
+      if (Math.abs(side) > 1) return Math.sign(side);
+    }
+    return 0;
+  };
+
+  const parts: RoomPart[] = [
+    { vertices: partA, holes: [] },
+    { vertices: partB, holes: [] },
+  ];
+  const partSides = [sideOfPart(partA), sideOfPart(partB)];
+
+  for (const hole of room.holes ?? []) {
+    const holeSides = hole.map(sideOf);
+    const hasPositive = holeSides.some((side) => side > 1);
+    const hasNegative = holeSides.some((side) => side < -1);
+    // Вырез, который пересекает линию разреза, корректно распределить нельзя
+    if (hasPositive && hasNegative) return null;
+
+    const holeSide = holeSides.find((side) => Math.abs(side) > 1);
+    if (holeSide === undefined) continue;
+    const sign = Math.sign(holeSide);
+    const targetIndex = partSides[0] === sign ? 0 : partSides[1] === sign ? 1 : -1;
+    if (targetIndex >= 0) parts[targetIndex].holes.push(hole);
+  }
+
+  return parts;
 }
 
 export function subtractShaftFromRoom(
@@ -124,6 +269,95 @@ export function subtractShaftFromRoom(
   } catch (err) {
     console.error('Ошибка вычитания шахты:', err);
     return [roomVertices];
+  }
+}
+
+export interface BoundaryResult {
+  vertices: Point2D[];
+  holes: Point2D[][];
+  success: boolean;
+  error?: string;
+}
+
+export function unionApartmentBoundary(
+  existingVertices: Point2D[],
+  existingHoles: Point2D[][],
+  newVertices: Point2D[]
+): BoundaryResult {
+  try {
+    const poly1: Polygon = [
+      pointsToRing(existingVertices),
+      ...existingHoles.map((hole) => pointsToRing(hole)),
+    ];
+    const poly2: Polygon = [pointsToRing(newVertices)];
+
+    // Касание ребром — валидный случай: intersection пустой, а union корректен.
+    const result = polygonClipping.union(poly1, poly2);
+    if (result.length !== 1 || result[0].length === 0) {
+      return {
+        vertices: existingVertices,
+        holes: existingHoles,
+        success: false,
+        error: 'Области не примыкают друг к другу. Новый контур должен касаться или пересекать существующий.',
+      };
+    }
+
+    const [outer, ...holes] = result[0];
+    return {
+      vertices: ringToPoints(outer),
+      holes: holes.map((hole) => ringToPoints(hole)),
+      success: true,
+    };
+  } catch (err) {
+    console.error('Ошибка объединения контура квартиры:', err);
+    return { vertices: existingVertices, holes: existingHoles, success: false, error: 'Критическая ошибка геометрии.' };
+  }
+}
+
+export function differenceApartmentBoundary(
+  existingVertices: Point2D[],
+  existingHoles: Point2D[][],
+  cutoutVertices: Point2D[]
+): BoundaryResult {
+  try {
+    const poly1: Polygon = [
+      pointsToRing(existingVertices),
+      ...existingHoles.map((hole) => pointsToRing(hole)),
+    ];
+    const poly2: Polygon = [pointsToRing(cutoutVertices)];
+
+    const intersection = polygonClipping.intersection(poly1, poly2);
+    if (intersection.length === 0) {
+      return {
+        vertices: existingVertices,
+        holes: existingHoles,
+        success: false,
+        error: 'Шахта должна находиться внутри контура квартиры.',
+      };
+    }
+
+    const result = polygonClipping.difference(poly1, poly2);
+    if (result.length === 0) {
+      return { vertices: existingVertices, holes: existingHoles, success: false, error: 'Вычитание удалило весь контур.' };
+    }
+    if (result.length > 1) {
+      return {
+        vertices: existingVertices,
+        holes: existingHoles,
+        success: false,
+        error: 'Область разрезает квартиру на части. Уменьшите вырез или прижмите его к краю.',
+      };
+    }
+
+    const [outer, ...holes] = result[0];
+    return {
+      vertices: ringToPoints(outer),
+      holes: holes.map((hole) => ringToPoints(hole)),
+      success: true,
+    };
+  } catch (err) {
+    console.error('Ошибка вычитания контура квартиры:', err);
+    return { vertices: existingVertices, holes: existingHoles, success: false, error: 'Критическая ошибка геометрии.' };
   }
 }
 

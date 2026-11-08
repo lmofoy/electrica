@@ -19,6 +19,7 @@ export interface Wall {
   thicknessMm: number;
   isExterior: boolean;
   roomIds: string[]; // к каким комнатам примыкает (2 комнаты = общая стена!)
+  ownerRoomId?: string; // комната-владелец грани (для авто-режима)
 }
 
 export type RoomType =
@@ -38,6 +39,7 @@ export interface ApartmentBoundary {
   name: string;
   nodeIds: string[]; // замкнутая цепочка узлов
   vertices: Point2D[]; // внутренние чистовые границы квартиры в мм
+  holes: Point2D[][]; // внутренние вырезы (шахты, колонны)
   exteriorWallThicknessMm: number; // толщина наружных стен (250 мм)
 }
 
@@ -48,6 +50,7 @@ export interface RoomZone {
   type: RoomType;
   nodeIds: string[]; // замкнутый контур узлов: [node1, node2, node3, ...]
   vertices: Point2D[]; // координаты вершин чистового пола в мм
+  holes?: Point2D[][]; // вырезы внутри комнаты (шахты, колонны)
   color: string;
   wallThicknessMm: number; // базовая толщина стен
 }
@@ -64,6 +67,7 @@ export interface ProjectSettings {
   floorLevelMm: number; // 0 мм
   cableMarginPercent: number; // настраиваемый запас кабеля (+15%)
   defaultRouting: 'ceiling' | 'floor'; // прокладка по потолку или по полу
+  showDimensions: boolean; // Видимость размеров
 }
 
 export type CADTool =
@@ -71,7 +75,55 @@ export type CADTool =
   | 'pan'
   | 'draw_apartment' // очерчивание контура квартиры
   | 'draw_room'      // очерчивание комнат внутри квартиры
-  | 'draw_shaft';    // вырезание шахт и колонн
+  | 'draw_shaft'     // вырезание шахт и колонн
+  | 'draw_opening'   // установка дверей и окон
+  | 'draw_partition'; // рисование одиночных перегородок
+
+export type OpeningType = 'door' | 'window';
+
+export interface Opening {
+  id: string;
+  type: OpeningType;
+  wallId: string;
+  p1: Point2D; // Начало проема на осевой линии стены
+  p2: Point2D; // Конец проема
+  widthMm: number;
+  heightMm: number;
+  elevationMm: number; // Высота от пола (0 для дверей, ~900 для окон)
+  wallThicknessMm: number; // Толщина стены, в которой вырезан проем
+}
+
+export interface FreePartition {
+  id: string;
+  p1: Point2D;
+  p2: Point2D;
+  thicknessMm: number;
+  roomId: string; // В какой комнате находится
+}
+
+export type DrawingStage = 'boundary' | 'rooms';
+export type BoundaryTool = 'add' | 'subtract';
+export type BoundaryMode = 'auto' | 'manual';
+
+export interface ProjectSnapshot {
+  version: 1;
+  savedAt: string;
+  boundaryMode?: BoundaryMode; // отсутствует в старых проектах — тогда режим определяется по apartment
+  settings: ProjectSettings;
+  apartment: ApartmentBoundary | null;
+  rooms: RoomZone[];
+  nodes: Record<string, Node2D>;
+  walls: Wall[];
+  openings: Opening[];
+  freePartitions: FreePartition[];
+  shafts: ShaftCutout[];
+}
+
+export interface ToastMessage {
+  id: string;
+  message: string;
+  type: 'error' | 'info' | 'success';
+}
 
 export interface DynamicInputState {
   isOpen: boolean;

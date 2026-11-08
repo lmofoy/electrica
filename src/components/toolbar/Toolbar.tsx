@@ -1,10 +1,8 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import {
   MousePointer,
   Hand,
   PenTool,
-  Scissors,
-  Home,
   Undo2,
   Redo2,
   ZoomIn,
@@ -12,8 +10,23 @@ import {
   Maximize2,
   Trash2,
   Settings,
+  Plus,
+  Minus,
+  Check,
+  Lock,
+  Eye,
+  EyeOff,
+  DoorOpen,
+  Square,
+  Split,
+  Save,
+  Upload,
 } from 'lucide-react';
-import { useProjectStore } from '../../store/useProjectStore';
+import {
+  getProjectSnapshot,
+  isProjectSnapshot,
+  useProjectStore,
+} from '../../store/useProjectStore';
 import type { RoomType } from '../../types';
 
 interface ToolbarProps {
@@ -25,15 +38,29 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
     apartment,
     activeTool,
     activeRoomType,
+    activeOpeningType,
     zoom,
     setActiveTool,
     setActiveRoomType,
+    setActiveOpeningType,
     setZoom,
     setStagePos,
     resetProject,
     startApartmentDrawing,
     startRoomDrawing,
+    drawingStage,
+    boundaryMode,
+    boundaryLocked,
+    activeBoundaryTool,
+    setBoundaryTool,
+    setDrawingStage,
+    lockBoundary,
+    addToast,
+    settings,
+    toggleDimensions,
   } = useProjectStore();
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUndo = () => {
     (useProjectStore.temporal.getState() as any).undo?.();
@@ -41,6 +68,36 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
 
   const handleRedo = () => {
     (useProjectStore.temporal.getState() as any).redo?.();
+  };
+
+  const handleExport = () => {
+    const snapshot = getProjectSnapshot();
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `electrica-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    addToast('Проект сохранён в файл.', 'success');
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      if (!isProjectSnapshot(parsed)) {
+        addToast('Файл не похож на проект Electrica.', 'error');
+        return;
+      }
+      useProjectStore.getState().loadProject(parsed);
+      addToast('Проект загружен из файла.', 'success');
+    } catch {
+      addToast('Не удалось прочитать JSON-файл.', 'error');
+    }
   };
 
   const handleCenterView = () => {
@@ -68,8 +125,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         </div>
         <div>
           <h1 className="font-bold text-sm tracking-wide text-white leading-tight">ELECTRICA</h1>
-          <p className="text-[10px] text-slate-400 font-mono">
-            {apartment ? 'Рабочая область: Квартира' : 'Создание контура квартиры'}
+          <p className="text-[10px] text-slate-400 font-mono uppercase tracking-tighter">
+            {boundaryMode === 'auto'
+              ? 'Комнаты • стены автоматически'
+              : drawingStage === 'boundary'
+                ? boundaryLocked
+                  ? 'Контур заблокирован'
+                  : 'Этап 1: Контур квартиры'
+                : 'Этап 2: Разметка комнат'}
           </p>
         </div>
       </div>
@@ -96,7 +159,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
               ? 'bg-sky-500 text-white shadow'
               : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
-          title="Панорама / Рука (H) или клик на колесико мыши"
+          title="Панорама / Рука (H)"
         >
           <Hand size={14} />
           <span>Рука</span>
@@ -104,65 +167,181 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
 
         <div className="w-px h-5 bg-slate-800 mx-1" />
 
-        {/* Инструмент: Контур квартиры */}
-        <button
-          onClick={startApartmentDrawing}
-          className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
-            activeTool === 'draw_apartment'
-              ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-950/40'
-              : 'text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
-          }`}
-          title="Очертить внешний габарит помещения"
-        >
-          <Home size={14} />
-          <span>Контур квартиры</span>
-        </button>
+        {/* АВТО-РЕЖИМ: комнаты как источник истины */}
+        {boundaryMode === 'auto' && (
+          <>
+            <button
+              onClick={() => startRoomDrawing()}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_room'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                  : 'text-sky-400 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title="Нарисовать комнату по чистовому контуру"
+            >
+              <PenTool size={14} />
+              <span>+ Комната</span>
+            </button>
 
-        {/* Инструмент: Комната внутри квартиры */}
-        <button
-          onClick={() => {
-            if (!apartment) {
-              alert('Сначала начертите внешний контур квартиры!');
-              return;
-            }
-            startRoomDrawing();
-          }}
-          disabled={!apartment && activeTool !== 'draw_room'}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-            activeTool === 'draw_room'
-              ? 'bg-sky-500 text-white shadow'
-              : apartment
-              ? 'text-slate-300 hover:text-white hover:bg-slate-800'
-              : 'text-slate-600 cursor-not-allowed'
-          }`}
-          title={apartment ? 'Нарисовать комнату внутри квартиры' : 'Сначала задайте контур квартиры'}
-        >
-          <PenTool size={14} />
-          <span>+ Комната</span>
-        </button>
+            <button
+              onClick={() => setActiveTool('draw_shaft')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_shaft'
+                  ? 'bg-rose-500 text-white shadow-lg shadow-rose-950/40'
+                  : 'text-rose-400 bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20'
+              }`}
+              title="Вырезать шахту из одной или нескольких комнат"
+            >
+              <Minus size={14} />
+              <span>Шахта</span>
+            </button>
 
-        {/* Инструмент: Вырезать шахту */}
-        <button
-          onClick={() => {
-            if (!apartment) {
-              alert('Сначала начертите контур квартиры!');
-              return;
-            }
-            setActiveTool('draw_shaft');
-          }}
-          disabled={!apartment}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-            activeTool === 'draw_shaft'
-              ? 'bg-rose-500 text-white shadow'
-              : apartment
-              ? 'text-slate-400 hover:text-white hover:bg-slate-800'
-              : 'text-slate-600 cursor-not-allowed'
-          }`}
-          title="Вырезать вентшахту или несущую колонну"
-        >
-          <Scissors size={14} />
-          <span>Вырезать шахту</span>
-        </button>
+            <button
+              onClick={() => setActiveTool('draw_opening')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_opening'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                  : 'text-sky-400 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title="Добавить дверь или окно"
+            >
+              <DoorOpen size={14} />
+              <span>Дверь/Окно</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTool('draw_partition')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_partition'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                  : 'text-sky-400 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title="Внутренняя перегородка, не делящая комнату"
+            >
+              <Split size={14} />
+              <span>Перегородка</span>
+            </button>
+          </>
+        )}
+
+        {/* ЭТАП 1: КОНТУР КВАРТИРЫ */}
+        {boundaryMode === 'manual' && drawingStage === 'boundary' && (
+          <>
+            <button
+              onClick={() => {
+                setBoundaryTool('add');
+                startApartmentDrawing();
+              }}
+              disabled={boundaryLocked}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_apartment' && activeBoundaryTool === 'add'
+                  ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-950/40'
+                  : boundaryLocked 
+                  ? 'text-slate-600 cursor-not-allowed opacity-50'
+                  : 'text-amber-400 bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
+              }`}
+              title="Добавить область к контуру квартиры"
+            >
+              <Plus size={14} />
+              <span>Добавить контур</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setBoundaryTool('subtract');
+                startApartmentDrawing();
+              }}
+              disabled={boundaryLocked || !apartment}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_apartment' && activeBoundaryTool === 'subtract'
+                  ? 'bg-rose-500 text-white shadow-lg shadow-rose-950/40'
+                  : boundaryLocked || !apartment
+                  ? 'text-slate-600 cursor-not-allowed opacity-50'
+                  : 'text-rose-400 bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20'
+              }`}
+              title="Вычесть область из контура (Шахта/Колонна)"
+            >
+              <Minus size={14} />
+              <span>Шахта / Вычитание</span>
+            </button>
+
+            <div className="w-px h-5 bg-slate-800 mx-1" />
+
+            <button
+              onClick={() => {
+                if (!apartment) {
+                  addToast('Сначала нарисуйте хотя бы один контур!', 'error');
+                  return;
+                }
+                lockBoundary();
+                addToast('Контур квартиры зафиксирован. Теперь разметьте комнаты.', 'success');
+              }}
+              disabled={boundaryLocked}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition bg-emerald-600 text-white shadow-lg shadow-emerald-900/40 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              <Check size={14} />
+              <span>Закончить контур</span>
+            </button>
+          </>
+        )}
+
+        {/* ЭТАП 2: РАЗМЕТКА КОМНАТ */}
+        {boundaryMode === 'manual' && drawingStage === 'rooms' && (
+          <>
+            <button
+              onClick={() => startRoomDrawing()}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_room'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                  : 'text-sky-400 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title="Нарисовать комнату внутри квартиры"
+            >
+              <PenTool size={14} />
+              <span>+ Комната</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTool('draw_opening')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_opening'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                  : 'text-sky-400 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title="Добавить дверь или окно"
+            >
+              <DoorOpen size={14} />
+              <span>Дверь/Окно</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTool('draw_partition')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTool === 'draw_partition'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                  : 'text-sky-400 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title="Нарисовать внутреннюю перегородку"
+            >
+              <Split size={14} />
+              <span>Перегородка</span>
+            </button>
+
+            <button
+              onClick={() => {
+                if (confirm('Вернуться к редактированию контура? Это может сбросить привязки комнат.')) {
+                  setDrawingStage('boundary');
+                  setActiveTool('select');
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              title="Редактировать контур квартиры"
+            >
+              <Lock size={14} className="opacity-50" />
+              <span>Редактировать контур</span>
+            </button>
+          </>
+        )}
       </div>
 
       {/* Выбор зоны при черчении комнаты */}
@@ -183,8 +362,72 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         </div>
       )}
 
+      {/* Выбор типа проема */}
+      {activeTool === 'draw_opening' && (
+        <div className="flex items-center gap-1.5 bg-slate-950/90 px-3 py-1 rounded-xl border border-slate-800 animate-fadeIn">
+          <span className="text-[11px] text-slate-400">Тип проёма:</span>
+          <button
+            onClick={() => setActiveOpeningType('door')}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition ${
+              activeOpeningType === 'door'
+                ? 'bg-sky-500 text-white'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <DoorOpen size={13} />
+            Дверь
+          </button>
+          <button
+            onClick={() => setActiveOpeningType('window')}
+            className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition ${
+              activeOpeningType === 'window'
+                ? 'bg-sky-500 text-white'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <Square size={13} />
+            Окно
+          </button>
+        </div>
+      )}
+
       {/* История и Масштаб */}
       <div className="flex items-center gap-2">
+        <button
+          onClick={handleExport}
+          className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"
+          title="Сохранить проект в файл (JSON)"
+        >
+          <Save size={15} />
+        </button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"
+          title="Загрузить проект из файла (JSON)"
+        >
+          <Upload size={15} />
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportFile}
+          className="hidden"
+        />
+
+        <button
+          onClick={toggleDimensions}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+            settings.showDimensions
+              ? 'text-sky-400 bg-sky-500/10 border border-sky-500/20'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800 border border-transparent'
+          }`}
+          title={settings.showDimensions ? 'Скрыть размеры' : 'Показать размеры'}
+        >
+          {settings.showDimensions ? <Eye size={14} /> : <EyeOff size={14} />}
+          <span>Размеры</span>
+        </button>
+
         <div className="flex items-center bg-slate-950/70 rounded-lg p-0.5 border border-slate-800">
           <button
             onClick={handleUndo}

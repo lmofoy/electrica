@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { Stage } from 'react-konva';
 import Konva from 'konva';
 import { useProjectStore } from '../../store/useProjectStore';
@@ -10,8 +10,9 @@ import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
 import { snapToGrid, distance, polarToPoint, angleDeg, snapAngle } from '../../core/geometry/math';
 import { findBestSnapAdvanced } from '../../core/geometry/snapping';
+import { buildAutoLayout } from '../../core/geometry/autoLayout';
 import type { Point2D } from '../../types';
-import { Home } from 'lucide-react';
+import { Home, PenTool } from 'lucide-react';
 
 export const CADCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,6 +28,8 @@ export const CADCanvas: React.FC = () => {
     apartment,
     rooms,
     shafts,
+    openings,
+    freePartitions,
     selectedRoomId,
     settings,
     activeTool,
@@ -52,7 +55,39 @@ export const CADCanvas: React.FC = () => {
     setLockedLength,
     setDynamicInputValues,
     startApartmentDrawing,
+    startRoomDrawing,
+    drawingStage,
+    boundaryMode,
+    activeBoundaryTool,
   } = useProjectStore();
+
+  const autoLayout = useMemo(() => {
+    if (boundaryMode !== 'auto') return null;
+    return buildAutoLayout(
+      rooms,
+      shafts,
+      freePartitions,
+      openings,
+      settings.defaultWallThicknessMm
+    );
+  }, [
+    boundaryMode,
+    rooms,
+    shafts,
+    freePartitions,
+    openings,
+    settings.defaultWallThicknessMm,
+  ]);
+
+  const autoPrioritySegments = useMemo(() => {
+    if (!autoLayout) return [];
+    return autoLayout.footprintRings.flatMap((ring) =>
+      ring.map((point, index) => ({
+        p1: point,
+        p2: ring[(index + 1) % ring.length],
+      }))
+    );
+  }, [autoLayout]);
 
   useEffect(() => {
     const updateSize = () => {
@@ -136,20 +171,27 @@ export const CADCanvas: React.FC = () => {
     if (!pointer) return;
 
     let worldPos = screenToWorld(pointer.x, pointer.y);
+    const rawWorldPos = worldPos;
 
     const isDrawing =
       activeTool === 'draw_apartment' ||
       activeTool === 'draw_room' ||
-      activeTool === 'draw_shaft';
+      activeTool === 'draw_shaft' ||
+      activeTool === 'draw_opening' ||
+      activeTool === 'draw_partition';
 
     // В режиме черчения привязки работают ВСЕГДА, даже до первой точки!
     if (isDrawing) {
-      const snap = findBestSnapAdvanced(worldPos, {
+      const snap = findBestSnapAdvanced(rawWorldPos, {
         apartment,
         rooms,
+        openings,
+        freePartitions,
         draftVertices,
         zoom,
         defaultWallThicknessMm: settings.defaultWallThicknessMm,
+        precomputedWallMesh: autoLayout?.wallMesh,
+        prioritySegments: autoPrioritySegments,
       });
 
       setActiveSnap(snap);
@@ -178,7 +220,9 @@ export const CADCanvas: React.FC = () => {
     const isDrawing =
       activeTool === 'draw_apartment' ||
       activeTool === 'draw_room' ||
-      activeTool === 'draw_shaft';
+      activeTool === 'draw_shaft' ||
+      activeTool === 'draw_opening' ||
+      activeTool === 'draw_partition';
     if (!isDrawing) return;
 
     const stage = stageRef.current;
@@ -193,6 +237,19 @@ export const CADCanvas: React.FC = () => {
       clickPoint = activeSnap.point;
     } else if (gridSnap && dynamicInput.lockedLength === null) {
       clickPoint = snapToGrid(clickPoint, gridStepMm);
+    }
+
+    const isLinearTool = activeTool === 'draw_opening' || activeTool === 'draw_partition';
+
+    // Проем и перегородка — это отрезок: второй клик сразу завершает элемент
+    if (isLinearTool) {
+      if (draftVertices.length === 0) {
+        addDraftVertex(clickPoint);
+        return;
+      }
+      addDraftVertex(clickPoint);
+      finishDraft();
+      return;
     }
 
     // Первая вершина контура
@@ -242,9 +299,14 @@ export const CADCanvas: React.FC = () => {
       const isDrawing =
         activeTool === 'draw_apartment' ||
         activeTool === 'draw_room' ||
-        activeTool === 'draw_shaft';
+        activeTool === 'draw_shaft' ||
+        activeTool === 'draw_opening' ||
+        activeTool === 'draw_partition';
 
-      if (e.key === 'Tab' && isDrawing && draftVertices.length > 0) {
+      const isLinearTool = activeTool === 'draw_opening' || activeTool === 'draw_partition';
+      const minPointsToFinish = isLinearTool ? 2 : 3;
+
+      if (e.key === 'Tab' && isDrawing && !isLinearTool && draftVertices.length > 0) {
         e.preventDefault();
         openDynamicInput('length');
         return;
@@ -267,7 +329,12 @@ export const CADCanvas: React.FC = () => {
         return;
       }
 
-      if (e.key === 'Enter' && isDrawing && draftVertices.length >= 3 && !dynamicInput.isOpen) {
+      if (
+        e.key === 'Enter' &&
+        isDrawing &&
+        draftVertices.length >= minPointsToFinish &&
+        !dynamicInput.isOpen
+      ) {
         e.preventDefault();
         finishDraft();
         return;
@@ -332,13 +399,19 @@ export const CADCanvas: React.FC = () => {
           selectedRoomId={selectedRoomId}
           onSelectRoom={setSelectedRoomId}
           zoom={zoom}
+          boundaryMode={boundaryMode}
+          autoLayout={autoLayout}
         />
 
         <WallsAndDimensionsLayer
           apartment={apartment}
           rooms={rooms}
-          defaultWallThicknessMm={settings.defaultWallThicknessMm}
+          openings={openings}
+          freePartitions={freePartitions}
+          settings={settings}
           zoom={zoom}
+          boundaryMode={boundaryMode}
+          autoLayout={autoLayout}
         />
 
         <DraftingLayer
@@ -347,30 +420,59 @@ export const CADCanvas: React.FC = () => {
           dynamicInput={dynamicInput}
           activeSnap={activeSnap}
           zoom={zoom}
-          isApartmentTool={activeTool === 'draw_apartment'}
-          isShaftTool={activeTool === 'draw_shaft'}
+          isApartmentTool={activeTool === 'draw_apartment' && activeBoundaryTool === 'add'}
+          isShaftTool={activeTool === 'draw_shaft' || (activeTool === 'draw_apartment' && activeBoundaryTool === 'subtract')}
+          isOpeningTool={activeTool === 'draw_opening'}
+          isPartitionTool={activeTool === 'draw_partition'}
         />
       </Stage>
 
-      {!apartment && activeTool !== 'draw_apartment' && (
+      {boundaryMode === 'auto' && rooms.length === 0 && activeTool !== 'draw_room' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
           <div className="bg-slate-900/90 border border-slate-700/80 p-8 rounded-2xl shadow-2xl backdrop-blur-md max-w-md text-center pointer-events-auto">
-            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 mx-auto flex items-center justify-center mb-4">
-              <Home size={28} />
+            <div className="w-14 h-14 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 mx-auto flex items-center justify-center mb-4">
+              <PenTool size={28} />
             </div>
-            <h2 className="text-lg font-bold text-white mb-2">Начните с контура квартиры</h2>
+            <h2 className="text-lg font-bold text-white mb-2">Начните с первой комнаты</h2>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-              Очертите внешние границы помещения. Толщина наружных стен будет построена наружу от чистового пола.
+              Очертите чистовой контур комнаты — стены построятся наружу автоматически.
+              Следующие комнаты привязывайте к внешней грани существующей стены.
             </p>
             <button
-              onClick={startApartmentDrawing}
-              className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-lg shadow-amber-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
+              onClick={() => startRoomDrawing()}
+              className="w-full py-3 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-white font-bold text-sm shadow-lg shadow-sky-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
             >
-              ⚡ Начертить контур квартиры
+              Начертить комнату
             </button>
           </div>
         </div>
       )}
+
+      {boundaryMode === 'manual' &&
+        !apartment &&
+        activeTool !== 'draw_apartment' &&
+        drawingStage === 'boundary' && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
+            <div className="bg-slate-900/90 border border-slate-700/80 p-8 rounded-2xl shadow-2xl backdrop-blur-md max-w-md text-center pointer-events-auto">
+              <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 mx-auto flex items-center justify-center mb-4">
+                <Home size={28} />
+              </div>
+              <h2 className="text-lg font-bold text-white mb-2">Начните с контура квартиры</h2>
+              <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+                Очертите внешние границы помещения. Толщина наружных стен будет построена наружу от чистового пола.
+              </p>
+              <button
+                onClick={() => {
+                  useProjectStore.getState().setBoundaryTool('add');
+                  startApartmentDrawing();
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-lg shadow-amber-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                ⚡ Начертить контур квартиры
+              </button>
+            </div>
+          </div>
+        )}
 
       {draftVertices.length > 0 && (
         <CadFloatingInput
