@@ -172,34 +172,32 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
           </p>
         </div>
 
-        {activeView === 'plan' && (
-          <div className="ml-2 flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
-            <button
-              onClick={() => setDesignMode('architecture')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
-                designMode === 'architecture'
-                  ? 'bg-slate-700 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-              title="Построение комнат, стен и проёмов"
-            >
-              <Layers size={12} />
-              Архитектура
-            </button>
-            <button
-              onClick={() => setDesignMode('electrical')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
-                designMode === 'electrical'
-                  ? 'bg-sky-500 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-              title="Расстановка розеток, выключателей и света"
-            >
-              <Plug size={12} />
-              Электрика
-            </button>
-          </div>
-        )}
+        <div className="ml-2 flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
+          <button
+            onClick={() => setDesignMode('architecture')}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
+              designMode === 'architecture'
+                ? 'bg-slate-700 text-white'
+                : 'text-slate-400 hover:text-white'
+            }`}
+            title="Построение комнат, стен и проёмов"
+          >
+            <Layers size={12} />
+            Архитектура
+          </button>
+          <button
+            onClick={() => setDesignMode('electrical')}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
+              designMode === 'electrical'
+                ? 'bg-sky-500 text-white'
+                : 'text-slate-400 hover:text-white'
+            }`}
+            title="Расстановка розеток, выключателей и света"
+          >
+            <Plug size={12} />
+            Электрика
+          </button>
+        </div>
 
         <div className="ml-2 flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
           <button
@@ -232,11 +230,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
       </div>
 
       {/* Основные инструменты */}
-      <div
-        className={`items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800 ${
-          activeView === 'panel' ? 'hidden' : 'flex'
-        }`}
-      >
+      <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
         <button
           onClick={() => setActiveTool('select')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
@@ -516,7 +510,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
 
       {activeView === 'panel' && (
         <div className="text-[11px] text-slate-500 font-mono">
-          Схема открыта · «План» вернёт к чертежу
+          Щиток открыт справа · «План» закроет схему
         </div>
       )}
 

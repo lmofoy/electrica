@@ -1588,7 +1588,8 @@ export const useProjectStore = create<ProjectState>()(
         const lines = autoLinesFromDevices(
           state.devices,
           state.rooms,
-          state.freePartitions
+          state.freePartitions,
+          state.settings.defaultRouting
         );
         const withStrategy = applyStrategy({ ...state.panel, lines }, state.panel.strategy);
         set({ panel: withStrategy, highlightedLineId: null });
@@ -1612,7 +1613,13 @@ export const useProjectStore = create<ProjectState>()(
           roomIds.length > 0
             ? state.rooms.find((room) => room.id === roomIds[0])?.name ?? 'Группа'
             : 'Без комнаты';
-        const line = createLine(purpose, roomIds, roomName, state.panel.lines.length);
+        const line = createLine(
+          purpose,
+          roomIds,
+          roomName,
+          state.panel.lines.length,
+          state.settings.defaultRouting
+        );
         set({
           panel: { ...state.panel, lines: [...state.panel.lines, line] },
         });

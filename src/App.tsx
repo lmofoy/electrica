@@ -19,17 +19,13 @@ export const App: React.FC = () => {
       {/* Верхняя инженерная панель */}
       <Toolbar onOpenSettings={() => setIsSettingsOpen(true)} />
 
-      {isPanelView ? (
-        <PanelScreen />
-      ) : (
-        /* Рабочая область: холст CAD + боковая панель проекта */
-        <div className="flex flex-1 w-full h-[calc(100vh-3.5rem)] overflow-hidden relative">
-          <main className="flex-1 h-full relative overflow-hidden">
-            <CADCanvas />
-          </main>
-          <Sidebar />
-        </div>
-      )}
+      {/* Рабочая область: холст CAD + боковая панель проекта или щитка */}
+      <div className="flex flex-1 w-full h-[calc(100vh-3.5rem)] overflow-hidden relative">
+        <main className="flex-1 h-full relative overflow-hidden">
+          <CADCanvas />
+        </main>
+        {isPanelView ? <PanelScreen /> : <Sidebar />}
+      </div>
 
       {/* Модальное окно настроек проекта */}
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />

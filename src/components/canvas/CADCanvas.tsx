@@ -23,6 +23,7 @@ import {
 import { resolvePanelPose } from '../../core/electrical/panel';
 import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
+import { computeLineRoutes } from '../../core/electrical/routing';
 import { collectRoomElements, formatRoomDeletionPrompt } from '../../core/model/roomElements';
 import type {
   DevicePartitionAnchor,
@@ -50,6 +51,8 @@ export const CADCanvas: React.FC = () => {
     freePartitions,
     devices,
     panel,
+    nodes,
+    walls,
     selection,
     highlightedLineId,
     settings,
@@ -87,6 +90,7 @@ export const CADCanvas: React.FC = () => {
     drawingStage,
     boundaryMode,
     activeBoundaryTool,
+    activeView,
   } = useProjectStore();
 
   const autoLayout = useMemo(() => {
@@ -123,6 +127,19 @@ export const CADCanvas: React.FC = () => {
   );
 
   const lineColorMap = useMemo(() => buildLineColorMap(panel), [panel]);
+  const lineRoutes = useMemo(
+    () =>
+      computeLineRoutes({
+        panel,
+        devices,
+        rooms,
+        partitions: freePartitions,
+        nodes,
+        walls,
+        settings,
+      }),
+    [panel, devices, rooms, freePartitions, nodes, walls, settings]
+  );
   const deviceLineMap = useMemo(() => buildDeviceLineMap(panel), [panel]);
   const deviceLineIds = useMemo(
     () =>
@@ -247,18 +264,25 @@ export const CADCanvas: React.FC = () => {
   }, [autoLayout]);
 
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
     const updateSize = () => {
-      if (containerRef.current) {
-        setDimensions({
-          width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight,
-        });
-      }
+      setDimensions({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
     };
+
     updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(container);
     window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
-  }, []);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, [activeView]);
 
   const screenToWorld = useCallback(
     (screenX: number, screenY: number): Point2D => {
@@ -676,8 +700,7 @@ export const CADCanvas: React.FC = () => {
 
         <RoutingLayer
           panel={panel}
-          panelPose={panelPose}
-          devices={resolvedDevices}
+          routes={lineRoutes}
           highlightedLineId={highlightedLineId}
           zoom={zoom}
           onSelectLine={setHighlightedLine}

@@ -7,6 +7,7 @@ import type {
   ElectricalPanel,
   FreePartition,
   LinePurpose,
+  LineRouting,
   PanelStrategy,
   PanelSupply,
   RoomType,
@@ -109,6 +110,8 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
       loadW: Math.max(0, line.loadW),
       roomIds: line.roomIds ?? [],
       deviceIds: line.deviceIds ?? [],
+      routing:
+        line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
     }));
 }
 
@@ -127,7 +130,8 @@ function roomPurposeFor(room: RoomZone, hasWetSocket: boolean): LinePurpose {
 export function autoLinesFromDevices(
   devices: ElectricalDevice[],
   rooms: RoomZone[],
-  partitions: FreePartition[]
+  partitions: FreePartition[],
+  routing?: LineRouting
 ): CircuitLine[] {
   const groups = new Map<string, { room: RoomZone; purpose: LinePurpose; devices: ElectricalDevice[] }>();
 
@@ -172,6 +176,7 @@ export function autoLinesFromDevices(
       rcd: preset.needsRcd
         ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, preset.breakerRatingA)
         : null,
+      routing,
     };
     lines.push(applyPresetToLine(line));
   }
@@ -258,7 +263,8 @@ export function createLine(
   purpose: LinePurpose,
   roomIds: string[],
   roomName: string,
-  existingCount: number
+  existingCount: number,
+  routing?: LineRouting
 ): CircuitLine {
   const preset = LINE_PRESETS[purpose];
   const line: CircuitLine = {
@@ -273,6 +279,7 @@ export function createLine(
     rcd: preset.needsRcd
       ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, preset.breakerRatingA)
       : null,
+    routing,
   };
   return applyPresetToLine(line);
 }

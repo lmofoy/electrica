@@ -22,6 +22,7 @@ import { resolveDevice, type ResolvedDevice } from '../../core/electrical/device
 import { buildPanelLayout } from '../../core/electrical/panelLayout';
 import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
+import { computeLineRoutes, formatCableLengthMm } from '../../core/electrical/routing';
 import {
   collectRoomElements,
   formatRoomDeletionPrompt,
@@ -286,6 +287,7 @@ export const Sidebar: React.FC = () => {
     apartment,
     rooms,
     walls,
+    nodes,
     shafts,
     openings,
     freePartitions,
@@ -391,6 +393,19 @@ export const Sidebar: React.FC = () => {
 
   const panelLayout = useMemo(() => (panel ? buildPanelLayout(panel) : null), [panel]);
   const lineColors = useMemo(() => buildLineColorMap(panel), [panel]);
+  const lineRoutes = useMemo(
+    () =>
+      computeLineRoutes({
+        panel,
+        devices,
+        rooms,
+        partitions: freePartitions,
+        nodes,
+        walls,
+        settings,
+      }),
+    [panel, devices, rooms, freePartitions, nodes, walls, settings]
+  );
   const unassignedDevices = useMemo(
     () => collectUnassignedDevices(devices, panel),
     [devices, panel]
@@ -629,6 +644,7 @@ export const Sidebar: React.FC = () => {
                 const lineDevices = devices.filter((device) =>
                   line.deviceIds.includes(device.id)
                 );
+                const route = lineRoutes.get(line.id);
 
                 return (
                   <div
@@ -663,6 +679,9 @@ export const Sidebar: React.FC = () => {
                       </span>
                       <span className="text-[9px] font-mono text-slate-500 shrink-0">
                         {lineDevices.length} приб. · {Math.round(line.loadW)} Вт
+                        {route && route.cableLengthMm > 0
+                          ? ` · ${formatCableLengthMm(route.cableLengthMm)}`
+                          : ''}
                       </span>
                     </button>
 

@@ -1,92 +1,100 @@
 import React from 'react';
 import { Circle, Layer, Line } from 'react-konva';
 import type { ElectricalPanel } from '../../types';
-import type { DevicePose, ResolvedDevice } from '../../core/electrical/devices';
+import type { LineRoute } from '../../core/electrical/routing';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 
 interface RoutingLayerProps {
   panel: ElectricalPanel | null;
-  panelPose: DevicePose | null;
-  devices: ResolvedDevice[];
+  routes: Map<string, LineRoute>;
   highlightedLineId: string | null;
   zoom: number;
   onSelectLine: (id: string | null) => void;
 }
 
-interface LinkGeometry {
+interface SegmentGeometry {
   lineId: string;
   color: string;
   points: number[];
+  panelStart: { x: number; y: number } | null;
 }
 
 export const RoutingLayer: React.FC<RoutingLayerProps> = ({
   panel,
-  panelPose,
-  devices,
+  routes,
   highlightedLineId,
   zoom,
   onSelectLine,
 }) => {
-  if (!panel || !panelPose) return null;
+  if (!panel || routes.size === 0) return null;
 
   const colors = buildLineColorMap(panel);
-  const deviceById = new Map(devices.map((resolved) => [resolved.device.id, resolved]));
+  const segments: SegmentGeometry[] = [];
 
-  const links: LinkGeometry[] = [];
   for (const line of panel.lines) {
+    const route = routes.get(line.id);
+    if (!route) continue;
     const color = colors.get(line.id) ?? '#38bdf8';
-    for (const deviceId of line.deviceIds) {
-      const resolved = deviceById.get(deviceId);
-      const pose = resolved?.poses[0];
-      if (!pose) continue;
-      const from = panelPose.position;
-      const to = pose.position;
-      links.push({
+    route.paths.forEach((path, index) => {
+      if (path.length < 2) return;
+      segments.push({
         lineId: line.id,
         color,
-        points: [from.x, from.y, to.x, from.y, to.x, to.y],
+        points: path.flatMap((point) => [point.x, point.y]),
+        panelStart: index === 0 ? path[0] : null,
       });
-    }
+    });
   }
 
-  if (links.length === 0) return null;
+  if (segments.length === 0) return null;
+
+  const ordered = [
+    ...segments.filter((segment) => segment.lineId !== highlightedLineId),
+    ...segments.filter((segment) => segment.lineId === highlightedLineId),
+  ];
 
   return (
     <Layer>
-      {links.map((link, index) => {
-        const active = link.lineId === highlightedLineId;
+      {ordered.map((segment, index) => {
+        const active = segment.lineId === highlightedLineId;
         const dimmed = highlightedLineId !== null && !active;
+        const route = routes.get(segment.lineId);
+        const floor = route?.mode === 'floor';
         const hit = (event: { cancelBubble: boolean }) => {
           event.cancelBubble = true;
-          onSelectLine(active ? null : link.lineId);
+          onSelectLine(active ? null : segment.lineId);
         };
 
         return (
-          <React.Fragment key={`${link.lineId}-${index}`}>
+          <React.Fragment key={`${segment.lineId}-${index}`}>
             <Line
-              points={link.points}
-              name={`route-${link.lineId}`}
-              stroke={link.color}
-              strokeWidth={(active ? 2.6 : 1.4) / zoom}
-              opacity={active ? 0.95 : dimmed ? 0.1 : 0.45}
-              dash={active ? [10 / zoom, 5 / zoom] : [5 / zoom, 5 / zoom]}
-              shadowColor={link.color}
-              shadowBlur={active ? 8 / zoom : 0}
+              points={segment.points}
+              name={`route-${segment.lineId}`}
+              stroke={segment.color}
+              strokeWidth={(active ? 3 : 1.6) / zoom}
+              opacity={active ? 0.95 : dimmed ? 0.08 : 0.42}
+              dash={floor ? [7 / zoom, 5 / zoom] : undefined}
+              shadowColor={segment.color}
+              shadowBlur={active ? 10 / zoom : 0}
               lineCap="round"
+              lineJoin="round"
+              perfectDrawEnabled={false}
               listening={!dimmed}
               hitStrokeWidth={12 / zoom}
               onClick={hit}
               onTap={hit}
             />
-            <Circle
-              x={link.points[0]}
-              y={link.points[1]}
-              radius={(active ? 3.4 : 2) / zoom}
-              fill={link.color}
-              opacity={active ? 0.95 : dimmed ? 0.1 : 0.5}
-              listening={false}
-              name={`route-node-${link.lineId}`}
-            />
+            {segment.panelStart && (
+              <Circle
+                x={segment.panelStart.x}
+                y={segment.panelStart.y}
+                radius={(active ? 3.6 : 2.2) / zoom}
+                fill={segment.color}
+                opacity={active ? 0.95 : dimmed ? 0.1 : 0.5}
+                listening={false}
+                name={`route-node-${segment.lineId}`}
+              />
+            )}
           </React.Fragment>
         );
       })}

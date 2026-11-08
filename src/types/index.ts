@@ -66,7 +66,7 @@ export interface ProjectSettings {
   ceilingHeightMm: number; // высота потолка (2700 мм)
   floorLevelMm: number; // 0 мм
   cableMarginPercent: number; // настраиваемый запас кабеля (+15%)
-  defaultRouting: 'ceiling' | 'floor'; // прокладка по потолку или по полу
+  defaultRouting: LineRouting; // прокладка по потолку или по полу
   showDimensions: boolean; // Видимость размеров
 }
 
@@ -241,6 +241,8 @@ export type LinePurpose =
   | 'heating'
   | 'other';
 
+export type LineRouting = 'ceiling' | 'floor';
+
 export interface CableSpec {
   sectionMm2: number; // 1.5 | 2.5 | 4 | 6 | 10 | 16
   cores: 3; // 1 фаза: L + N + PE
@@ -264,11 +266,12 @@ export interface CircuitLine {
   name: string;
   purpose: LinePurpose;
   roomIds: string[];
-  deviceIds: string[]; // заглушка для будущей трассировки
+  deviceIds: string[]; // фактический состав линии для подсветки и трассировки
   loadW: number;
   cable: CableSpec;
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
+  routing?: LineRouting; // способ прокладки; не задан — берётся defaultRouting проекта
 }
 
 export interface PanelSupply {

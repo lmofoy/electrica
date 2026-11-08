@@ -1,10 +1,13 @@
 import React from 'react';
 import type { ElectricalPanel } from '../../types';
 import type { PanelLayout, PanelLayoutItem } from '../../core/electrical/panelLayout';
+import { buildLineColorMap } from '../../core/electrical/lineColors';
 
 interface PanelSchemeProps {
   panel: ElectricalPanel;
   layout: PanelLayout;
+  highlightedLineId: string | null;
+  onHighlight: (id: string | null) => void;
 }
 
 const TONE_CLASS: Record<PanelLayoutItem['tone'], string> = {
@@ -13,11 +16,31 @@ const TONE_CLASS: Record<PanelLayoutItem['tone'], string> = {
   line: 'bg-sky-500/15 border-sky-500/40 text-sky-200',
 };
 
-const ItemCell: React.FC<{ item: PanelLayoutItem }> = ({ item }) => (
+const ItemCell: React.FC<{
+  item: PanelLayoutItem;
+  active: boolean;
+  color: string | null;
+  onToggle: (id: string) => void;
+}> = ({ item, active, color, onToggle }) => (
   <div
-    className={`relative flex flex-col items-center justify-center rounded-md border px-1 py-1 overflow-hidden ${TONE_CLASS[item.tone]}`}
-    style={{ gridColumn: `span ${item.modules}` }}
-    title={`${item.sublabel} · ${item.modules} мод.`}
+    role={item.lineId ? 'button' : undefined}
+    onClick={() => item.lineId && onToggle(item.lineId)}
+    className={`relative flex flex-col items-center justify-center rounded-md border px-1 py-1 overflow-hidden transition ${
+      TONE_CLASS[item.tone]
+    } ${item.lineId ? 'cursor-pointer hover:brightness-125' : ''}`}
+    style={{
+      gridColumn: `span ${item.modules}`,
+      ...(active && color
+        ? {
+            borderColor: color,
+            backgroundColor: `${color}2e`,
+            boxShadow: `0 0 0 1px ${color}, 0 0 8px ${color}66`,
+          }
+        : undefined),
+    }}
+    title={`${item.sublabel} · ${item.modules} мод.${
+      item.lineId ? ' · клик — подсветить линию на плане' : ''
+    }`}
   >
     <span className="text-[10px] font-bold leading-tight truncate w-full text-center">
       {item.label}
@@ -25,10 +48,23 @@ const ItemCell: React.FC<{ item: PanelLayoutItem }> = ({ item }) => (
     <span className="text-[8px] leading-tight opacity-70 truncate w-full text-center">
       {item.sublabel}
     </span>
+    {active && color && (
+      <span
+        className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full"
+        style={{ backgroundColor: color }}
+      />
+    )}
   </div>
 );
 
-export const PanelScheme: React.FC<PanelSchemeProps> = ({ panel, layout }) => {
+export const PanelScheme: React.FC<PanelSchemeProps> = ({
+  panel,
+  layout,
+  highlightedLineId,
+  onHighlight,
+}) => {
+  const lineColors = buildLineColorMap(panel);
+  const toggle = (id: string) => onHighlight(id === highlightedLineId ? null : id);
   const toneCounts = layout.items.reduce<Record<string, number>>((acc, item) => {
     acc[item.kind] = (acc[item.kind] ?? 0) + 1;
     return acc;
@@ -72,7 +108,13 @@ export const PanelScheme: React.FC<PanelSchemeProps> = ({ panel, layout }) => {
                 </div>
               )}
               {row.map((item) => (
-                <ItemCell key={item.id} item={item} />
+                <ItemCell
+                  key={item.id}
+                  item={item}
+                  active={item.lineId !== undefined && item.lineId === highlightedLineId}
+                  color={item.lineId ? lineColors.get(item.lineId) ?? null : null}
+                  onToggle={toggle}
+                />
               ))}
             </div>
           </div>

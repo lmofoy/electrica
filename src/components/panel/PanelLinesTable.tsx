@@ -1,13 +1,22 @@
 import React, { useState } from 'react';
-import type { CircuitLine, ElectricalPanel, LinePurpose, RoomZone } from '../../types';
+import type {
+  CircuitLine,
+  ElectricalPanel,
+  LinePurpose,
+  LineRouting,
+  RoomZone,
+} from '../../types';
 import { CABLE_AMPACITY_A, LINE_PRESETS, LINE_PURPOSES, makeRcd } from '../../core/electrical/norms';
 import { lineCurrentA } from '../../core/electrical/panel';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
+import { formatCableLengthMm, type LineRoute } from '../../core/electrical/routing';
 import { Plus, Trash2, Wand2, AlertTriangle, MapPin } from 'lucide-react';
 
 interface PanelLinesTableProps {
   panel: ElectricalPanel;
   rooms: RoomZone[];
+  routes: Map<string, LineRoute>;
+  defaultRouting: LineRouting;
   highlightedLineId: string | null;
   onHighlight: (id: string | null) => void;
   onShowOnPlan: (id: string) => void;
@@ -31,6 +40,8 @@ function applyRcdValue(line: CircuitLine, value: string): CircuitLine['rcd'] {
 export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   panel,
   rooms,
+  routes,
+  defaultRouting,
   highlightedLineId,
   onHighlight,
   onShowOnPlan,
@@ -79,16 +90,6 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
         </div>
       ) : (
         <div className="space-y-1.5">
-          <div className="grid grid-cols-[minmax(0,1fr)_122px_128px_84px_118px_112px_52px] gap-1.5 px-2 text-[9px] uppercase tracking-wider text-slate-500">
-            <span>Линия</span>
-            <span>Назначение</span>
-            <span>Комната</span>
-            <span>Нагрузка</span>
-            <span>Защита</span>
-            <span>УЗО</span>
-            <span />
-          </div>
-
           {panel.lines.map((line) => {
             const current = lineCurrentA(line);
             const ampacity = CABLE_AMPACITY_A[line.cable.sectionMm2] ?? 0;
@@ -97,6 +98,8 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
             const roomId = line.roomIds[0] ?? '';
             const lineColor = lineColors.get(line.id) ?? '#38bdf8';
             const active = line.id === highlightedLineId;
+            const route = routes.get(line.id);
+            const routing = line.routing ?? defaultRouting;
 
             return (
               <div
@@ -107,7 +110,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   }
                   onHighlight(active ? null : line.id);
                 }}
-                className={`grid grid-cols-[minmax(0,1fr)_122px_128px_84px_118px_112px_52px] gap-1.5 items-center rounded-lg border px-2 py-1.5 transition ${
+                className={`rounded-lg border px-2 py-1.5 transition ${
                   breakerCableError || loadError
                     ? 'bg-rose-500/5 border-rose-500/30'
                     : 'bg-slate-950/60 border-slate-800/80'
@@ -122,10 +125,10 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                     : undefined
                 }
               >
-                <div className="min-w-0 flex items-start gap-1.5">
+                <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => onHighlight(active ? null : line.id)}
-                    className="mt-1 shrink-0 rounded-full p-0.5 transition"
+                    className="shrink-0 rounded-full p-0.5 transition"
                     title={active ? 'Снять подсветку' : 'Подсветить линию на плане'}
                   >
                     <span
@@ -136,120 +139,185 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                       }}
                     />
                   </button>
-                  <div className="min-w-0 flex-1">
-                    <input
-                      value={line.name}
-                      onChange={(e) => onUpdate(line.id, { name: e.target.value })}
-                      className="w-full bg-transparent text-[11px] font-semibold text-white focus:outline-none focus:border-b focus:border-sky-400"
-                    />
-                    <div className="flex items-center gap-1.5 text-[9px] font-mono text-slate-500">
-                      <span className={loadError ? 'text-rose-400' : ''}>
-                        I {current.toFixed(1)} А
-                      </span>
-                      {line.deviceIds.length > 0 ? (
-                        <span>· приборов {line.deviceIds.length}</span>
-                      ) : (
-                        <span className="text-amber-400">· нет приборов</span>
-                      )}
-                      {(breakerCableError || loadError) && (
-                        <AlertTriangle size={10} className="text-rose-400" />
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <select
-                  value={line.purpose}
-                  onChange={(e) =>
-                    onUpdate(line.id, { purpose: e.target.value as LinePurpose })
-                  }
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-                >
-                  {LINE_PURPOSES.map((purpose) => (
-                    <option key={purpose} value={purpose}>
-                      {LINE_PRESETS[purpose].label}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  value={roomId}
-                  onChange={(e) =>
-                    onUpdate(line.id, {
-                      roomIds: e.target.value ? [e.target.value] : [],
-                    })
-                  }
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-                >
-                  <option value="">Без комнаты</option>
-                  {rooms.map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.name}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="flex items-center gap-1">
                   <input
-                    type="number"
-                    min={0}
-                    max={20000}
-                    step={100}
-                    value={line.loadW}
-                    onChange={(e) =>
-                      onUpdate(line.id, {
-                        loadW: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white font-mono focus:outline-none focus:border-sky-500"
+                    value={line.name}
+                    onChange={(e) => onUpdate(line.id, { name: e.target.value })}
+                    className="flex-1 min-w-0 bg-transparent text-[11px] font-semibold text-white focus:outline-none focus:border-b focus:border-sky-400"
                   />
-                  <span className="text-[8px] text-slate-500">Вт</span>
-                </div>
-
-                <div className="font-mono text-[10px] leading-tight">
-                  <div className={breakerCableError ? 'text-rose-400' : 'text-slate-200'}>
-                    {line.breaker.ratingA} А {line.breaker.curve} · {line.breaker.poles}P
-                  </div>
-                  <div className={breakerCableError ? 'text-rose-400' : 'text-slate-500'}>
-                    {line.cable.sectionMm2} мм² · до {ampacity} А
-                  </div>
-                </div>
-
-                <select
-                  value={rcdValue(line)}
-                  onChange={(e) =>
-                    onUpdate(line.id, { rcd: applyRcdValue(line, e.target.value) })
-                  }
-                  className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
-                    line.purpose === 'lighting' && !line.rcd
-                      ? 'border-slate-700 text-slate-400'
-                      : line.rcd
-                        ? 'border-emerald-700/60 text-emerald-300'
-                        : 'border-amber-700/60 text-amber-300'
-                  }`}
-                >
-                  <option value="off">Без УЗО</option>
-                  <option value="30-A">30 мА · A</option>
-                  <option value="30-AC">30 мА · AC</option>
-                  <option value="100-A">100 мА · A</option>
-                  <option value="300-A">300 мА · A</option>
-                </select>
-
-                <div className="flex items-center justify-center gap-0.5">
+                  <span
+                    className={`shrink-0 font-mono text-[10px] ${
+                      route?.warning
+                        ? 'text-amber-400'
+                        : route && route.cableLengthMm > 0
+                          ? 'text-sky-300'
+                          : 'text-slate-500'
+                    }`}
+                    title={
+                      route
+                        ? `По плану ${(route.planLengthMm / 1000).toFixed(1)} м · вертикально ${(route.verticalMm / 1000).toFixed(1)} м · с запасом`
+                        : 'Трасса не рассчитана'
+                    }
+                  >
+                    {formatCableLengthMm(route?.cableLengthMm ?? 0)}
+                  </span>
                   <button
                     onClick={() => onShowOnPlan(line.id)}
-                    className="text-slate-500 hover:text-sky-400 p-1 rounded"
-                    title="Показать линию на плане"
+                    className="text-slate-500 hover:text-sky-400 p-0.5 rounded shrink-0"
+                    title="Подсветить линию на плане"
                   >
                     <MapPin size={12} />
                   </button>
                   <button
                     onClick={() => onDelete(line.id)}
-                    className="text-slate-500 hover:text-rose-400 p-1 rounded"
+                    className="text-slate-500 hover:text-rose-400 p-0.5 rounded shrink-0"
                     title="Удалить линию"
                   >
                     <Trash2 size={12} />
                   </button>
+                </div>
+
+                <div className="mt-1 grid grid-cols-2 gap-1">
+                  <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      Назначение
+                    </span>
+                    <select
+                      value={line.purpose}
+                      onChange={(e) =>
+                        onUpdate(line.id, { purpose: e.target.value as LinePurpose })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+                    >
+                      {LINE_PURPOSES.map((purpose) => (
+                        <option key={purpose} value={purpose}>
+                          {LINE_PRESETS[purpose].label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      Комната
+                    </span>
+                    <select
+                      value={roomId}
+                      onChange={(e) =>
+                        onUpdate(line.id, {
+                          roomIds: e.target.value ? [e.target.value] : [],
+                        })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">Без комнаты</option>
+                      {rooms.map((room) => (
+                        <option key={room.id} value={room.id}>
+                          {room.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      Нагрузка
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={0}
+                        max={20000}
+                        step={100}
+                        value={line.loadW}
+                        onChange={(e) =>
+                          onUpdate(line.id, {
+                            loadW: Math.max(0, Number(e.target.value) || 0),
+                          })
+                        }
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white font-mono focus:outline-none focus:border-sky-500"
+                      />
+                      <span className="text-[8px] text-slate-500">Вт</span>
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      Трасса
+                    </span>
+                    <select
+                      value={routing}
+                      onChange={(e) =>
+                        onUpdate(line.id, { routing: e.target.value as LineRouting })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+                      title="Способ прокладки линии"
+                    >
+                      <option value="ceiling">Потолок</option>
+                      <option value="floor">Пол</option>
+                    </select>
+                  </div>
+
+                  <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      Защита
+                    </span>
+                    <div
+                      className={`font-mono text-[10px] leading-tight ${
+                        breakerCableError ? 'text-rose-400' : 'text-slate-200'
+                      }`}
+                    >
+                      <div>
+                        {line.breaker.ratingA} А {line.breaker.curve} · {line.breaker.poles}P
+                      </div>
+                      <div className={breakerCableError ? 'text-rose-400' : 'text-slate-500'}>
+                        {line.cable.sectionMm2} мм² · до {ampacity} А
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      УЗО
+                    </span>
+                    <select
+                      value={rcdValue(line)}
+                      onChange={(e) =>
+                        onUpdate(line.id, { rcd: applyRcdValue(line, e.target.value) })
+                      }
+                      className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
+                        line.purpose === 'lighting' && !line.rcd
+                          ? 'border-slate-700 text-slate-400'
+                          : line.rcd
+                            ? 'border-emerald-700/60 text-emerald-300'
+                            : 'border-amber-700/60 text-amber-300'
+                      }`}
+                    >
+                      <option value="off">Без УЗО</option>
+                      <option value="30-A">30 мА · A</option>
+                      <option value="30-AC">30 мА · AC</option>
+                      <option value="100-A">100 мА · A</option>
+                      <option value="300-A">300 мА · A</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="mt-1 flex items-center gap-1.5 text-[9px] font-mono text-slate-500">
+                  <span className={loadError ? 'text-rose-400' : ''}>
+                    I {current.toFixed(1)} А
+                  </span>
+                  {line.deviceIds.length > 0 ? (
+                    <span>· приборов {line.deviceIds.length}</span>
+                  ) : (
+                    <span className="text-amber-400">· нет приборов</span>
+                  )}
+                  {route?.warning && (
+                    <span className="text-amber-400 truncate" title={route.warning}>
+                      · трасса с разрывом
+                    </span>
+                  )}
+                  {(breakerCableError || loadError) && (
+                    <AlertTriangle size={10} className="text-rose-400 shrink-0" />
+                  )}
                 </div>
               </div>
             );
@@ -292,8 +360,9 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
       </div>
 
       <p className="text-[9px] text-slate-500 leading-snug">
-        Цвет и подсветка показывают, какие приборы висят на линии. Физические трассы,
-        длины кабелей и раскладка по комнатам — следующий этап.
+        Трасса на плане: сплошная — по потолку, пунктир — по полу. Длина кабеля включает
+        вертикальные спуски, запас из настроек и 1,5 м на разделку в щитке. Порядок
+        подключения приборов — цепочкой от щитка.
       </p>
     </div>
   );
