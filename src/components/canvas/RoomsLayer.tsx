@@ -19,6 +19,7 @@ interface RoomsLayerProps {
   zoom: number;
   boundaryMode: BoundaryMode;
   autoLayout: AutoLayout | null;
+  grid?: React.ReactNode;
 }
 
 export const RoomsLayer: React.FC<RoomsLayerProps> = ({
@@ -30,6 +31,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
   zoom,
   boundaryMode,
   autoLayout,
+  grid,
 }) => {
   const floorByRoom = useMemo(() => {
     const map = new Map<string, { rings: Point2D[][]; areaM2: number }>();
@@ -42,6 +44,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
 
   return (
     <Layer>
+      {grid}
       {/* 1. Общий пол квартиры — с вырезами шахт через evenodd */}
       {apartment && apartment.vertices.length >= 3 && (
         <Shape
@@ -49,6 +52,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
           stroke="#334155"
           strokeWidth={1 / zoom}
           fillRule="evenodd"
+          listening={false}
           sceneFunc={(ctx, shape) => {
             const traceRing = (ring: Point2D[]) => {
               if (ring.length < 3) return;

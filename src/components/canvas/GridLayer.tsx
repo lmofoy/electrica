@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layer, Line, Text, Group } from 'react-konva';
+import { Group, Line, Text } from 'react-konva';
 import type { Point2D } from '../../types';
 
 interface GridLayerProps {
@@ -56,7 +56,7 @@ export const GridLayer: React.FC<GridLayerProps> = ({ width, height, zoom, stage
   }
 
   return (
-    <Layer listening={false}>
+    <Group listening={false}>
       {/* Мелкая сетка */}
       {verticalLines.map((line, i) => (
         <Line
@@ -119,6 +119,6 @@ export const GridLayer: React.FC<GridLayerProps> = ({ width, height, zoom, stage
             />
           ))}
       </Group>
-    </Layer>
+    </Group>
   );
 };

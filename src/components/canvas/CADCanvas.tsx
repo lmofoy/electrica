@@ -5,13 +5,31 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { GridLayer } from './GridLayer';
 import { RoomsLayer } from './RoomsLayer';
 import { WallsAndDimensionsLayer } from './WallsAndDimensionsLayer';
+import { SelectionLayer } from './SelectionLayer';
+import { RoutingLayer } from './RoutingLayer';
+import { ElectricalLayer } from './ElectricalLayer';
 import { DraftingLayer } from './DraftingLayer';
 import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
 import { snapToGrid, distance, polarToPoint, angleDeg, snapAngle } from '../../core/geometry/math';
 import { findBestSnapAdvanced } from '../../core/geometry/snapping';
 import { buildAutoLayout } from '../../core/geometry/autoLayout';
-import type { Point2D } from '../../types';
+import {
+  DEVICE_CATALOG,
+  findDevicePlacement,
+  resolveDevice,
+  type ResolvedDevice,
+} from '../../core/electrical/devices';
+import { resolvePanelPose } from '../../core/electrical/panel';
+import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
+import { buildLineColorMap } from '../../core/electrical/lineColors';
+import { collectRoomElements, formatRoomDeletionPrompt } from '../../core/model/roomElements';
+import type {
+  DevicePartitionAnchor,
+  DeviceRoomEdgeAnchor,
+  ElectricalDevice,
+  Point2D,
+} from '../../types';
 import { Home, PenTool } from 'lucide-react';
 
 export const CADCanvas: React.FC = () => {
@@ -30,9 +48,15 @@ export const CADCanvas: React.FC = () => {
     shafts,
     openings,
     freePartitions,
-    selectedRoomId,
+    devices,
+    panel,
+    selection,
+    highlightedLineId,
     settings,
+    designMode,
     activeTool,
+    activeDeviceType,
+    deviceShared,
     zoom,
     stagePos,
     gridSnap,
@@ -44,7 +68,8 @@ export const CADCanvas: React.FC = () => {
     setZoom,
     setStagePos,
     setCursorPosMm,
-    setSelectedRoomId,
+    setSelection,
+    setHighlightedLine,
     setActiveSnap,
     addDraftVertex,
     popDraftVertex,
@@ -56,6 +81,9 @@ export const CADCanvas: React.FC = () => {
     setDynamicInputValues,
     startApartmentDrawing,
     startRoomDrawing,
+    addDevice,
+    placePanel,
+    addToast,
     drawingStage,
     boundaryMode,
     activeBoundaryTool,
@@ -76,6 +104,135 @@ export const CADCanvas: React.FC = () => {
     shafts,
     freePartitions,
     openings,
+    settings.defaultWallThicknessMm,
+  ]);
+
+  const resolvedDevices = useMemo(
+    () =>
+      devices
+        .map((device) =>
+          resolveDevice(
+            device,
+            rooms,
+            freePartitions,
+            settings.defaultWallThicknessMm
+          )
+        )
+        .filter((device): device is ResolvedDevice => device !== null),
+    [devices, rooms, freePartitions, settings.defaultWallThicknessMm]
+  );
+
+  const lineColorMap = useMemo(() => buildLineColorMap(panel), [panel]);
+  const deviceLineMap = useMemo(() => buildDeviceLineMap(panel), [panel]);
+  const deviceLineIds = useMemo(
+    () =>
+      new Map(
+        [...deviceLineMap].map(([deviceId, line]) => [deviceId, line.id] as const)
+      ),
+    [deviceLineMap]
+  );
+
+  const devicePreview = useMemo<{ resolved: ResolvedDevice | null; error: string | null }>(() => {
+    if (activeTool !== 'place_device') return { resolved: null, error: null };
+    if (rooms.length === 0) {
+      return { resolved: null, error: 'Сначала создайте комнату в режиме «Архитектура».' };
+    }
+
+    const thickness = settings.defaultWallThicknessMm;
+    const placement = findDevicePlacement(
+      activeDeviceType,
+      cursorPosMm,
+      rooms,
+      freePartitions,
+      thickness,
+      deviceShared
+    );
+    if (!placement.ok) return { resolved: null, error: placement.error };
+
+    const catalog = DEVICE_CATALOG[activeDeviceType];
+    const draft: ElectricalDevice = {
+      id: 'device-preview',
+      type: activeDeviceType,
+      name: catalog.label,
+      anchor: placement.anchor,
+      heightFromFloorMm: catalog.defaultHeightMm,
+      powerWatts: catalog.defaultPowerWatts,
+      shared: placement.isShared,
+    };
+    const resolved = resolveDevice(draft, rooms, freePartitions, thickness);
+    return {
+      resolved,
+      error: resolved ? null : 'Не удалось построить символ прибора.',
+    };
+  }, [
+    activeTool,
+    activeDeviceType,
+    cursorPosMm,
+    rooms,
+    freePartitions,
+    deviceShared,
+    settings.defaultWallThicknessMm,
+  ]);
+
+  const panelPose = useMemo(
+    () =>
+      panel
+        ? resolvePanelPose(
+            panel,
+            rooms,
+            freePartitions,
+            settings.defaultWallThicknessMm
+          )
+        : null,
+    [panel, rooms, freePartitions, settings.defaultWallThicknessMm]
+  );
+
+  useEffect(() => {
+    if (selection?.kind === 'device') {
+      setHighlightedLine(deviceLineMap.get(selection.id)?.id ?? null);
+      return;
+    }
+    if (selection !== null) setHighlightedLine(null);
+  }, [selection, deviceLineMap, setHighlightedLine]);
+
+  const panelPreview = useMemo<{
+    position: Point2D;
+    rotationDeg: number;
+    error: string | null;
+  } | null>(() => {
+    if (activeTool !== 'place_panel') return null;
+    if (rooms.length === 0) {
+      return {
+        position: cursorPosMm,
+        rotationDeg: 0,
+        error: 'Сначала создайте комнату в режиме «Архитектура».',
+      };
+    }
+    const placement = findDevicePlacement(
+      'socket_single',
+      cursorPosMm,
+      rooms,
+      freePartitions,
+      settings.defaultWallThicknessMm,
+      false
+    );
+    if (!placement.ok) {
+      return {
+        position: cursorPosMm,
+        rotationDeg: 0,
+        error: placement.error,
+      };
+    }
+    return {
+      position: placement.position,
+      rotationDeg: placement.rotationDeg,
+      error: null,
+    };
+  }, [
+    activeTool,
+    cursorPosMm,
+    rooms,
+    freePartitions,
     settings.defaultWallThicknessMm,
   ]);
 
@@ -206,16 +363,70 @@ export const CADCanvas: React.FC = () => {
 
     setCursorPosMm(worldPos);
   };
-
   const handleMouseUp = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (e.evt.button === 1 || isMiddleDraggingRef.current) {
       isMiddleDraggingRef.current = false;
     }
   };
 
-  // Клик для фиксации точки
+  // Клик для фиксации точки / выбора / постановки прибора
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.evt.button !== 0 || activeTool === 'pan' || activeTool === 'select') return;
+    if (e.evt.button !== 0 || activeTool === 'pan') return;
+
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    if (activeTool === 'select') {
+      if (e.target === stage) {
+        setSelection(null);
+        setHighlightedLine(null);
+      }
+      return;
+    }
+
+    if (activeTool === 'place_panel') {
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+      let clickPoint = screenToWorld(pointer.x, pointer.y);
+      if (gridSnap) clickPoint = snapToGrid(clickPoint, gridStepMm);
+
+      const placement = findDevicePlacement(
+        'socket_single',
+        clickPoint,
+        rooms,
+        freePartitions,
+        settings.defaultWallThicknessMm,
+        false
+      );
+      if (!placement.ok) {
+        addToast(placement.error, 'error');
+        return;
+      }
+      placePanel(placement.anchor as DeviceRoomEdgeAnchor | DevicePartitionAnchor);
+      return;
+    }
+
+    if (activeTool === 'place_device') {
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+      let clickPoint = screenToWorld(pointer.x, pointer.y);
+      if (gridSnap) clickPoint = snapToGrid(clickPoint, gridStepMm);
+
+      const placement = findDevicePlacement(
+        activeDeviceType,
+        clickPoint,
+        rooms,
+        freePartitions,
+        settings.defaultWallThicknessMm,
+        deviceShared
+      );
+      if (!placement.ok) {
+        addToast(placement.error, 'error');
+        return;
+      }
+      addDevice(activeDeviceType, placement.anchor, deviceShared);
+      return;
+    }
 
     const isDrawing =
       activeTool === 'draw_apartment' ||
@@ -225,8 +436,6 @@ export const CADCanvas: React.FC = () => {
       activeTool === 'draw_partition';
     if (!isDrawing) return;
 
-    const stage = stageRef.current;
-    if (!stage) return;
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
 
@@ -318,7 +527,52 @@ export const CADCanvas: React.FC = () => {
         } else if (draftVertices.length > 0) {
           cancelDraft();
         } else {
-          setSelectedRoomId(null);
+          setSelection(null);
+          setHighlightedLine(null);
+        }
+        return;
+      }
+
+      if (
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        !isDrawing &&
+        activeTool !== 'place_device' &&
+        activeTool !== 'place_panel' &&
+        selection
+      ) {
+        e.preventDefault();
+        const state = useProjectStore.getState();
+
+        if (selection.kind === 'panel') {
+          state.deletePanel();
+          return;
+        }
+        if (selection.kind === 'opening') {
+          state.deleteOpening(selection.id);
+          return;
+        }
+        if (selection.kind === 'partition') {
+          state.deletePartition(selection.id);
+          return;
+        }
+        if (selection.kind === 'device') {
+          state.deleteDevice(selection.id);
+          return;
+        }
+
+        const room = state.rooms.find((candidate) => candidate.id === selection.id);
+        if (!room) return;
+        const elements = collectRoomElements(
+          room.id,
+          state.rooms,
+          state.walls,
+          state.freePartitions,
+          state.openings,
+          state.devices,
+          state.settings.defaultWallThicknessMm
+        );
+        if (window.confirm(formatRoomDeletionPrompt(room.name, elements))) {
+          state.deleteRoom(room.id);
         }
         return;
       }
@@ -353,15 +607,20 @@ export const CADCanvas: React.FC = () => {
     cancelDraft,
     popDraftVertex,
     finishDraft,
-    setSelectedRoomId,
+    setSelection,
+    setHighlightedLine,
+    selection,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
+  const activeDeviceCatalog = DEVICE_CATALOG[activeDeviceType];
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden bg-slate-950 select-none cursor-crosshair"
+      className={`relative w-full h-full overflow-hidden bg-slate-950 select-none ${
+        activeTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
+      }`}
     >
       <Rulers
         width={dimensions.width}
@@ -385,22 +644,23 @@ export const CADCanvas: React.FC = () => {
         x={stagePos.x}
         y={stagePos.y}
       >
-        <GridLayer
-          width={dimensions.width}
-          height={dimensions.height}
-          zoom={zoom}
-          stagePos={stagePos}
-        />
-
         <RoomsLayer
           apartment={apartment}
           rooms={rooms}
           shafts={shafts}
-          selectedRoomId={selectedRoomId}
-          onSelectRoom={setSelectedRoomId}
+          selectedRoomId={selection?.kind === 'room' ? selection.id : null}
+          onSelectRoom={(id) => setSelection({ kind: 'room', id })}
           zoom={zoom}
           boundaryMode={boundaryMode}
           autoLayout={autoLayout}
+          grid={
+            <GridLayer
+              width={dimensions.width}
+              height={dimensions.height}
+              zoom={zoom}
+              stagePos={stagePos}
+            />
+          }
         />
 
         <WallsAndDimensionsLayer
@@ -412,6 +672,43 @@ export const CADCanvas: React.FC = () => {
           zoom={zoom}
           boundaryMode={boundaryMode}
           autoLayout={autoLayout}
+        />
+
+        <RoutingLayer
+          panel={panel}
+          panelPose={panelPose}
+          devices={resolvedDevices}
+          highlightedLineId={highlightedLineId}
+          zoom={zoom}
+          onSelectLine={setHighlightedLine}
+        />
+
+        <SelectionLayer
+          selection={selection}
+          openings={openings}
+          partitions={freePartitions}
+          devices={resolvedDevices}
+          panelId={panel?.id ?? null}
+          panelPose={panelPose}
+          zoom={zoom}
+          onSelect={setSelection}
+        />
+
+        <ElectricalLayer
+          devices={resolvedDevices}
+          zoom={zoom}
+          selectedDeviceId={selection?.kind === 'device' ? selection.id : null}
+          preview={devicePreview.resolved}
+          panel={panel}
+          panelPose={panelPose}
+          deviceLineIds={deviceLineIds}
+          lineColors={lineColorMap}
+          highlightedLineId={highlightedLineId}
+          panelPreview={
+            panelPreview && !panelPreview.error
+              ? { position: panelPreview.position, rotationDeg: panelPreview.rotationDeg }
+              : null
+          }
         />
 
         <DraftingLayer
@@ -503,9 +800,50 @@ export const CADCanvas: React.FC = () => {
           Шаг черчения: <strong className="text-amber-400">100 мм</strong>
         </span>
         <span className="text-slate-600">|</span>
-        <span className="text-slate-400">
-          Магнит: {activeSnap.isSnapped ? <span className="text-emerald-400 font-bold">{activeSnap.label}</span> : 'Сетка'}
-        </span>
+        {designMode === 'electrical' ? (
+          <>
+            <span>
+              {activeTool === 'place_panel' ? (
+                <>
+                  Модуль: <strong className="text-sky-400">Электрощиток</strong>
+                </>
+              ) : (
+                <>
+                  Прибор:{' '}
+                  <strong className="text-sky-400">{activeDeviceCatalog.label}</strong>
+                  {deviceShared && activeDeviceCatalog.mounting === 'wall' && (
+                    <span className="text-amber-400"> · сквозной</span>
+                  )}
+                </>
+              )}
+            </span>
+            {activeTool === 'place_panel' && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className={panelPreview?.error ? 'text-rose-400' : 'text-emerald-400'}>
+                  {panelPreview?.error ?? 'ЛКМ — поставить на стену, Esc — выйти'}
+                </span>
+              </>
+            )}
+            {activeTool === 'place_device' && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className={devicePreview.error ? 'text-rose-400' : 'text-emerald-400'}>
+                  {devicePreview.error ?? 'ЛКМ — поставить, Esc — выйти'}
+                </span>
+              </>
+            )}
+          </>
+        ) : (
+          <span className="text-slate-400">
+            Магнит:{' '}
+            {activeSnap.isSnapped ? (
+              <span className="text-emerald-400 font-bold">{activeSnap.label}</span>
+            ) : (
+              'Сетка'
+            )}
+          </span>
+        )}
       </div>
     </div>
   );

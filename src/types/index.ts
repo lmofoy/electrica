@@ -77,7 +77,20 @@ export type CADTool =
   | 'draw_room'      // очерчивание комнат внутри квартиры
   | 'draw_shaft'     // вырезание шахт и колонн
   | 'draw_opening'   // установка дверей и окон
-  | 'draw_partition'; // рисование одиночных перегородок
+  | 'draw_partition' // рисование одиночных перегородок
+  | 'place_device'   // расстановка электроточек
+  | 'place_panel';   // размещение электрощитка
+
+// Режим работы: архитектура (оболочка) или электрика (наполнение)
+export type DesignMode = 'architecture' | 'electrical';
+
+// Единое выделение любого элемента плана
+export type Selection =
+  | { kind: 'room'; id: string }
+  | { kind: 'opening'; id: string }
+  | { kind: 'partition'; id: string }
+  | { kind: 'device'; id: string }
+  | { kind: 'panel'; id: string };
 
 export type OpeningType = 'door' | 'window';
 
@@ -117,6 +130,8 @@ export interface ProjectSnapshot {
   openings: Opening[];
   freePartitions: FreePartition[];
   shafts: ShaftCutout[];
+  devices?: ElectricalDevice[]; // отсутствует в проектах до этапа «Электрика»
+  panel?: ElectricalPanel | null; // отсутствует в проектах до этапа «Щиток»
 }
 
 export interface ToastMessage {
@@ -151,7 +166,9 @@ export interface SnapResult {
 }
 
 // -------------------------------------------------------------
-// Архитектурная модель электроточек (для следующего шага)
+// Электрика: устройства привязаны к грани комнаты или перегородке.
+// Одна запись может отображаться двумя зеркальными символами
+// (сквозь стену, для двух смежных комнат).
 // -------------------------------------------------------------
 export type DeviceType =
   | 'socket_single'
@@ -159,23 +176,119 @@ export type DeviceType =
   | 'socket_wet'
   | 'switch_1k'
   | 'switch_2k'
-  | 'light_ceiling'
-  | 'cooktop'
-  | 'oven'
-  | 'water_heater'
-  | 'ac'
-  | 'panel_board';
+  | 'light_ceiling';
+
+// Грань комнаты: edgeIndex — индекс ребра vertices[i] → vertices[i+1]
+export interface DeviceRoomEdgeAnchor {
+  kind: 'room_edge';
+  roomId: string;
+  edgeIndex: number;
+  offsetMm: number; // расстояние от начала ребра вдоль него
+}
+
+// Перегородка: side = 1 | -1 — сторона нормали p1 → p2
+export interface DevicePartitionAnchor {
+  kind: 'partition';
+  partitionId: string;
+  offsetMm: number;
+  side: 1 | -1;
+}
+
+// Потолочная точка внутри комнаты
+export interface DeviceRoomPointAnchor {
+  kind: 'room_point';
+  roomId: string;
+  x: number;
+  y: number;
+}
+
+export type DeviceAnchor =
+  | DeviceRoomEdgeAnchor
+  | DevicePartitionAnchor
+  | DeviceRoomPointAnchor;
 
 export interface ElectricalDevice {
   id: string;
   type: DeviceType;
   name: string;
-  roomId: string; // Привязка к КОНКРЕТНОЙ комнате (решает проблему смежных стен!)
-  wallId?: string; // Привязка к конкретной стене
-  wallOffsetT?: number; // Смещение вдоль стены (0..1)
-  position: Point2D; // Мировые координаты в мм
-  heightFromFloorMm: number; // Высота от чистового пола (300 мм розетки, 900 мм выключатели)
-  inwardNormalAngleDeg: number; // Угол разворота внутрь комнаты
+  anchor: DeviceAnchor;
+  heightFromFloorMm: number; // розетки 300 мм, выключатели 900 мм, светильники — потолок
   powerWatts: number;
+  shared: boolean; // сквозное устройство: принадлежит двум смежным комнатам
   circuitId?: string;
+}
+
+// -------------------------------------------------------------
+// Электрощиток: отдельный модуль со своей схемой.
+// Щиток привязан к стене (грань комнаты или перегородка), на плане
+// отображается символом, а его схема открывается отдельным экраном.
+// -------------------------------------------------------------
+export type ProjectView = 'plan' | 'panel';
+
+export type PanelStrategy = 'budget' | 'optimal' | 'maximum' | 'custom';
+
+export type PanelMounting = 'flush' | 'surface'; // встроенный / накладной
+
+export type LinePurpose =
+  | 'lighting'
+  | 'sockets'
+  | 'wet'
+  | 'kitchen'
+  | 'hob'
+  | 'oven'
+  | 'washing'
+  | 'ac'
+  | 'heating'
+  | 'other';
+
+export interface CableSpec {
+  sectionMm2: number; // 1.5 | 2.5 | 4 | 6 | 10 | 16
+  cores: 3; // 1 фаза: L + N + PE
+}
+
+export interface BreakerSpec {
+  poles: 1 | 2;
+  ratingA: number; // 6, 10, 16, 20, 25, 32, 40, 50, 63
+  curve: 'B' | 'C';
+}
+
+export interface RcdSpec {
+  poles: 2; // 1P+N
+  ratingA: number;
+  sensitivityMa: number; // 10 | 30 | 100 | 300
+  type: 'A' | 'AC';
+}
+
+export interface CircuitLine {
+  id: string;
+  name: string;
+  purpose: LinePurpose;
+  roomIds: string[];
+  deviceIds: string[]; // заглушка для будущей трассировки
+  loadW: number;
+  cable: CableSpec;
+  breaker: BreakerSpec;
+  rcd: RcdSpec | null;
+}
+
+export interface PanelSupply {
+  allocatedPowerW: number; // выделенная мощность по ТУ
+  voltageV: 230;
+  inputCable: CableSpec;
+  inputBreaker: BreakerSpec;
+  meter: { enabled: boolean };
+  mainRcd: RcdSpec | null; // противопожарное УЗО на вводе
+  voltageRelay: boolean;
+  surgeProtection: boolean;
+}
+
+export interface ElectricalPanel {
+  id: string;
+  name: string;
+  anchor: DeviceRoomEdgeAnchor | DevicePartitionAnchor;
+  heightFromFloorMm: number;
+  mounting: PanelMounting;
+  supply: PanelSupply;
+  strategy: PanelStrategy;
+  lines: CircuitLine[];
 }

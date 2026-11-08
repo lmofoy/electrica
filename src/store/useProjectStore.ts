@@ -27,6 +27,17 @@ import type {
   BoundaryTool,
   BoundaryMode,
   ToastMessage,
+  DesignMode,
+  Selection,
+  DeviceType,
+  DeviceAnchor,
+  ElectricalDevice,
+  ElectricalPanel,
+  CircuitLine,
+  LinePurpose,
+  PanelStrategy,
+  PanelSupply,
+  ProjectView,
 } from '../types';
 import {
   calculateRoomsOverlapAreaM2,
@@ -46,11 +57,38 @@ import {
   validateShaftPlacement,
   type AutoLayout,
 } from '../core/geometry/autoLayout';
+import {
+  DEVICE_CATALOG,
+  resolveDevice,
+  sanitizeDevices,
+} from '../core/electrical/devices';
+import {
+  applyStrategy,
+  autoLinesFromDevices,
+  createEmptyPanel,
+  createLine,
+  recalculateLine,
+  recalculateSupply,
+  sanitizePanel,
+  type PanelWallAnchor,
+} from '../core/electrical/panel';
+import { prunePanelRefs } from '../core/electrical/lineAssignment';
+import { collectRoomElements } from '../core/model/roomElements';
 
 let idCounter = 0;
 function makeEntityId(prefix: string): string {
   idCounter += 1;
   return `${prefix}-${Date.now()}-${idCounter}`;
+}
+
+function keepLineHighlight(
+  panel: ElectricalPanel | null,
+  highlightedLineId: string | null
+): string | null {
+  if (!highlightedLineId) return null;
+  return panel?.lines.some((line) => line.id === highlightedLineId)
+    ? highlightedLineId
+    : null;
 }
 
 // 100 мм²: отсекаем погрешность вычислений, но ловим реальное наложение
@@ -62,13 +100,24 @@ interface ProjectState {
   walls: Wall[];
   openings: Opening[];
   freePartitions: FreePartition[];
+  devices: ElectricalDevice[];
+  panel: ElectricalPanel | null;
   apartment: ApartmentBoundary | null;
   rooms: RoomZone[];
   shafts: ShaftCutout[];
-  selectedRoomId: string | null;
+  selection: Selection | null;
+
+  // Отдельный экран щитка вместо плана и подсветка линии на плане
+  activeView: ProjectView;
+  highlightedLineId: string | null;
 
   // Настройки
   settings: ProjectSettings;
+
+  // Режим работы и активный электроприбор
+  designMode: DesignMode;
+  activeDeviceType: DeviceType;
+  deviceShared: boolean;
 
   // Холст и навигация
   activeTool: CADTool;
@@ -108,10 +157,15 @@ interface ProjectState {
   setStagePos: (pos: Point2D | ((prev: Point2D) => Point2D)) => void;
   setCursorPosMm: (pos: Point2D) => void;
   setGridSnap: (enabled: boolean) => void;
-  setSelectedRoomId: (id: string | null) => void;
+  setSelection: (selection: Selection | null) => void;
   setActiveSnap: (snap: SnapResult) => void;
   toggleDimensions: () => void;
   checkCoverage: () => void;
+
+  // Режим работы
+  setDesignMode: (mode: DesignMode) => void;
+  setActiveDeviceType: (type: DeviceType) => void;
+  setDeviceShared: (shared: boolean) => void;
 
   // Черчение...
   startApartmentDrawing: () => void;
@@ -133,6 +187,25 @@ interface ProjectState {
   deleteApartment: () => void;
   updateRoom: (id: string, updates: Partial<RoomZone>) => void;
   deleteRoom: (id: string) => void;
+  deleteOpening: (id: string) => void;
+  deletePartition: (id: string) => void;
+  addDevice: (type: DeviceType, anchor: DeviceAnchor, shared: boolean) => void;
+  deleteDevice: (id: string) => void;
+
+  // Щиток
+  setActiveView: (view: ProjectView) => void;
+  setHighlightedLine: (id: string | null) => void;
+  placePanel: (anchor: PanelWallAnchor) => void;
+  deletePanel: () => void;
+  updatePanel: (updates: Partial<Omit<ElectricalPanel, 'id' | 'lines' | 'supply'>>) => void;
+  updatePanelSupply: (updates: Partial<PanelSupply>) => void;
+  setPanelStrategy: (strategy: PanelStrategy) => void;
+  generatePanelLines: () => void;
+  addPanelLine: (purpose: LinePurpose, roomIds: string[]) => void;
+  updatePanelLine: (id: string, updates: Partial<CircuitLine>) => void;
+  deletePanelLine: (id: string) => void;
+  clearPanelLines: () => void;
+
   resetProject: () => void;
   loadProject: (snapshot: ProjectSnapshot) => void;
 }
@@ -228,12 +301,21 @@ export const useProjectStore = create<ProjectState>()(
       walls: [],
       openings: [],
       freePartitions: [],
+      devices: [],
+      panel: null,
       apartment: null,
       rooms: [],
       shafts: [],
-      selectedRoomId: null,
+      selection: null,
+
+      activeView: 'plan',
+      highlightedLineId: null,
 
       settings: DEFAULT_SETTINGS,
+
+      designMode: 'architecture',
+      activeDeviceType: 'socket_single',
+      deviceShared: false,
 
       activeTool: 'select',
       activeRoomType: 'living',
@@ -345,8 +427,28 @@ export const useProjectStore = create<ProjectState>()(
 
       setCursorPosMm: (pos) => set({ cursorPosMm: pos }),
       setGridSnap: (enabled) => set({ gridSnap: enabled }),
-      setSelectedRoomId: (id) => set({ selectedRoomId: id }),
+      setSelection: (selection) => set({ selection }),
       setActiveSnap: (snap) => set({ activeSnap: snap }),
+
+      setDesignMode: (mode) =>
+        set({
+          designMode: mode,
+          activeTool: 'select',
+          draftVertices: [],
+          dynamicInput: DEFAULT_DYNAMIC_INPUT,
+          activeSnap: DEFAULT_SNAP,
+        }),
+
+      setActiveDeviceType: (type) =>
+        set({
+          activeDeviceType: type,
+          activeTool: 'place_device',
+          draftVertices: [],
+          dynamicInput: DEFAULT_DYNAMIC_INPUT,
+          activeSnap: DEFAULT_SNAP,
+        }),
+
+      setDeviceShared: (shared) => set({ deviceShared: shared }),
 
       toggleDimensions: () =>
         set((state) => ({
@@ -556,7 +658,7 @@ export const useProjectStore = create<ProjectState>()(
               draftVertices: [],
               dynamicInput: DEFAULT_DYNAMIC_INPUT,
               activeTool: 'select',
-              selectedRoomId: newRoom.id,
+              selection: { kind: 'room', id: newRoom.id },
               drawingStage: 'rooms',
               boundaryLocked: false,
             });
@@ -656,7 +758,7 @@ export const useProjectStore = create<ProjectState>()(
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
-            selectedRoomId: newRoom.id,
+            selection: { kind: 'room', id: newRoom.id },
           });
           get().checkCoverage();
           return;
@@ -846,6 +948,7 @@ export const useProjectStore = create<ProjectState>()(
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
+            selection: { kind: 'opening', id: newOpening.id },
           });
           state.addToast(isWindow ? 'Окно добавлено.' : 'Дверь добавлена.', 'success');
           return;
@@ -893,6 +996,7 @@ export const useProjectStore = create<ProjectState>()(
               draftVertices: [],
               dynamicInput: DEFAULT_DYNAMIC_INPUT,
               activeTool: 'select',
+              selection: { kind: 'partition', id: newPartition.id },
             });
             state.addToast('Перегородка добавлена, комната осталась целой.', 'success');
             get().checkCoverage();
@@ -963,6 +1067,7 @@ export const useProjectStore = create<ProjectState>()(
               draftVertices: [],
               dynamicInput: DEFAULT_DYNAMIC_INPUT,
               activeTool: 'select',
+              selection: { kind: 'partition', id: newPartition.id },
             });
             state.addToast('Комната разделена перегородкой на две части.', 'success');
             get().checkCoverage();
@@ -975,6 +1080,7 @@ export const useProjectStore = create<ProjectState>()(
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
+            selection: { kind: 'partition', id: newPartition.id },
           });
           state.addToast('Перегородка добавлена как простенок (комната не разделена).', 'info');
           return;
@@ -1054,10 +1160,14 @@ export const useProjectStore = create<ProjectState>()(
           walls: [],
           openings: [],
           freePartitions: [],
+          devices: [],
+          panel: null,
           apartment: null,
           rooms: [],
           shafts: [],
-          selectedRoomId: null,
+          selection: null,
+          activeView: 'plan',
+          highlightedLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -1097,17 +1207,45 @@ export const useProjectStore = create<ProjectState>()(
 
       deleteRoom: (id) => {
         const state = get();
+        const room = state.rooms.find((candidate) => candidate.id === id);
+        if (!room) return;
+
+        const thickness = state.settings.defaultWallThicknessMm;
+        const elements = collectRoomElements(
+          id,
+          state.rooms,
+          state.walls,
+          state.freePartitions,
+          state.openings,
+          state.devices,
+          thickness
+        );
+        const doomedOpeningIds = new Set(
+          [...elements.doors, ...elements.windows].map((opening) => opening.id)
+        );
+        const doomedDeviceIds = new Set(
+          elements.devices.map((resolved) => resolved.device.id)
+        );
+        const remainingPartitions = state.freePartitions.filter(
+          (partition) => partition.roomId !== id
+        );
+        const remainingOpenings = state.openings.filter(
+          (opening) => !doomedOpeningIds.has(opening.id)
+        );
+        const remainingDevices = state.devices.filter(
+          (device) => !doomedDeviceIds.has(device.id)
+        );
+        const selection = state.selection;
+        const selectionRemoved =
+          selection !== null &&
+          ((selection.kind === 'room' && selection.id === id) ||
+            (selection.kind === 'opening' && doomedOpeningIds.has(selection.id)) ||
+            (selection.kind === 'partition' &&
+              elements.partitions.some((partition) => partition.id === selection.id)) ||
+            (selection.kind === 'device' && doomedDeviceIds.has(selection.id)));
 
         if (state.boundaryMode === 'auto') {
-          const room = state.rooms.find((candidate) => candidate.id === id);
-          if (!room) return;
-
-          const remainingRooms = state.rooms.filter((candidate) => candidate.id !== id);
-          const remainingPartitions = state.freePartitions.filter(
-            (partition) => partition.roomId !== id
-          );
-
-          if (roomTouchesShafts(room, state.shafts, state.settings.defaultWallThicknessMm)) {
+          if (roomTouchesShafts(room, state.shafts, thickness)) {
             state.addToast(
               'В комнате есть шахта. Сначала удалите шахту или оставьте комнату на месте.',
               'error'
@@ -1115,12 +1253,10 @@ export const useProjectStore = create<ProjectState>()(
             return;
           }
 
+          const remainingRooms = state.rooms.filter((candidate) => candidate.id !== id);
+
           if (
-            !isAutoLayoutConnected(
-              remainingRooms,
-              state.shafts,
-              state.settings.defaultWallThicknessMm
-            )
+            !isAutoLayoutConnected(remainingRooms, state.shafts, thickness)
           ) {
             state.addToast(
               'Удаление разорвёт квартиру на отдельные части. Сначала соедините комнаты.',
@@ -1135,10 +1271,14 @@ export const useProjectStore = create<ProjectState>()(
               shafts: [],
               freePartitions: [],
               openings: [],
+              devices: [],
+              panel: null,
               apartment: null,
               nodes: {},
               walls: [],
-              selectedRoomId: null,
+              selection: null,
+              activeView: 'plan',
+              highlightedLineId: null,
             });
             get().checkCoverage();
             return;
@@ -1148,13 +1288,23 @@ export const useProjectStore = create<ProjectState>()(
             remainingRooms,
             state.shafts,
             remainingPartitions,
-            state.openings,
-            state.settings.defaultWallThicknessMm
+            remainingOpenings,
+            thickness
+          );
+
+          const nextPanel = prunePanelRefs(
+            sanitizePanel(state.panel, remainingRooms, remainingPartitions, thickness),
+            remainingDevices.map((device) => device.id),
+            remainingRooms.map((candidate) => candidate.id)
           );
 
           set({
             ...next.state,
-            selectedRoomId: state.selectedRoomId === id ? null : state.selectedRoomId,
+            devices: remainingDevices,
+            panel: nextPanel,
+            activeView: nextPanel ? state.activeView : 'plan',
+            highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
+            selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
           });
           if (next.removedOpenings > 0) {
             state.addToast(
@@ -1169,17 +1319,340 @@ export const useProjectStore = create<ProjectState>()(
         const graph = extractGraphFromPlan(
           state.apartment,
           state.rooms.filter((r) => r.id !== id),
-          state.settings.defaultWallThicknessMm,
+          thickness,
           state.settings.exteriorWallThicknessMm
+        );
+        const nextPanel = prunePanelRefs(
+          sanitizePanel(
+            state.panel,
+            graph.updatedRooms,
+            remainingPartitions,
+            thickness
+          ),
+          remainingDevices.map((device) => device.id),
+          graph.updatedRooms.map((candidate) => candidate.id)
         );
         set({
           apartment: graph.updatedApartment,
           rooms: graph.updatedRooms,
           nodes: graph.nodes,
           walls: graph.walls,
-          selectedRoomId: state.selectedRoomId === id ? null : state.selectedRoomId,
+          freePartitions: remainingPartitions,
+          openings: remainingOpenings,
+          devices: remainingDevices,
+          panel: nextPanel,
+          activeView: nextPanel ? state.activeView : 'plan',
+          highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
+          selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
         });
         get().checkCoverage();
+      },
+
+      deleteOpening: (id) => {
+        const state = get();
+        const opening = state.openings.find((candidate) => candidate.id === id);
+        if (!opening) return;
+        set({
+          openings: state.openings.filter((candidate) => candidate.id !== id),
+          selection:
+            state.selection?.kind === 'opening' && state.selection.id === id
+              ? null
+              : state.selection,
+        });
+        state.addToast(
+          opening.type === 'door' ? 'Дверь удалена.' : 'Окно удалено.',
+          'success'
+        );
+      },
+
+      deletePartition: (id) => {
+        const state = get();
+        const partition = state.freePartitions.find((candidate) => candidate.id === id);
+        if (!partition) return;
+
+        const thickness = state.settings.defaultWallThicknessMm;
+        const remainingPartitions = state.freePartitions.filter(
+          (candidate) => candidate.id !== id
+        );
+        const doomedDeviceIds = new Set(
+          state.devices
+            .filter(
+              (device) =>
+                device.anchor.kind === 'partition' && device.anchor.partitionId === id
+            )
+            .map((device) => device.id)
+        );
+        const remainingDevices = state.devices.filter(
+          (device) => !doomedDeviceIds.has(device.id)
+        );
+        const selection = state.selection;
+        const selectionRemoved =
+          selection !== null &&
+          ((selection.kind === 'partition' && selection.id === id) ||
+            (selection.kind === 'device' && doomedDeviceIds.has(selection.id)));
+
+        if (state.boundaryMode === 'auto') {
+          const next = computeAutoProjectState(
+            state.rooms,
+            state.shafts,
+            remainingPartitions,
+            state.openings,
+            thickness
+          );
+          const nextPanel = prunePanelRefs(
+            sanitizePanel(state.panel, state.rooms, remainingPartitions, thickness),
+            remainingDevices.map((device) => device.id),
+            state.rooms.map((room) => room.id)
+          );
+          set({
+            ...next.state,
+            devices: remainingDevices,
+            panel: nextPanel,
+            activeView: nextPanel ? state.activeView : 'plan',
+            highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
+            selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
+          });
+          if (next.removedOpenings > 0) {
+            state.addToast('Проёмы на удалённой перегородке тоже удалены.', 'info');
+          }
+        } else {
+          const nextPanel = prunePanelRefs(
+            sanitizePanel(state.panel, state.rooms, remainingPartitions, thickness),
+            remainingDevices.map((device) => device.id),
+            state.rooms.map((room) => room.id)
+          );
+          set({
+            freePartitions: remainingPartitions,
+            devices: remainingDevices,
+            panel: nextPanel,
+            activeView: nextPanel ? state.activeView : 'plan',
+            highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
+            selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
+          });
+        }
+        state.addToast('Перегородка удалена.', 'success');
+        get().checkCoverage();
+      },
+
+      addDevice: (type, anchor, shared) => {
+        const state = get();
+        const catalog = DEVICE_CATALOG[type];
+        const thickness = state.settings.defaultWallThicknessMm;
+        const sameTypeCount = state.devices.filter((device) => device.type === type).length;
+
+        const candidate: ElectricalDevice = {
+          id: makeEntityId('device'),
+          type,
+          name: `${catalog.label} ${sameTypeCount + 1}`,
+          anchor,
+          heightFromFloorMm: catalog.defaultHeightMm,
+          powerWatts: catalog.defaultPowerWatts,
+          shared,
+        };
+
+        const resolved = resolveDevice(
+          candidate,
+          state.rooms,
+          state.freePartitions,
+          thickness
+        );
+        if (!resolved) {
+          state.addToast(
+            'Не удалось привязать прибор к комнате. Проверьте план.',
+            'error'
+          );
+          return;
+        }
+
+        set({
+          devices: [
+            ...state.devices,
+            { ...candidate, shared: resolved.isShared },
+          ],
+        });
+      },
+
+      deleteDevice: (id) => {
+        const state = get();
+        if (!state.devices.some((device) => device.id === id)) return;
+        const devices = state.devices.filter((device) => device.id !== id);
+        const panel = prunePanelRefs(
+          state.panel,
+          devices.map((device) => device.id),
+          state.rooms.map((room) => room.id)
+        );
+        set({
+          devices,
+          panel,
+          selection:
+            state.selection?.kind === 'device' && state.selection.id === id
+              ? null
+              : state.selection,
+        });
+        state.addToast('Прибор удалён.', 'success');
+      },
+
+      // ---------------------------------------------------------
+      // Щиток
+      // ---------------------------------------------------------
+      setActiveView: (view) => {
+        const state = get();
+        if (view === 'panel' && !state.panel) {
+          state.addToast('Сначала разместите щиток на плане.', 'error');
+          return;
+        }
+        set({
+          activeView: view,
+          activeTool: 'select',
+          draftVertices: [],
+          dynamicInput: DEFAULT_DYNAMIC_INPUT,
+          activeSnap: DEFAULT_SNAP,
+        });
+      },
+
+      setHighlightedLine: (id) => {
+        if (id === null) {
+          set({ highlightedLineId: null });
+          return;
+        }
+        const state = get();
+        if (!state.panel?.lines.some((line) => line.id === id)) {
+          set({ highlightedLineId: null });
+          return;
+        }
+        set({ highlightedLineId: id });
+      },
+
+      placePanel: (anchor) => {
+        const state = get();
+        if (state.panel) {
+          set({
+            panel: { ...state.panel, anchor },
+            selection: { kind: 'panel', id: state.panel.id },
+            activeTool: 'select',
+          });
+          state.addToast('Щиток перемещён на новую стену.', 'success');
+          return;
+        }
+        const panel = createEmptyPanel(anchor);
+        set({
+          panel,
+          selection: { kind: 'panel', id: panel.id },
+          activeTool: 'select',
+        });
+        state.addToast(
+          'Щиток размещён. Откройте модуль «Щиток», чтобы собрать схему.',
+          'success'
+        );
+      },
+
+      deletePanel: () => {
+        const state = get();
+        if (!state.panel) return;
+        set({
+          panel: null,
+          activeView: 'plan',
+          highlightedLineId: null,
+          selection: state.selection?.kind === 'panel' ? null : state.selection,
+        });
+        state.addToast('Щиток удалён.', 'success');
+      },
+
+      updatePanel: (updates) => {
+        const state = get();
+        if (!state.panel) return;
+        set({ panel: { ...state.panel, ...updates } });
+      },
+
+      updatePanelSupply: (updates) => {
+        const state = get();
+        if (!state.panel) return;
+        const merged = { ...state.panel.supply, ...updates };
+        const supply =
+          updates.allocatedPowerW !== undefined ? recalculateSupply(merged) : merged;
+        set({ panel: { ...state.panel, supply } });
+      },
+
+      setPanelStrategy: (strategy) => {
+        const state = get();
+        if (!state.panel) return;
+        set({ panel: applyStrategy(state.panel, strategy) });
+        if (strategy === 'custom') {
+          state.addToast('Ручной режим: изменения схемы больше не перезаписываются.', 'info');
+        }
+      },
+
+      generatePanelLines: () => {
+        const state = get();
+        if (!state.panel) return;
+        const lines = autoLinesFromDevices(
+          state.devices,
+          state.rooms,
+          state.freePartitions
+        );
+        const withStrategy = applyStrategy({ ...state.panel, lines }, state.panel.strategy);
+        set({ panel: withStrategy, highlightedLineId: null });
+        if (lines.length === 0) {
+          state.addToast(
+            'Приборов на плане нет. Добавьте линии вручную или расставьте розетки и свет.',
+            'info'
+          );
+        } else {
+          state.addToast(
+            `Собрано линий: ${lines.length}. Проверьте автоматы, кабели и УЗО.`,
+            'success'
+          );
+        }
+      },
+
+      addPanelLine: (purpose, roomIds) => {
+        const state = get();
+        if (!state.panel) return;
+        const roomName =
+          roomIds.length > 0
+            ? state.rooms.find((room) => room.id === roomIds[0])?.name ?? 'Группа'
+            : 'Без комнаты';
+        const line = createLine(purpose, roomIds, roomName, state.panel.lines.length);
+        set({
+          panel: { ...state.panel, lines: [...state.panel.lines, line] },
+        });
+      },
+
+      updatePanelLine: (id, updates) => {
+        const state = get();
+        if (!state.panel) return;
+        const lines = state.panel.lines.map((line) => {
+          if (line.id !== id) return line;
+          const merged = { ...line, ...updates, id: line.id };
+          if (updates.loadW !== undefined || updates.purpose !== undefined) {
+            return recalculateLine(merged);
+          }
+          return merged;
+        });
+        set({ panel: { ...state.panel, lines } });
+      },
+
+      deletePanelLine: (id) => {
+        const state = get();
+        if (!state.panel) return;
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.filter((line) => line.id !== id),
+          },
+          highlightedLineId:
+            state.highlightedLineId === id ? null : state.highlightedLineId,
+        });
+      },
+
+      clearPanelLines: () => {
+        const state = get();
+        if (!state.panel) return;
+        set({
+          panel: { ...state.panel, lines: [], strategy: 'custom' },
+          highlightedLineId: null,
+        });
+        state.addToast('Схема очищена. Добавляйте линии вручную.', 'info');
       },
 
       resetProject: () => {
@@ -1188,14 +1661,21 @@ export const useProjectStore = create<ProjectState>()(
           walls: [],
           openings: [],
           freePartitions: [],
+          devices: [],
+          panel: null,
           apartment: null,
           rooms: [],
           shafts: [],
-          selectedRoomId: null,
+          selection: null,
+          activeView: 'plan',
+          highlightedLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
           activeTool: 'select',
+          designMode: 'architecture',
+          activeDeviceType: 'socket_single',
+          deviceShared: false,
           boundaryMode: 'auto',
           drawingStage: 'rooms',
           boundaryLocked: false,
@@ -1211,6 +1691,7 @@ export const useProjectStore = create<ProjectState>()(
         const settings = { ...DEFAULT_SETTINGS, ...snapshot.settings };
         const mode: BoundaryMode =
           snapshot.boundaryMode ?? (snapshot.apartment ? 'manual' : 'auto');
+        const storedDevices = snapshot.devices ?? [];
 
         if (mode === 'auto') {
           const next = computeAutoProjectState(
@@ -1221,11 +1702,35 @@ export const useProjectStore = create<ProjectState>()(
             settings.defaultWallThicknessMm
           );
 
+          const devices = sanitizeDevices(
+            storedDevices,
+            next.state.rooms,
+            next.state.freePartitions,
+            settings.defaultWallThicknessMm
+          );
+          const panel = prunePanelRefs(
+            sanitizePanel(
+              snapshot.panel ?? null,
+              next.state.rooms,
+              next.state.freePartitions,
+              settings.defaultWallThicknessMm
+            ),
+            devices.map((device) => device.id),
+            next.state.rooms.map((room) => room.id)
+          );
+
           set({
             settings,
             boundaryMode: 'auto',
             ...next.state,
-            selectedRoomId: null,
+            devices,
+            panel,
+            selection: null,
+            activeView: 'plan',
+            highlightedLineId: null,
+            designMode: 'architecture',
+            activeDeviceType: 'socket_single',
+            deviceShared: false,
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeSnap: DEFAULT_SNAP,
@@ -1243,18 +1748,43 @@ export const useProjectStore = create<ProjectState>()(
         const apartment = snapshot.apartment
           ? { ...snapshot.apartment, holes: snapshot.apartment.holes ?? [] }
           : null;
+        const rooms = snapshot.rooms ?? [];
+        const partitions = snapshot.freePartitions ?? [];
+        const devices = sanitizeDevices(
+          storedDevices,
+          rooms,
+          partitions,
+          settings.defaultWallThicknessMm
+        );
+        const panel = prunePanelRefs(
+          sanitizePanel(
+            snapshot.panel ?? null,
+            rooms,
+            partitions,
+            settings.defaultWallThicknessMm
+          ),
+          devices.map((device) => device.id),
+          rooms.map((room) => room.id)
+        );
 
         set({
           settings,
           boundaryMode: 'manual',
           apartment,
-          rooms: snapshot.rooms ?? [],
+          rooms,
           nodes: snapshot.nodes ?? {},
           walls: snapshot.walls ?? [],
           openings: snapshot.openings ?? [],
-          freePartitions: snapshot.freePartitions ?? [],
+          freePartitions: partitions,
           shafts: snapshot.shafts ?? [],
-          selectedRoomId: null,
+          devices,
+          panel,
+          selection: null,
+          activeView: 'plan',
+          highlightedLineId: null,
+          designMode: 'architecture',
+          activeDeviceType: 'socket_single',
+          deviceShared: false,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -1270,12 +1800,27 @@ export const useProjectStore = create<ProjectState>()(
     }),
     {
       limit: 50,
+      // Undo возвращает только данные проекта; вид (план/щиток), выделение и
+      // инструменты остаются текущими, чтобы Ctrl+Z не переключал экраны.
+      partialize: (state) => ({
+        nodes: state.nodes,
+        walls: state.walls,
+        apartment: state.apartment,
+        rooms: state.rooms,
+        openings: state.openings,
+        freePartitions: state.freePartitions,
+        shafts: state.shafts,
+        devices: state.devices,
+        panel: state.panel,
+      }),
       equality: (pastState, currentState) =>
         JSON.stringify(pastState.apartment) === JSON.stringify(currentState.apartment) &&
         JSON.stringify(pastState.rooms) === JSON.stringify(currentState.rooms) &&
         JSON.stringify(pastState.openings) === JSON.stringify(currentState.openings) &&
         JSON.stringify(pastState.freePartitions) === JSON.stringify(currentState.freePartitions) &&
-        JSON.stringify(pastState.shafts) === JSON.stringify(currentState.shafts),
+        JSON.stringify(pastState.shafts) === JSON.stringify(currentState.shafts) &&
+        JSON.stringify(pastState.devices) === JSON.stringify(currentState.devices) &&
+        JSON.stringify(pastState.panel) === JSON.stringify(currentState.panel),
     }
   )
 );
@@ -1299,6 +1844,8 @@ export function getProjectSnapshot(): ProjectSnapshot {
     openings: state.openings,
     freePartitions: state.freePartitions,
     shafts: state.shafts,
+    devices: state.devices,
+    panel: state.panel,
   };
 }
 
@@ -1312,6 +1859,10 @@ export function isProjectSnapshot(value: unknown): value is ProjectSnapshot {
     Array.isArray(snapshot.openings) &&
     Array.isArray(snapshot.freePartitions) &&
     Array.isArray(snapshot.shafts) &&
+    (snapshot.devices === undefined || Array.isArray(snapshot.devices)) &&
+    (snapshot.panel === undefined ||
+      snapshot.panel === null ||
+      typeof snapshot.panel === 'object') &&
     (snapshot.apartment === null || typeof snapshot.apartment === 'object')
   );
 }

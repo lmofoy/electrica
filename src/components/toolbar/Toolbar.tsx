@@ -21,28 +21,56 @@ import {
   Split,
   Save,
   Upload,
+  Plug,
+  Plug2,
+  Droplets,
+  ToggleLeft,
+  SlidersHorizontal,
+  Lightbulb,
+  Repeat2,
+  Layers,
+  CircuitBoard,
 } from 'lucide-react';
 import {
   getProjectSnapshot,
   isProjectSnapshot,
   useProjectStore,
 } from '../../store/useProjectStore';
-import type { RoomType } from '../../types';
+import { DEVICE_CATALOG, DEVICE_TYPES } from '../../core/electrical/devices';
+import type { DeviceType, RoomType } from '../../types';
 
 interface ToolbarProps {
   onOpenSettings: () => void;
 }
 
+const DEVICE_ICONS: Record<DeviceType, React.ReactNode> = {
+  socket_single: <Plug size={13} />,
+  socket_double: <Plug2 size={13} />,
+  socket_wet: <Droplets size={13} />,
+  switch_1k: <ToggleLeft size={13} />,
+  switch_2k: <SlidersHorizontal size={13} />,
+  light_ceiling: <Lightbulb size={13} />,
+};
+
 export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   const {
     apartment,
+    panel,
+    activeView,
+    setActiveView,
     activeTool,
     activeRoomType,
     activeOpeningType,
+    activeDeviceType,
+    deviceShared,
+    designMode,
     zoom,
     setActiveTool,
     setActiveRoomType,
     setActiveOpeningType,
+    setActiveDeviceType,
+    setDeviceShared,
+    setDesignMode,
     setZoom,
     setStagePos,
     resetProject,
@@ -126,19 +154,89 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         <div>
           <h1 className="font-bold text-sm tracking-wide text-white leading-tight">ELECTRICA</h1>
           <p className="text-[10px] text-slate-400 font-mono uppercase tracking-tighter">
-            {boundaryMode === 'auto'
-              ? 'Комнаты • стены автоматически'
-              : drawingStage === 'boundary'
-                ? boundaryLocked
-                  ? 'Контур заблокирован'
-                  : 'Этап 1: Контур квартиры'
-                : 'Этап 2: Разметка комнат'}
+            {activeView === 'panel'
+              ? 'Щиток • схема и модули'
+              : designMode === 'electrical'
+                ? activeTool === 'place_device'
+                  ? `Электрика • ${DEVICE_CATALOG[activeDeviceType].label}`
+                  : activeTool === 'place_panel'
+                    ? 'Электрика • размещение щитка'
+                    : 'Электрика • выберите прибор'
+                : boundaryMode === 'auto'
+                  ? 'Комнаты • стены автоматически'
+                  : drawingStage === 'boundary'
+                    ? boundaryLocked
+                      ? 'Контур заблокирован'
+                      : 'Этап 1: Контур квартиры'
+                    : 'Этап 2: Разметка комнат'}
           </p>
+        </div>
+
+        {activeView === 'plan' && (
+          <div className="ml-2 flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
+            <button
+              onClick={() => setDesignMode('architecture')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
+                designMode === 'architecture'
+                  ? 'bg-slate-700 text-white'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Построение комнат, стен и проёмов"
+            >
+              <Layers size={12} />
+              Архитектура
+            </button>
+            <button
+              onClick={() => setDesignMode('electrical')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
+                designMode === 'electrical'
+                  ? 'bg-sky-500 text-white'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Расстановка розеток, выключателей и света"
+            >
+              <Plug size={12} />
+              Электрика
+            </button>
+          </div>
+        )}
+
+        <div className="ml-2 flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
+          <button
+            onClick={() => setActiveView('plan')}
+            className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
+              activeView === 'plan'
+                ? 'bg-slate-700 text-white'
+                : 'text-slate-400 hover:text-white'
+            }`}
+            title="Вернуться к плану"
+          >
+            План
+          </button>
+          <button
+            onClick={() => setActiveView('panel')}
+            disabled={!panel}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition ${
+              activeView === 'panel'
+                ? 'bg-sky-500 text-white'
+                : panel
+                  ? 'text-sky-300 hover:text-white'
+                  : 'text-slate-600 cursor-not-allowed'
+            }`}
+            title={panel ? 'Открыть схему щитка' : 'Сначала разместите щиток на плане'}
+          >
+            <CircuitBoard size={12} />
+            Щиток
+          </button>
         </div>
       </div>
 
       {/* Основные инструменты */}
-      <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+      <div
+        className={`items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800 ${
+          activeView === 'panel' ? 'hidden' : 'flex'
+        }`}
+      >
         <button
           onClick={() => setActiveTool('select')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
@@ -167,6 +265,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
 
         <div className="w-px h-5 bg-slate-800 mx-1" />
 
+        {designMode === 'architecture' && (
+          <>
         {/* АВТО-РЕЖИМ: комнаты как источник истины */}
         {boundaryMode === 'auto' && (
           <>
@@ -342,7 +442,83 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
             </button>
           </>
         )}
+          </>
+        )}
+
+        {designMode === 'electrical' && (
+          <>
+            <div className="flex items-center gap-1">
+              {DEVICE_TYPES.map((type) => {
+                const catalog = DEVICE_CATALOG[type];
+                const isActive = activeTool === 'place_device' && activeDeviceType === type;
+                return (
+                  <button
+                    key={type}
+                    onClick={() => setActiveDeviceType(type)}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition ${
+                      isActive
+                        ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                        : 'text-sky-300 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+                    }`}
+                    title={`${catalog.label} · H ${catalog.defaultHeightMm} мм`}
+                  >
+                    {DEVICE_ICONS[type]}
+                    <span>{catalog.shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="w-px h-5 bg-slate-800 mx-1" />
+
+            <button
+              onClick={() => setDeviceShared(!deviceShared)}
+              disabled={DEVICE_CATALOG[activeDeviceType].mounting === 'ceiling'}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                deviceShared
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                  : 'text-slate-400 border-slate-700 hover:text-white hover:bg-slate-800'
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
+              title="Сквозной прибор: один и тот же прибор принадлежит двум смежным комнатам"
+            >
+              <Repeat2 size={13} />
+              Сквозная
+            </button>
+
+            <div className="w-px h-5 bg-slate-800 mx-1" />
+
+            <button
+              onClick={() => {
+                if (panel) {
+                  setActiveView('panel');
+                  return;
+                }
+                setDesignMode('electrical');
+                setActiveTool('place_panel');
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
+                activeTool === 'place_panel'
+                  ? 'bg-sky-500 text-white border-sky-400 shadow-lg shadow-sky-950/40'
+                  : 'text-sky-300 bg-sky-500/10 border-sky-500/20 hover:bg-sky-500/20'
+              }`}
+              title={
+                panel
+                  ? 'Открыть схему щитка'
+                  : 'Разместить электрощиток на стене'
+              }
+            >
+              <CircuitBoard size={13} />
+              Щиток
+            </button>
+          </>
+        )}
       </div>
+
+      {activeView === 'panel' && (
+        <div className="text-[11px] text-slate-500 font-mono">
+          Схема открыта · «План» вернёт к чертежу
+        </div>
+      )}
 
       {/* Выбор зоны при черчении комнаты */}
       {activeTool === 'draw_room' && (
