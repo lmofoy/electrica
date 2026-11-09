@@ -267,6 +267,7 @@ export interface CircuitLine {
   purpose: LinePurpose;
   roomIds: string[];
   deviceIds: string[]; // фактический состав линии для подсветки и трассировки
+  colorIndex?: number; // стабильный цвет линии; не задан — берётся позиция в списке
   loadW: number;
   cable: CableSpec;
   breaker: BreakerSpec;

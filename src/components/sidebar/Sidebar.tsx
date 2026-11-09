@@ -18,7 +18,11 @@ import {
   Cable,
 } from 'lucide-react';
 import type { RoomType, RoomZone, Selection, Wall } from '../../types';
-import { resolveDevice, type ResolvedDevice } from '../../core/electrical/devices';
+import {
+  DEVICE_CATALOG,
+  resolveDevice,
+  type ResolvedDevice,
+} from '../../core/electrical/devices';
 import { buildPanelLayout } from '../../core/electrical/panelLayout';
 import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
@@ -302,6 +306,8 @@ export const Sidebar: React.FC = () => {
     setDesignMode,
     setActiveView,
     setHighlightedLine,
+    assignDevicesToLine,
+    unassignDevicesFromLines,
     updateRoom,
     deleteRoom,
     deleteApartment,
@@ -410,6 +416,14 @@ export const Sidebar: React.FC = () => {
     () => collectUnassignedDevices(devices, panel),
     [devices, panel]
   );
+
+  const selectedDevice =
+    selection?.kind === 'device'
+      ? devices.find((device) => device.id === selection.id) ?? null
+      : null;
+  const selectedDeviceLine = selectedDevice
+    ? panel?.lines.find((line) => line.deviceIds.includes(selectedDevice.id)) ?? null
+    : null;
 
   const startPanelPlacement = () => {
     setDesignMode('electrical');
@@ -620,6 +634,71 @@ export const Sidebar: React.FC = () => {
 
       {/* 2. Подчиненный уровень иерархии: Комнаты внутри квартиры */}
       <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+        {selectedDevice && (
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                  <Plug size={12} className="text-sky-400 shrink-0" />
+                  <span className="truncate">{selectedDevice.name}</span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {DEVICE_CATALOG[selectedDevice.type].label}
+                  {selectedDevice.powerWatts > 0
+                    ? ` · ${selectedDevice.powerWatts} Вт`
+                    : ''}
+                </div>
+              </div>
+              {selectedDeviceLine && (
+                <span
+                  className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
+                  style={{
+                    backgroundColor: lineColors.get(selectedDeviceLine.id) ?? '#38bdf8',
+                  }}
+                />
+              )}
+            </div>
+
+            {panel ? (
+              <label className="block">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  Линия прибора
+                </span>
+                <select
+                  value={selectedDeviceLine?.id ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (!value) {
+                      unassignDevicesFromLines([selectedDevice.id]);
+                      setHighlightedLine(null);
+                      return;
+                    }
+                    assignDevicesToLine(value, [selectedDevice.id]);
+                    setHighlightedLine(value);
+                  }}
+                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
+                >
+                  <option value="">Без линии</option>
+                  {panel.lines.map((line) => (
+                    <option key={line.id} value={line.id}>
+                      {line.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <p className="text-[10px] text-amber-300 leading-snug">
+                Щиток не размещён — назначить линию нельзя.
+              </p>
+            )}
+
+            <p className="text-[9px] text-slate-500 leading-snug">
+              Прибор входит только в одну линию. Смена линии автоматически
+              пересчитывает нагрузку и защиту.
+            </p>
+          </div>
+        )}
+
         {panel && panel.lines.length > 0 && (
           <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-2">
             <div className="flex items-center justify-between px-1 mb-1.5">

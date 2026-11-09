@@ -2,6 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { buildPanelLayout } from '../../core/electrical/panelLayout';
 import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
+import { collectLineCompositionWarnings } from '../../core/electrical/lineOps';
 import { computeLineRoutes, formatCableLengthMm } from '../../core/electrical/routing';
 import { PanelScheme } from './PanelScheme';
 import { PanelSupplyForm } from './PanelSupplyForm';
@@ -84,6 +85,7 @@ export const PanelScreen: React.FC = () => {
     updatePanelSupply,
     setPanelStrategy,
     generatePanelLines,
+    appendUnassignedDevices,
     addPanelLine,
     updatePanelLine,
     deletePanelLine,
@@ -125,6 +127,10 @@ export const PanelScreen: React.FC = () => {
     () => collectUnassignedDevices(devices, panel),
     [devices, panel]
   );
+  const compositionWarnings = useMemo(
+    () => (panel ? collectLineCompositionWarnings(panel, devices) : []),
+    [panel, devices]
+  );
 
   if (!panel || !layout) return null;
 
@@ -141,6 +147,7 @@ export const PanelScreen: React.FC = () => {
   ];
   const warningsList = [
     ...layout.warnings,
+    ...compositionWarnings,
     ...(unassignedDevices.length
       ? [
           {
@@ -252,9 +259,16 @@ export const PanelScreen: React.FC = () => {
             <div className="text-xs font-bold text-white">Как собрать щиток</div>
             <div className="flex items-center gap-1">
               <button
-                onClick={generatePanelLines}
+                onClick={() => {
+                  if (panel.lines.length > 0) appendUnassignedDevices();
+                  else generatePanelLines();
+                }}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
-                title="Построить линии по комнатам и приборам на плане"
+                title={
+                  panel.lines.length > 0
+                    ? 'Добавить в линии приборы, которые ещё вне линий'
+                    : 'Построить линии по комнатам и приборам на плане'
+                }
               >
                 <ShieldCheck size={11} />
                 Из приборов
@@ -310,12 +324,14 @@ export const PanelScreen: React.FC = () => {
             routes={routes}
             defaultRouting={settings.defaultRouting}
             highlightedLineId={highlightedLineId}
+            unassignedCount={unassignedDevices.length}
             onHighlight={setHighlightedLine}
             onShowOnPlan={setHighlightedLine}
             onAdd={addPanelLine}
             onUpdate={updatePanelLine}
             onDelete={deletePanelLine}
             onGenerate={generatePanelLines}
+            onAppend={appendUnassignedDevices}
           />
         </section>
 

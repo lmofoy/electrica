@@ -19,6 +19,7 @@ interface ElectricalLayerProps {
   deviceLineIds: Map<string, string>;
   lineColors: Map<string, string>;
   highlightedLineId: string | null;
+  assignLineId: string | null;
 }
 
 const DEVICE_COLORS: Record<DeviceType, string> = {
@@ -122,7 +123,8 @@ const DeviceSymbol: React.FC<{
   lineColor: string | null;
   lineHighlighted: boolean;
   dimmed: boolean;
-}> = ({ resolved, zoom, selected, lineColor, lineHighlighted, dimmed }) => {
+  assignHint: boolean;
+}> = ({ resolved, zoom, selected, lineColor, lineHighlighted, dimmed, assignHint }) => {
   const color = DEVICE_COLORS[resolved.device.type];
 
   return (
@@ -142,6 +144,15 @@ const DeviceSymbol: React.FC<{
               opacity={lineHighlighted ? 0.95 : dimmed ? 0.1 : 0.38}
               shadowColor={lineColor}
               shadowBlur={lineHighlighted ? 10 / zoom : 0}
+            />
+          )}
+          {assignHint && (
+            <Circle
+              radius={13 / zoom}
+              stroke="#a3e635"
+              strokeWidth={1.5 / zoom}
+              dash={[4 / zoom, 3 / zoom]}
+              opacity={0.9}
             />
           )}
           {selected && (
@@ -222,7 +233,9 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
   deviceLineIds,
   lineColors,
   highlightedLineId,
+  assignLineId,
 }) => {
+  const focusLineId = assignLineId ?? highlightedLineId;
   return (
     <Layer listening={false}>
       {devices.map((resolved) => {
@@ -234,8 +247,9 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
             zoom={zoom}
             selected={resolved.device.id === selectedDeviceId}
             lineColor={lineId ? lineColors.get(lineId) ?? null : null}
-            lineHighlighted={lineId !== null && lineId === highlightedLineId}
-            dimmed={highlightedLineId !== null && lineId !== highlightedLineId}
+            lineHighlighted={lineId !== null && lineId === focusLineId}
+            dimmed={focusLineId !== null && lineId !== focusLineId}
+            assignHint={assignLineId !== null && lineId === null}
           />
         );
       })}

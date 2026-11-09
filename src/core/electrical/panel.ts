@@ -110,6 +110,10 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
       loadW: Math.max(0, line.loadW),
       roomIds: line.roomIds ?? [],
       deviceIds: line.deviceIds ?? [],
+      colorIndex:
+        Number.isInteger(line.colorIndex) && (line.colorIndex as number) >= 0
+          ? line.colorIndex
+          : undefined,
       routing:
         line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
     }));
@@ -119,11 +123,19 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
 // Черновик линий из фактически расставленных приборов, по комнатам.
 // -------------------------------------------------------------
 
-function roomPurposeFor(room: RoomZone, hasWetSocket: boolean): LinePurpose {
+export function roomPurposeFor(room: RoomZone, hasWetSocket: boolean): LinePurpose {
   if (hasWetSocket) return 'wet';
   if (room.type === 'bathroom' || room.type === 'toilet') return 'wet';
   if (room.type === 'kitchen') return 'kitchen';
   return 'sockets';
+}
+
+export function linePurposeFor(device: ElectricalDevice, room: RoomZone): LinePurpose {
+  const isLighting =
+    device.type === 'light_ceiling' || device.type.startsWith('switch_');
+  return isLighting
+    ? 'lighting'
+    : roomPurposeFor(room, device.type === 'socket_wet');
 }
 
 
@@ -144,10 +156,7 @@ export function autoLinesFromDevices(
     const room = rooms.find((candidate) => candidate.id === roomId);
     if (!room) continue;
 
-    const isLighting = device.type === 'light_ceiling' || device.type.startsWith('switch_');
-    const purpose: LinePurpose = isLighting
-      ? 'lighting'
-      : roomPurposeFor(room, device.type === 'socket_wet');
+    const purpose = linePurposeFor(device, room);
     const key = `${room.id}:${purpose}`;
     const existing = groups.get(key);
     if (existing) {

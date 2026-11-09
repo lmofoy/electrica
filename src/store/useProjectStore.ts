@@ -73,6 +73,17 @@ import {
   type PanelWallAnchor,
 } from '../core/electrical/panel';
 import { prunePanelRefs } from '../core/electrical/lineAssignment';
+import {
+  appendUnassignedDevices as appendUnassignedDevicesOp,
+  assignDevices,
+  createLineFromDevices,
+  mergeLines,
+  nextColorIndex,
+  normalizeLineAssignments,
+  setComposition,
+  splitLine,
+  unassignDevices,
+} from '../core/electrical/lineOps';
 import { collectRoomElements } from '../core/model/roomElements';
 
 let idCounter = 0;
@@ -110,6 +121,8 @@ interface ProjectState {
   // Отдельный экран щитка вместо плана и подсветка линии на плане
   activeView: ProjectView;
   highlightedLineId: string | null;
+  // Линия, в которую назначаются приборы кликами на плане (UI-режим)
+  lineAssignLineId: string | null;
 
   // Настройки
   settings: ProjectSettings;
@@ -201,10 +214,25 @@ interface ProjectState {
   updatePanelSupply: (updates: Partial<PanelSupply>) => void;
   setPanelStrategy: (strategy: PanelStrategy) => void;
   generatePanelLines: () => void;
+  appendUnassignedDevices: () => void;
   addPanelLine: (purpose: LinePurpose, roomIds: string[]) => void;
   updatePanelLine: (id: string, updates: Partial<CircuitLine>) => void;
   deletePanelLine: (id: string) => void;
   clearPanelLines: () => void;
+  setLineAssignLine: (id: string | null) => void;
+  assignDevicesToLine: (lineId: string, deviceIds: string[]) => void;
+  unassignDevicesFromLines: (deviceIds: string[]) => void;
+  createPanelLineFromDevices: (
+    deviceIds: string[],
+    purpose: LinePurpose
+  ) => string | null;
+  setPanelLineComposition: (lineId: string, deviceIds: string[]) => void;
+  splitPanelLine: (
+    lineId: string,
+    deviceIds: string[],
+    newPurpose?: LinePurpose
+  ) => string | null;
+  mergePanelLines: (lineIds: string[]) => string | null;
 
   resetProject: () => void;
   loadProject: (snapshot: ProjectSnapshot) => void;
@@ -310,6 +338,7 @@ export const useProjectStore = create<ProjectState>()(
 
       activeView: 'plan',
       highlightedLineId: null,
+      lineAssignLineId: null,
 
       settings: DEFAULT_SETTINGS,
 
@@ -1168,6 +1197,7 @@ export const useProjectStore = create<ProjectState>()(
           selection: null,
           activeView: 'plan',
           highlightedLineId: null,
+          lineAssignLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -1553,6 +1583,7 @@ export const useProjectStore = create<ProjectState>()(
           panel: null,
           activeView: 'plan',
           highlightedLineId: null,
+          lineAssignLineId: null,
           selection: state.selection?.kind === 'panel' ? null : state.selection,
         });
         state.addToast('Щиток удалён.', 'success');
@@ -1591,8 +1622,14 @@ export const useProjectStore = create<ProjectState>()(
           state.freePartitions,
           state.settings.defaultRouting
         );
-        const withStrategy = applyStrategy({ ...state.panel, lines }, state.panel.strategy);
-        set({ panel: withStrategy, highlightedLineId: null });
+        const withStrategy = normalizeLineAssignments(
+          applyStrategy({ ...state.panel, lines }, state.panel.strategy)
+        );
+        set({
+          panel: withStrategy,
+          highlightedLineId: null,
+          lineAssignLineId: null,
+        });
         if (lines.length === 0) {
           state.addToast(
             'Приборов на плане нет. Добавьте линии вручную или расставьте розетки и свет.',
@@ -1606,6 +1643,32 @@ export const useProjectStore = create<ProjectState>()(
         }
       },
 
+      appendUnassignedDevices: () => {
+        const state = get();
+        if (!state.panel) return;
+        const result = appendUnassignedDevicesOp(
+          state.panel,
+          {
+            devices: state.devices,
+            rooms: state.rooms,
+            partitions: state.freePartitions,
+          },
+          state.settings.defaultRouting
+        );
+        if (result.assigned === 0) {
+          state.addToast('Все приборы уже распределены по линиям.', 'info');
+          return;
+        }
+        set({ panel: result.panel, highlightedLineId: null });
+        const createdNote = result.created > 0
+          ? ` Новых линий: ${result.created}.`
+          : '';
+        state.addToast(
+          `Добавлено приборов: ${result.assigned}.${createdNote}`,
+          'success'
+        );
+      },
+
       addPanelLine: (purpose, roomIds) => {
         const state = get();
         if (!state.panel) return;
@@ -1613,13 +1676,16 @@ export const useProjectStore = create<ProjectState>()(
           roomIds.length > 0
             ? state.rooms.find((room) => room.id === roomIds[0])?.name ?? 'Группа'
             : 'Без комнаты';
-        const line = createLine(
-          purpose,
-          roomIds,
-          roomName,
-          state.panel.lines.length,
-          state.settings.defaultRouting
-        );
+        const line = {
+          ...createLine(
+            purpose,
+            roomIds,
+            roomName,
+            state.panel.lines.length,
+            state.settings.defaultRouting
+          ),
+          colorIndex: nextColorIndex(state.panel),
+        };
         set({
           panel: { ...state.panel, lines: [...state.panel.lines, line] },
         });
@@ -1649,6 +1715,8 @@ export const useProjectStore = create<ProjectState>()(
           },
           highlightedLineId:
             state.highlightedLineId === id ? null : state.highlightedLineId,
+          lineAssignLineId:
+            state.lineAssignLineId === id ? null : state.lineAssignLineId,
         });
       },
 
@@ -1658,8 +1726,131 @@ export const useProjectStore = create<ProjectState>()(
         set({
           panel: { ...state.panel, lines: [], strategy: 'custom' },
           highlightedLineId: null,
+          lineAssignLineId: null,
         });
         state.addToast('Схема очищена. Добавляйте линии вручную.', 'info');
+      },
+
+      setLineAssignLine: (id) => {
+        const state = get();
+        if (id && !state.panel?.lines.some((line) => line.id === id)) {
+          set({ lineAssignLineId: null });
+          return;
+        }
+        set({
+          lineAssignLineId: id,
+          ...(id ? { activeTool: 'select' as const } : {}),
+        });
+      },
+
+      assignDevicesToLine: (lineId, deviceIds) => {
+        const state = get();
+        if (!state.panel) return;
+        const panel = assignDevices(state.panel, lineId, deviceIds, {
+          devices: state.devices,
+          rooms: state.rooms,
+          partitions: state.freePartitions,
+        });
+        if (panel !== state.panel) set({ panel });
+      },
+
+      unassignDevicesFromLines: (deviceIds) => {
+        const state = get();
+        if (!state.panel) return;
+        const panel = unassignDevices(state.panel, deviceIds, {
+          devices: state.devices,
+          rooms: state.rooms,
+          partitions: state.freePartitions,
+        });
+        if (panel !== state.panel) {
+          set({ panel });
+          state.addToast(
+            `Снято с линий приборов: ${deviceIds.length}.`,
+            'info'
+          );
+        }
+      },
+
+      createPanelLineFromDevices: (deviceIds, purpose) => {
+        const state = get();
+        if (!state.panel || deviceIds.length === 0) return null;
+        const result = createLineFromDevices(
+          state.panel,
+          deviceIds,
+          { purpose, routing: state.settings.defaultRouting },
+          {
+            devices: state.devices,
+            rooms: state.rooms,
+            partitions: state.freePartitions,
+          }
+        );
+        set({
+          panel: result.panel,
+          highlightedLineId: result.lineId,
+        });
+        state.addToast('Линия создана из выбранных приборов.', 'success');
+        return result.lineId;
+      },
+
+      setPanelLineComposition: (lineId, deviceIds) => {
+        const state = get();
+        if (!state.panel) return;
+        const panel = setComposition(state.panel, lineId, deviceIds, {
+          devices: state.devices,
+          rooms: state.rooms,
+          partitions: state.freePartitions,
+        });
+        if (panel !== state.panel) set({ panel });
+      },
+
+      splitPanelLine: (lineId, deviceIds, newPurpose) => {
+        const state = get();
+        if (!state.panel) return null;
+        const result = splitLine(
+          state.panel,
+          lineId,
+          deviceIds,
+          {
+            devices: state.devices,
+            rooms: state.rooms,
+            partitions: state.freePartitions,
+          },
+          newPurpose
+        );
+        if (!result) {
+          state.addToast(
+            'Для деления выберите часть приборов линии — не все и не ни одного.',
+            'error'
+          );
+          return null;
+        }
+        set({
+          panel: result.panel,
+          highlightedLineId: result.lineId,
+        });
+        state.addToast('Линия разделена на две.', 'success');
+        return result.lineId;
+      },
+
+      mergePanelLines: (lineIds) => {
+        const state = get();
+        if (!state.panel) return null;
+        const result = mergeLines(state.panel, lineIds, {
+          devices: state.devices,
+          rooms: state.rooms,
+          partitions: state.freePartitions,
+        });
+        if (!result) return null;
+        set({
+          panel: result.panel,
+          highlightedLineId: result.lineId,
+          lineAssignLineId:
+            state.lineAssignLineId && lineIds.includes(state.lineAssignLineId)
+              ? result.lineId
+              : state.lineAssignLineId,
+        });
+        state.addToast(`Объединено линий: ${lineIds.length}.`, 'success');
+        return result.lineId;
       },
 
       resetProject: () => {
@@ -1676,6 +1867,7 @@ export const useProjectStore = create<ProjectState>()(
           selection: null,
           activeView: 'plan',
           highlightedLineId: null,
+          lineAssignLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -1715,7 +1907,7 @@ export const useProjectStore = create<ProjectState>()(
             next.state.freePartitions,
             settings.defaultWallThicknessMm
           );
-          const panel = prunePanelRefs(
+          const sanitizedPanel = prunePanelRefs(
             sanitizePanel(
               snapshot.panel ?? null,
               next.state.rooms,
@@ -1725,6 +1917,9 @@ export const useProjectStore = create<ProjectState>()(
             devices.map((device) => device.id),
             next.state.rooms.map((room) => room.id)
           );
+          const panel = sanitizedPanel
+            ? normalizeLineAssignments(sanitizedPanel)
+            : null;
 
           set({
             settings,
@@ -1763,7 +1958,7 @@ export const useProjectStore = create<ProjectState>()(
           partitions,
           settings.defaultWallThicknessMm
         );
-        const panel = prunePanelRefs(
+        const sanitizedPanel = prunePanelRefs(
           sanitizePanel(
             snapshot.panel ?? null,
             rooms,
@@ -1773,6 +1968,9 @@ export const useProjectStore = create<ProjectState>()(
           devices.map((device) => device.id),
           rooms.map((room) => room.id)
         );
+        const panel = sanitizedPanel
+          ? normalizeLineAssignments(sanitizedPanel)
+          : null;
 
         set({
           settings,

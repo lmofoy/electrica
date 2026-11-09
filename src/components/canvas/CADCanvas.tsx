@@ -55,6 +55,7 @@ export const CADCanvas: React.FC = () => {
     walls,
     selection,
     highlightedLineId,
+    lineAssignLineId,
     settings,
     designMode,
     activeTool,
@@ -73,6 +74,9 @@ export const CADCanvas: React.FC = () => {
     setCursorPosMm,
     setSelection,
     setHighlightedLine,
+    setLineAssignLine,
+    assignDevicesToLine,
+    unassignDevicesFromLines,
     setActiveSnap,
     addDraftVertex,
     popDraftVertex,
@@ -147,6 +151,23 @@ export const CADCanvas: React.FC = () => {
         [...deviceLineMap].map(([deviceId, line]) => [deviceId, line.id] as const)
       ),
     [deviceLineMap]
+  );
+
+  const assignLine = useMemo(
+    () => panel?.lines.find((line) => line.id === lineAssignLineId) ?? null,
+    [panel, lineAssignLineId]
+  );
+
+  const toggleDeviceAssignment = useCallback(
+    (deviceId: string) => {
+      if (!assignLine) return;
+      if (assignLine.deviceIds.includes(deviceId)) {
+        unassignDevicesFromLines([deviceId]);
+      } else {
+        assignDevicesToLine(assignLine.id, [deviceId]);
+      }
+    },
+    [assignLine, assignDevicesToLine, unassignDevicesFromLines]
   );
 
   const devicePreview = useMemo<{ resolved: ResolvedDevice | null; error: string | null }>(() => {
@@ -401,7 +422,7 @@ export const CADCanvas: React.FC = () => {
     if (!stage) return;
 
     if (activeTool === 'select') {
-      if (e.target === stage) {
+      if (e.target === stage && !assignLine) {
         setSelection(null);
         setHighlightedLine(null);
       }
@@ -546,6 +567,10 @@ export const CADCanvas: React.FC = () => {
       }
 
       if (e.key === 'Escape') {
+        if (lineAssignLineId) {
+          setLineAssignLine(null);
+          return;
+        }
         if (dynamicInput.isOpen || dynamicInput.lockedLength !== null) {
           closeDynamicInput();
         } else if (draftVertices.length > 0) {
@@ -634,6 +659,8 @@ export const CADCanvas: React.FC = () => {
     setSelection,
     setHighlightedLine,
     selection,
+    lineAssignLineId,
+    setLineAssignLine,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
@@ -714,7 +741,13 @@ export const CADCanvas: React.FC = () => {
           panelId={panel?.id ?? null}
           panelPose={panelPose}
           zoom={zoom}
-          onSelect={setSelection}
+          onSelect={(next) => {
+            if (assignLine && next.kind === 'device') {
+              toggleDeviceAssignment(next.id);
+              return;
+            }
+            setSelection(next);
+          }}
         />
 
         <ElectricalLayer
@@ -727,6 +760,7 @@ export const CADCanvas: React.FC = () => {
           deviceLineIds={deviceLineIds}
           lineColors={lineColorMap}
           highlightedLineId={highlightedLineId}
+          assignLineId={lineAssignLineId}
           panelPreview={
             panelPreview && !panelPreview.error
               ? { position: panelPreview.position, rotationDeg: panelPreview.rotationDeg }
@@ -746,6 +780,31 @@ export const CADCanvas: React.FC = () => {
           isPartitionTool={activeTool === 'draw_partition'}
         />
       </Stage>
+
+      {assignLine && (
+        <div className="absolute top-9 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
+          style={{ borderColor: lineColorMap.get(assignLine.id) ?? '#38bdf8' }}
+        >
+          <span
+            className="w-2.5 h-2.5 rounded-full shrink-0"
+            style={{ backgroundColor: lineColorMap.get(assignLine.id) ?? '#38bdf8' }}
+          />
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold text-white truncate max-w-[220px]">
+              Назначение: {assignLine.name}
+            </div>
+            <div className="text-[9px] text-slate-400">
+              приборов в линии: {assignLine.deviceIds.length} · клик — добавить/убрать · Esc — выйти
+            </div>
+          </div>
+          <button
+            onClick={() => setLineAssignLine(null)}
+            className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
+          >
+            Готово
+          </button>
+        </div>
+      )}
 
       {boundaryMode === 'auto' && rooms.length === 0 && activeTool !== 'draw_room' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">

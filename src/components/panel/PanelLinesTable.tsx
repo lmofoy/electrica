@@ -10,7 +10,20 @@ import { CABLE_AMPACITY_A, LINE_PRESETS, LINE_PURPOSES, makeRcd } from '../../co
 import { lineCurrentA } from '../../core/electrical/panel';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { formatCableLengthMm, type LineRoute } from '../../core/electrical/routing';
-import { Plus, Trash2, Wand2, AlertTriangle, MapPin } from 'lucide-react';
+import {
+  Plus,
+  Trash2,
+  Wand2,
+  AlertTriangle,
+  MapPin,
+  ChevronDown,
+  ListChecks,
+  Scissors,
+  Merge,
+  MousePointerClick,
+} from 'lucide-react';
+import { useProjectStore } from '../../store/useProjectStore';
+import { LineCompositionDialog } from './LineCompositionDialog';
 
 interface PanelLinesTableProps {
   panel: ElectricalPanel;
@@ -18,12 +31,14 @@ interface PanelLinesTableProps {
   routes: Map<string, LineRoute>;
   defaultRouting: LineRouting;
   highlightedLineId: string | null;
+  unassignedCount: number;
   onHighlight: (id: string | null) => void;
   onShowOnPlan: (id: string) => void;
   onAdd: (purpose: LinePurpose, roomIds: string[]) => void;
   onUpdate: (id: string, updates: Partial<CircuitLine>) => void;
   onDelete: (id: string) => void;
   onGenerate: () => void;
+  onAppend: () => void;
 }
 
 function rcdValue(line: CircuitLine): string {
@@ -43,16 +58,47 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   routes,
   defaultRouting,
   highlightedLineId,
+  unassignedCount,
   onHighlight,
   onShowOnPlan,
   onAdd,
   onUpdate,
   onDelete,
   onGenerate,
+  onAppend,
 }) => {
   const [newPurpose, setNewPurpose] = useState<LinePurpose>('sockets');
   const [newRoomId, setNewRoomId] = useState(rooms[0]?.id ?? '');
+  const [dialog, setDialog] = useState<{ lineId: string; mode: 'edit' | 'split' } | null>(
+    null
+  );
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeIds, setMergeIds] = useState<Set<string>>(new Set());
+  const [generateMenuOpen, setGenerateMenuOpen] = useState(false);
+  const mergePanelLines = useProjectStore((state) => state.mergePanelLines);
+  const setLineAssignLine = useProjectStore((state) => state.setLineAssignLine);
+  const setActiveView = useProjectStore((state) => state.setActiveView);
   const lineColors = buildLineColorMap(panel);
+
+  const toggleMerge = (lineId: string) => {
+    setMergeIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  };
+
+  const cancelMerge = () => {
+    setMergeMode(false);
+    setMergeIds(new Set());
+  };
+
+  const handleMerge = () => {
+    if (mergeIds.size < 2) return;
+    mergePanelLines([...mergeIds]);
+    cancelMerge();
+  };
 
   return (
     <div className="space-y-3">
@@ -63,15 +109,102 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
             Номинал автомата ≤ ток кабеля · нагрузка ≤ номинал автомата
           </div>
         </div>
-        <button
-          onClick={onGenerate}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[11px] font-semibold transition shrink-0"
-          title="Пересобрать черновик линий по комнатам и приборам на плане"
-        >
-          <Wand2 size={13} />
-          Из приборов
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {panel.lines.length >= 2 && (
+            <button
+              onClick={() => (mergeMode ? cancelMerge() : setMergeMode(true))}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-semibold transition ${
+                mergeMode
+                  ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                  : 'bg-slate-800/60 hover:bg-slate-800 border-slate-700 text-slate-300'
+              }`}
+              title="Объединить несколько линий в одну"
+            >
+              <Merge size={12} />
+              Объединить
+            </button>
+          )}
+          <div className="relative">
+            <button
+              onClick={() => setGenerateMenuOpen((open) => !open)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[11px] font-semibold transition"
+              title="Собрать линии из приборов на плане"
+            >
+              <Wand2 size={13} />
+              Из приборов
+              <ChevronDown size={12} />
+            </button>
+
+            {generateMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => setGenerateMenuOpen(false)}
+                />
+                <div className="absolute right-0 top-full mt-1 z-20 w-56 rounded-xl border border-slate-700 bg-slate-900 shadow-2xl p-1">
+                  <button
+                    onClick={() => {
+                      setGenerateMenuOpen(false);
+                      onAppend();
+                    }}
+                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 transition"
+                  >
+                    <span className="block text-[11px] font-semibold text-slate-200">
+                      Дособрать новые
+                    </span>
+                    <span className="block text-[9px] text-slate-500 leading-snug">
+                      {unassignedCount > 0
+                        ? `Приборы вне линий: ${unassignedCount}. Текущие линии не меняются.`
+                        : 'Все приборы уже распределены по линиям.'}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setGenerateMenuOpen(false);
+                      const ok = window.confirm(
+                        'Пересобрать все линии заново? Текущий состав, названия, ручные нагрузки и настройки УЗО будут заменены группировкой по комнатам.'
+                      );
+                      if (ok) onGenerate();
+                    }}
+                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-rose-500/10 transition"
+                  >
+                    <span className="block text-[11px] font-semibold text-rose-300">
+                      Пересобрать всё…
+                    </span>
+                    <span className="block text-[9px] text-slate-500 leading-snug">
+                      Полная замена текущих линий по приборам на плане.
+                    </span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
+
+      {mergeMode && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2 py-1.5">
+          <span className="text-[10px] text-sky-200 leading-snug">
+            Отметьте 2+ линии. Они станут одной: приборы, комнаты и нагрузка объединятся.
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={cancelMerge}
+              className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold transition"
+            >
+              Отмена
+            </button>
+            <button
+              onClick={handleMerge}
+              disabled={mergeIds.size < 2}
+              className="flex items-center gap-1 px-2 py-1 rounded bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
+            >
+              <Merge size={11} />
+              Объединить ({mergeIds.size})
+            </button>
+          </div>
+        </div>
+      )}
 
       {panel.lines.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
@@ -108,6 +241,10 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   if ((e.target as HTMLElement).closest('input, select, textarea, button')) {
                     return;
                   }
+                  if (mergeMode) {
+                    toggleMerge(line.id);
+                    return;
+                  }
                   onHighlight(active ? null : line.id);
                 }}
                 className={`rounded-lg border px-2 py-1.5 transition ${
@@ -122,10 +259,21 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                         backgroundColor: `${lineColor}1f`,
                         boxShadow: `0 0 0 1px ${lineColor}66`,
                       }
-                    : undefined
+                    : mergeMode && mergeIds.has(line.id)
+                      ? { boxShadow: '0 0 0 2px rgba(56, 189, 248, 0.55)' }
+                      : undefined
                 }
               >
                 <div className="flex items-center gap-1.5">
+                  {mergeMode && (
+                    <input
+                      type="checkbox"
+                      checked={mergeIds.has(line.id)}
+                      onChange={() => toggleMerge(line.id)}
+                      className="accent-sky-500 shrink-0"
+                      title="Выбрать для объединения"
+                    />
+                  )}
                   <button
                     onClick={() => onHighlight(active ? null : line.id)}
                     className="shrink-0 rounded-full p-0.5 transition"
@@ -319,6 +467,38 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                     <AlertTriangle size={10} className="text-rose-400 shrink-0" />
                   )}
                 </div>
+
+                <div className="mt-1 flex items-center gap-1">
+                  <button
+                    onClick={() => setDialog({ lineId: line.id, mode: 'edit' })}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[9px] text-slate-400 transition"
+                    title="Изменить состав линии: добавить или убрать приборы"
+                  >
+                    <ListChecks size={10} />
+                    Состав ({line.deviceIds.length})
+                  </button>
+                  <button
+                    onClick={() => setDialog({ lineId: line.id, mode: 'split' })}
+                    disabled={line.deviceIds.length < 2}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 text-[9px] text-slate-400 transition"
+                    title="Разделить линию на две"
+                  >
+                    <Scissors size={10} />
+                    Разделить
+                  </button>
+                  <button
+                    onClick={() => {
+                      onHighlight(line.id);
+                      setLineAssignLine(line.id);
+                      setActiveView('plan');
+                    }}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-emerald-500/60 hover:text-emerald-300 text-[9px] text-slate-400 transition"
+                    title="Назначать приборы этой линии кликами прямо на плане"
+                  >
+                    <MousePointerClick size={10} />
+                    На плане
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -364,6 +544,15 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
         вертикальные спуски, запас из настроек и 1,5 м на разделку в щитке. Порядок
         подключения приборов — цепочкой от щитка.
       </p>
+
+      {dialog && (
+        <LineCompositionDialog
+          key={`${dialog.mode}-${dialog.lineId}`}
+          lineId={dialog.lineId}
+          mode={dialog.mode}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 };

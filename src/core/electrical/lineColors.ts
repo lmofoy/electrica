@@ -25,7 +25,7 @@ export function buildLineColorMap(
 ): Map<string, string> {
   const map = new Map<string, string>();
   panel?.lines.forEach((line, index) => {
-    map.set(line.id, lineColorFor(index));
+    map.set(line.id, lineColorFor(line.colorIndex ?? index));
   });
   return map;
 }
