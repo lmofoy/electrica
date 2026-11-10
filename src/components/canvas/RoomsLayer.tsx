@@ -16,6 +16,8 @@ interface RoomsLayerProps {
   shafts: ShaftCutout[];
   selectedRoomId: string | null;
   onSelectRoom: (id: string) => void;
+  selectedShaftId: string | null;
+  onSelectShaft: (id: string) => void;
   zoom: number;
   boundaryMode: BoundaryMode;
   autoLayout: AutoLayout | null;
@@ -29,6 +31,8 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
   shafts,
   selectedRoomId,
   onSelectRoom,
+  selectedShaftId,
+  onSelectShaft,
   zoom,
   boundaryMode,
   autoLayout,
@@ -165,15 +169,20 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
       {shafts.map((shaft) => {
         const flatPoints = shaft.vertices.flatMap((v) => [v.x, v.y]);
         const centroid = calculateCentroid(shaft.vertices);
+        const isSelected = shaft.id === selectedShaftId;
 
         return (
-          <Group key={shaft.id}>
+          <Group
+            key={shaft.id}
+            onClick={(event) => { if (event.evt.button === 0) onSelectShaft(shaft.id); }}
+            onTap={() => onSelectShaft(shaft.id)}
+          >
             <Line
               points={flatPoints}
               closed
-              fill="#090d16"
-              stroke="#ef4444"
-              strokeWidth={2 / zoom}
+              fill={isSelected ? '#7f1d1d' : '#090d16'}
+              stroke={isSelected ? '#fca5a5' : '#ef4444'}
+              strokeWidth={(isSelected ? 3 : 2) / zoom}
               dash={[8 / zoom, 4 / zoom]}
             />
             {shaft.vertices.length >= 4 && (

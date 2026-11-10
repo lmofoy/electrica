@@ -683,6 +683,10 @@ export const CADCanvas: React.FC = () => {
           state.deletePartition(selection.id);
           return;
         }
+        if (selection.kind === 'shaft') {
+          state.deleteShaft(selection.id);
+          return;
+        }
         if (selection.kind === 'device') {
           state.deleteDevice(selection.id);
           return;
@@ -783,6 +787,8 @@ export const CADCanvas: React.FC = () => {
           shafts={shafts}
           selectedRoomId={selection?.kind === 'room' ? selection.id : null}
           onSelectRoom={(id) => setSelection({ kind: 'room', id })}
+          selectedShaftId={selection?.kind === 'shaft' ? selection.id : null}
+          onSelectShaft={(id) => setSelection({ kind: 'shaft', id })}
           zoom={zoom}
           boundaryMode={boundaryMode}
           autoLayout={autoLayout}

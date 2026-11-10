@@ -89,6 +89,7 @@ export type Selection =
   | { kind: 'room'; id: string }
   | { kind: 'opening'; id: string }
   | { kind: 'partition'; id: string }
+  | { kind: 'shaft'; id: string }
   | { kind: 'device'; id: string }
   | { kind: 'panel'; id: string };
 

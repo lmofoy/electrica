@@ -15,6 +15,7 @@ import {
   distance,
   isPointInPolygon,
   isPolygonClockwise,
+  isSimplePolygon,
   pointToSegmentDistance,
 } from './math';
 import { buildPerimeterWallStrips } from './wallsGraph';
@@ -544,6 +545,13 @@ export function validateNewRoom(
 ): AutoValidation {
   if (newFloor.length < 3) {
     return { ok: false, error: 'Контур комнаты должен содержать минимум 3 точки.' };
+  }
+
+  if (!isSimplePolygon(newFloor)) {
+    return {
+      ok: false,
+      error: 'Контур комнаты самопересекается или содержит вырожденные точки. Проверьте порядок вершин.',
+    };
   }
 
   const areaM2 = calculatePolygonAreaM2(newFloor);

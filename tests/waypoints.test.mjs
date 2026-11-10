@@ -318,6 +318,31 @@ try {
     });
   }
 
+  await test('device order: nearest-next chain, not distance-from-panel', () => {
+    const rect = fixture(0, false);
+    const input = clone(rect.input);
+    // Three interior ceiling lights. Distances:
+    //   panel(0,1890): A=300, X~707, Y~762  -> buggy sort yields A,X,Y
+    //   from A(300,1890): Y=700 < X~728      -> correct chain yields A,Y,X
+    const A = { x: 300, y: 1890 };
+    const X = { x: 100, y: 2590 };
+    const Y = { x: 300, y: 2590 };
+    const mkLight = (id, pt) => ({
+      id, type: 'light_ceiling', name: id,
+      anchor: { kind: 'room_point', roomId: ROOM_ID, ...pt },
+      heightFromFloorMm: 100, powerWatts: 50, shared: false,
+    });
+    input.devices = [mkLight('light-a', A), mkLight('light-x', X), mkLight('light-y', Y)];
+    input.panel.lines[0].deviceIds = ['light-a', 'light-x', 'light-y'];
+    delete input.panel.lines[0].waypoints;
+    const result = route(input);
+    const endpoints = result.paths.map((path) => path.at(-1));
+    const indexAt = (pt) => endpoints.findIndex((p) => span(p, pt) < EPS);
+    const iA = indexAt(A), iX = indexAt(X), iY = indexAt(Y);
+    assert.ok(iA >= 0 && iX >= 0 && iY >= 0, 'all three lights reached');
+    assert.ok(iA < iY && iY < iX, 'chain is nearest-next (A, Y, X), not distance-from-panel (A, X, Y)');
+  });
+
   function snapshot(f, mode = 'auto') {
     return {
       version: 1, savedAt: new Date(0).toISOString(), boundaryMode: mode,

@@ -210,3 +210,54 @@ export function isPointInPolygon(point: Point2D, polygon: Point2D[]): boolean {
   }
   return inside;
 }
+
+function cross2(a: Point2D, b: Point2D, c: Point2D): number {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function onSegment2(p: Point2D, a: Point2D, b: Point2D): boolean {
+  return (
+    p.x >= Math.min(a.x, b.x) && p.x <= Math.max(a.x, b.x) &&
+    p.y >= Math.min(a.y, b.y) && p.y <= Math.max(a.y, b.y)
+  );
+}
+
+function segmentsIntersect(a: Point2D, b: Point2D, c: Point2D, d: Point2D): boolean {
+  const abC = cross2(a, b, c);
+  const abD = cross2(a, b, d);
+  const cdA = cross2(c, d, a);
+  const cdB = cross2(c, d, b);
+  if (![abC, abD, cdA, cdB].every(Number.isFinite)) return true;
+  return (
+    (abC === 0 && onSegment2(c, a, b)) || (abD === 0 && onSegment2(d, a, b)) ||
+    (cdA === 0 && onSegment2(a, c, d)) || (cdB === 0 && onSegment2(b, c, d)) ||
+    (Math.sign(abC) * Math.sign(abD) < 0 && Math.sign(cdA) * Math.sign(cdB) < 0)
+  );
+}
+
+/**
+ * True when the unclosed ring (either winding) is a simple polygon: no
+ * zero-length edges, no doubling-back collinear vertices, no self-intersections,
+ * and nonzero area. Collinear forward vertices are allowed.
+ */
+export function isSimplePolygon(vertices: Point2D[]): boolean {
+  const n = vertices.length;
+  if (n < 3) return false;
+  let area2 = 0;
+  for (let i = 0; i < n; i++) {
+    const a = vertices[i];
+    const b = vertices[(i + 1) % n];
+    const c = vertices[(i + 2) % n];
+    if (!Number.isFinite(a.x) || !Number.isFinite(a.y) ||
+        !Number.isFinite(b.x) || !Number.isFinite(b.y)) return false;
+    if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 <= 0) return false;
+    area2 += a.x * b.y - b.x * a.y;
+    if (cross2(a, b, c) === 0 &&
+        (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y) < 0) return false;
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      if (segmentsIntersect(a, b, vertices[j], vertices[(j + 1) % n])) return false;
+    }
+  }
+  return Number.isFinite(area2) && area2 !== 0;
+}

@@ -205,6 +205,7 @@ interface ProjectState {
   deleteRoom: (id: string) => void;
   deleteOpening: (id: string) => void;
   deletePartition: (id: string) => void;
+  deleteShaft: (id: string) => void;
   addDevice: (type: DeviceType, anchor: DeviceAnchor, shared: boolean) => void;
   deleteDevice: (id: string) => void;
 
@@ -983,6 +984,23 @@ export const useProjectStore = create<ProjectState>()(
           const p2 = proj1.t <= proj2.t ? proj2.point : proj1.point;
           const isWindow = state.activeOpeningType === 'window';
 
+          const host = bestCandidate;
+          const newTmin = Math.min(proj1.t, proj2.t);
+          const newTmax = Math.max(proj1.t, proj2.t);
+          const overlapsExisting = state.openings.some((opening) => {
+            if (opening.wallId !== host.id) return false;
+            const ta = projectPointOnSegment(opening.p1, host.a, host.b).t;
+            const tb = projectPointOnSegment(opening.p2, host.a, host.b).t;
+            const lo = Math.min(ta, tb);
+            const hi = Math.max(ta, tb);
+            return newTmin < hi - 1e-6 && lo < newTmax - 1e-6;
+          });
+          if (overlapsExisting) {
+            state.addToast('Проем пересекается с существующим проемом на этой стене.', 'error');
+            set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
+            return;
+          }
+
           const newOpening: Opening = {
             id: makeEntityId('opening'),
             type: state.activeOpeningType,
@@ -1071,6 +1089,15 @@ export const useProjectStore = create<ProjectState>()(
 
           if (!room) {
             state.addToast('Перегородка должна находиться внутри комнаты!', 'error');
+            set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
+            return;
+          }
+
+          const insideRoom = (pt: Point2D) =>
+            isPointInPolygon(pt, room.vertices) &&
+            !(room.holes ?? []).some((hole) => isPointInPolygon(pt, hole));
+          if (!insideRoom(p1) || !insideRoom(p2)) {
+            state.addToast('Перегородка должна целиком находиться внутри одной комнаты!', 'error');
             set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
             return;
           }
@@ -1487,6 +1514,40 @@ export const useProjectStore = create<ProjectState>()(
           });
         }
         state.addToast('Перегородка удалена.', 'success');
+        get().checkCoverage();
+      },
+
+      deleteShaft: (id) => {
+        const state = get();
+        const shaft = state.shafts.find((candidate) => candidate.id === id);
+        if (!shaft) return;
+        const thickness = state.settings.defaultWallThicknessMm;
+        const remainingShafts = state.shafts.filter((candidate) => candidate.id !== id);
+        const selection = state.selection;
+        const selectionRemoved = selection?.kind === 'shaft' && selection.id === id;
+
+        if (state.boundaryMode === 'auto') {
+          const next = computeAutoProjectState(
+            state.rooms,
+            remainingShafts,
+            state.freePartitions,
+            state.openings,
+            thickness
+          );
+          set({
+            ...next.state,
+            selection: selectionRemoved ? null : selection,
+          });
+          if (next.removedOpenings > 0) {
+            state.addToast('Проёмы, потерявшие стену после удаления шахты, удалены.', 'info');
+          }
+        } else {
+          set({
+            shafts: remainingShafts,
+            selection: selectionRemoved ? null : selection,
+          });
+        }
+        state.addToast('Шахта удалена.', 'success');
         get().checkCoverage();
       },
 

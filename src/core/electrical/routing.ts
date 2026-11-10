@@ -635,7 +635,11 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
         }
       });
       const [nextDevice] = queue.splice(bestIndex, 1);
-      if (nextDevice) ordered.push(nextDevice);
+      if (nextDevice) {
+        ordered.push(nextDevice);
+        const pose = nextDevice.poses[0];
+        if (pose) currentPoint = pose.position;
+      }
     }
 
     for (const resolved of ordered) {
