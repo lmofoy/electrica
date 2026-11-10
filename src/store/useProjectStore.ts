@@ -85,6 +85,7 @@ import {
   unassignDevices,
 } from '../core/electrical/lineOps';
 import { collectRoomElements } from '../core/model/roomElements';
+import { validateProjectSnapshot } from '../core/model/projectValidation';
 
 let idCounter = 0;
 function makeEntityId(prefix: string): string {
@@ -123,6 +124,8 @@ interface ProjectState {
   highlightedLineId: string | null;
   // Линия, в которую назначаются приборы кликами на плане (UI-режим)
   lineAssignLineId: string | null;
+  // Линия, у которой редактируются контрольные точки трассы на плане (UI-режим)
+  routeEditLineId: string | null;
 
   // Настройки
   settings: ProjectSettings;
@@ -233,6 +236,11 @@ interface ProjectState {
     newPurpose?: LinePurpose
   ) => string | null;
   mergePanelLines: (lineIds: string[]) => string | null;
+  setRouteEditLine: (id: string | null) => void;
+  addLineWaypoint: (lineId: string, point: Point2D) => void;
+  moveLineWaypoint: (lineId: string, index: number, point: Point2D) => void;
+  removeLineWaypoint: (lineId: string, index: number) => void;
+  clearLineWaypoints: (lineId: string) => void;
 
   resetProject: () => void;
   loadProject: (snapshot: ProjectSnapshot) => void;
@@ -339,6 +347,7 @@ export const useProjectStore = create<ProjectState>()(
       activeView: 'plan',
       highlightedLineId: null,
       lineAssignLineId: null,
+      routeEditLineId: null,
 
       settings: DEFAULT_SETTINGS,
 
@@ -370,6 +379,14 @@ export const useProjectStore = create<ProjectState>()(
 
       setSettings: (updates) => {
         const state = get();
+        const nextSettings = { ...state.settings, ...updates };
+        if (![nextSettings.defaultWallThicknessMm, nextSettings.exteriorWallThicknessMm, nextSettings.ceilingHeightMm]
+          .every((value) => Number.isFinite(value) && value > 0)
+          || !Number.isFinite(nextSettings.floorLevelMm)
+          || !Number.isFinite(nextSettings.cableMarginPercent) || nextSettings.cableMarginPercent < 0) {
+          state.addToast('Размеры должны быть положительными числами, запас кабеля — неотрицательным.', 'error');
+          return;
+        }
         const geometryLocked =
           state.boundaryMode === 'auto' &&
           state.rooms.length > 0 &&
@@ -409,6 +426,8 @@ export const useProjectStore = create<ProjectState>()(
         }
         set({
           activeTool: tool,
+          lineAssignLineId: null,
+          routeEditLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -430,7 +449,7 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       addToast: (message, type = 'info') => {
-        const id = `toast-${Date.now()}`;
+        const id = `toast-${crypto.randomUUID()}`;
         set((state) => ({
           toasts: [...state.toasts, { id, message, type }],
         }));
@@ -462,6 +481,8 @@ export const useProjectStore = create<ProjectState>()(
       setDesignMode: (mode) =>
         set({
           designMode: mode,
+          lineAssignLineId: null,
+          routeEditLineId: null,
           activeTool: 'select',
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
@@ -471,6 +492,8 @@ export const useProjectStore = create<ProjectState>()(
       setActiveDeviceType: (type) =>
         set({
           activeDeviceType: type,
+          lineAssignLineId: null,
+          routeEditLineId: null,
           activeTool: 'place_device',
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
@@ -1198,6 +1221,7 @@ export const useProjectStore = create<ProjectState>()(
           activeView: 'plan',
           highlightedLineId: null,
           lineAssignLineId: null,
+          routeEditLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -1309,6 +1333,8 @@ export const useProjectStore = create<ProjectState>()(
               selection: null,
               activeView: 'plan',
               highlightedLineId: null,
+              lineAssignLineId: null,
+              routeEditLineId: null,
             });
             get().checkCoverage();
             return;
@@ -1533,6 +1559,7 @@ export const useProjectStore = create<ProjectState>()(
         }
         set({
           activeView: view,
+          ...(view === 'panel' ? { routeEditLineId: null } : {}),
           activeTool: 'select',
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
@@ -1584,6 +1611,7 @@ export const useProjectStore = create<ProjectState>()(
           activeView: 'plan',
           highlightedLineId: null,
           lineAssignLineId: null,
+          routeEditLineId: null,
           selection: state.selection?.kind === 'panel' ? null : state.selection,
         });
         state.addToast('Щиток удалён.', 'success');
@@ -1629,6 +1657,7 @@ export const useProjectStore = create<ProjectState>()(
           panel: withStrategy,
           highlightedLineId: null,
           lineAssignLineId: null,
+          routeEditLineId: null,
         });
         if (lines.length === 0) {
           state.addToast(
@@ -1717,6 +1746,8 @@ export const useProjectStore = create<ProjectState>()(
             state.highlightedLineId === id ? null : state.highlightedLineId,
           lineAssignLineId:
             state.lineAssignLineId === id ? null : state.lineAssignLineId,
+          routeEditLineId:
+            state.routeEditLineId === id ? null : state.routeEditLineId,
         });
       },
 
@@ -1727,6 +1758,7 @@ export const useProjectStore = create<ProjectState>()(
           panel: { ...state.panel, lines: [], strategy: 'custom' },
           highlightedLineId: null,
           lineAssignLineId: null,
+          routeEditLineId: null,
         });
         state.addToast('Схема очищена. Добавляйте линии вручную.', 'info');
       },
@@ -1739,7 +1771,16 @@ export const useProjectStore = create<ProjectState>()(
         }
         set({
           lineAssignLineId: id,
-          ...(id ? { activeTool: 'select' as const } : {}),
+          ...(id ? {
+            activeTool: 'select' as const,
+            designMode: 'electrical' as const,
+            selection: null,
+            highlightedLineId: id,
+            routeEditLineId: null,
+            draftVertices: [],
+            dynamicInput: DEFAULT_DYNAMIC_INPUT,
+            activeSnap: DEFAULT_SNAP,
+          } : {}),
         });
       },
 
@@ -1848,9 +1889,112 @@ export const useProjectStore = create<ProjectState>()(
             state.lineAssignLineId && lineIds.includes(state.lineAssignLineId)
               ? result.lineId
               : state.lineAssignLineId,
+          routeEditLineId:
+            state.routeEditLineId && lineIds.includes(state.routeEditLineId)
+              ? result.lineId
+              : state.routeEditLineId,
         });
         state.addToast(`Объединено линий: ${lineIds.length}.`, 'success');
         return result.lineId;
+      },
+
+      setRouteEditLine: (id) => {
+        const state = get();
+        if (id && !state.panel?.lines.some((line) => line.id === id)) {
+          set({ routeEditLineId: null });
+          return;
+        }
+        set({
+          routeEditLineId: id,
+          ...(id
+            ? {
+                activeTool: 'select' as const,
+                designMode: 'electrical' as const,
+                selection: null,
+                draftVertices: [],
+                dynamicInput: DEFAULT_DYNAMIC_INPUT,
+                activeSnap: DEFAULT_SNAP,
+                lineAssignLineId: null,
+                highlightedLineId: id,
+              }
+            : {}),
+        });
+      },
+
+      addLineWaypoint: (lineId, point) => {
+        const state = get();
+        if (!state.panel) return;
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        if (!line) return;
+        const waypoints = line.waypoints ?? [];
+        const last = waypoints[waypoints.length - 1];
+        if (last && Math.abs(last.x - point.x) < 1 && Math.abs(last.y - point.y) < 1) {
+          return;
+        }
+        const next = [...waypoints, { x: point.x, y: point.y }];
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId ? { ...candidate, waypoints: next } : candidate
+            ),
+          },
+        });
+      },
+
+      moveLineWaypoint: (lineId, index, point) => {
+        const state = get();
+        if (!state.panel) return;
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        const waypoints = line?.waypoints;
+        if (!waypoints || index < 0 || index >= waypoints.length) return;
+        if (waypoints[index].x === point.x && waypoints[index].y === point.y) return;
+        const next = waypoints.map((existing, i) =>
+          i === index ? { x: point.x, y: point.y } : existing
+        );
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId ? { ...candidate, waypoints: next } : candidate
+            ),
+          },
+        });
+      },
+
+      removeLineWaypoint: (lineId, index) => {
+        const state = get();
+        if (!state.panel) return;
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        const waypoints = line?.waypoints;
+        if (!waypoints || index < 0 || index >= waypoints.length) return;
+        const next = waypoints.filter((_, i) => i !== index);
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId
+                ? { ...candidate, waypoints: next.length > 0 ? next : undefined }
+                : candidate
+            ),
+          },
+        });
+      },
+
+      clearLineWaypoints: (lineId) => {
+        const state = get();
+        if (!state.panel) return;
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        if (!line?.waypoints?.length) return;
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId ? { ...candidate, waypoints: undefined } : candidate
+            ),
+          },
+        });
+        state.addToast('Контрольные точки трассы удалены.', 'info');
       },
 
       resetProject: () => {
@@ -1868,6 +2012,7 @@ export const useProjectStore = create<ProjectState>()(
           activeView: 'plan',
           highlightedLineId: null,
           lineAssignLineId: null,
+          routeEditLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -1887,6 +2032,10 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       loadProject: (snapshot) => {
+        if (!isProjectSnapshot(snapshot)) {
+          get().addToast('Не удалось загрузить проект: некорректные данные JSON.', 'error');
+          return;
+        }
         const settings = { ...DEFAULT_SETTINGS, ...snapshot.settings };
         const mode: BoundaryMode =
           snapshot.boundaryMode ?? (snapshot.apartment ? 'manual' : 'auto');
@@ -1930,6 +2079,8 @@ export const useProjectStore = create<ProjectState>()(
             selection: null,
             activeView: 'plan',
             highlightedLineId: null,
+            lineAssignLineId: null,
+            routeEditLineId: null,
             designMode: 'architecture',
             activeDeviceType: 'socket_single',
             deviceShared: false,
@@ -1987,6 +2138,8 @@ export const useProjectStore = create<ProjectState>()(
           selection: null,
           activeView: 'plan',
           highlightedLineId: null,
+          lineAssignLineId: null,
+          routeEditLineId: null,
           designMode: 'architecture',
           activeDeviceType: 'socket_single',
           deviceShared: false,
@@ -2055,21 +2208,7 @@ export function getProjectSnapshot(): ProjectSnapshot {
 }
 
 export function isProjectSnapshot(value: unknown): value is ProjectSnapshot {
-  if (!value || typeof value !== 'object') return false;
-  const snapshot = value as Partial<ProjectSnapshot>;
-  return (
-    snapshot.version === 1 &&
-    Array.isArray(snapshot.rooms) &&
-    Array.isArray(snapshot.walls) &&
-    Array.isArray(snapshot.openings) &&
-    Array.isArray(snapshot.freePartitions) &&
-    Array.isArray(snapshot.shafts) &&
-    (snapshot.devices === undefined || Array.isArray(snapshot.devices)) &&
-    (snapshot.panel === undefined ||
-      snapshot.panel === null ||
-      typeof snapshot.panel === 'object') &&
-    (snapshot.apartment === null || typeof snapshot.apartment === 'object')
-  );
+  return validateProjectSnapshot(value, DEFAULT_SETTINGS);
 }
 
 function restoreStoredProject(): void {

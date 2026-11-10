@@ -20,8 +20,8 @@ export const App: React.FC = () => {
       <Toolbar onOpenSettings={() => setIsSettingsOpen(true)} />
 
       {/* Рабочая область: холст CAD + боковая панель проекта или щитка */}
-      <div className="flex flex-1 w-full h-[calc(100vh-3.5rem)] overflow-hidden relative">
-        <main className="flex-1 h-full relative overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 min-h-0 w-full overflow-hidden relative">
+        <main className="flex-1 min-w-0 min-h-0 relative overflow-hidden">
           <CADCanvas />
         </main>
         {isPanelView ? <PanelScreen /> : <Sidebar />}

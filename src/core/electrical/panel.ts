@@ -10,6 +10,7 @@ import type {
   LineRouting,
   PanelStrategy,
   PanelSupply,
+  Point2D,
   RoomType,
   RoomZone,
 } from '../../types';
@@ -116,7 +117,17 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
           : undefined,
       routing:
         line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
+      waypoints: sanitizeWaypoints(line.waypoints),
     }));
+}
+
+function sanitizeWaypoints(waypoints: CircuitLine['waypoints']): Point2D[] | undefined {
+  if (!Array.isArray(waypoints)) return undefined;
+  const valid = waypoints.filter(
+    (point) =>
+      point && Number.isFinite(point.x) && Number.isFinite(point.y)
+  );
+  return valid.length > 0 ? valid.map((point) => ({ x: point.x, y: point.y })) : undefined;
 }
 
 // -------------------------------------------------------------

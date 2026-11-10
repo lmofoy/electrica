@@ -20,6 +20,7 @@ interface RoomsLayerProps {
   boundaryMode: BoundaryMode;
   autoLayout: AutoLayout | null;
   grid?: React.ReactNode;
+  listening: boolean;
 }
 
 export const RoomsLayer: React.FC<RoomsLayerProps> = ({
@@ -32,6 +33,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
   boundaryMode,
   autoLayout,
   grid,
+  listening,
 }) => {
   const floorByRoom = useMemo(() => {
     const map = new Map<string, { rings: Point2D[][]; areaM2: number }>();
@@ -43,7 +45,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
   }, [boundaryMode, autoLayout]);
 
   return (
-    <Layer>
+    <Layer listening={listening}>
       {grid}
       {/* 1. Общий пол квартиры — с вырезами шахт через evenodd */}
       {apartment && apartment.vertices.length >= 3 && (
@@ -86,7 +88,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
         const isSelected = room.id === selectedRoomId;
 
         return (
-          <Group key={room.id} onClick={() => onSelectRoom(room.id)}>
+          <Group key={room.id} onClick={(event) => { if (event.evt.button === 0) onSelectRoom(room.id); }}>
             {/* Заливка пола комнаты (при выделении максимальная яркость и контраст!) */}
             {rings.length > 0 && (
               <Shape

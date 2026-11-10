@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { X, Sliders } from 'lucide-react';
 
@@ -11,11 +11,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const { settings, setSettings, boundaryMode, rooms } = useProjectStore();
   const thicknessLocked = boundaryMode === 'auto' && rooms.length > 0;
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden text-slate-200">
+    <div role="dialog" aria-modal="true" aria-label="Параметры проекта" className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-md max-h-[90vh] shadow-2xl overflow-y-auto text-slate-200">
         <div className="flex items-center justify-between p-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Sliders size={18} className="text-sky-400" />
@@ -109,7 +118,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <input
               type="number"
               value={settings.cableMarginPercent}
-              onChange={(e) => setSettings({ cableMarginPercent: Number(e.target.value) || 15 })}
+              onChange={(e) => setSettings({ cableMarginPercent: Number(e.target.value) })}
               className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-sky-500"
             />
           </div>

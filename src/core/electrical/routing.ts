@@ -598,11 +598,24 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
       ? graph?.points.get(panelNodeId) ?? null
       : null;
 
-    let currentNodeId = panelNodeId;
-    let currentAttachPoint = panelAttachmentPoint ?? panelPose.position;
-    let currentPoint = panelPose.position;
+    // Точки пользователя не проецируем на стены: это обязательные вершины магистрали.
+    const waypoints = (line.waypoints ?? []).filter(
+      (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+    );
+    const hasWaypoints = waypoints.length > 0;
+    const lastWaypoint = hasWaypoints ? waypoints[waypoints.length - 1] : null;
 
-    if (panelAttachmentPoint) {
+    let currentNodeId = hasWaypoints ? null : panelNodeId;
+    let currentAttachPoint = lastWaypoint ?? panelAttachmentPoint ?? panelPose.position;
+    let currentPoint = lastWaypoint ?? panelPose.position;
+
+    if (hasWaypoints) {
+      let from = panelPose.position;
+      for (const waypoint of waypoints) {
+        planLengthMm += appendPath(paths, orthogonalPath(from, waypoint));
+        from = waypoint;
+      }
+    } else if (panelAttachmentPoint) {
       const connector = orthogonalPath(panelPose.position, panelAttachmentPoint);
       planLengthMm += appendPath(paths, connector);
     }

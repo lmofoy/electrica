@@ -9,6 +9,7 @@ import { SelectionLayer } from './SelectionLayer';
 import { RoutingLayer } from './RoutingLayer';
 import { ElectricalLayer } from './ElectricalLayer';
 import { DraftingLayer } from './DraftingLayer';
+import { WaypointLayer } from './WaypointLayer';
 import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
 import { snapToGrid, distance, polarToPoint, angleDeg, snapAngle } from '../../core/geometry/math';
@@ -32,6 +33,8 @@ import type {
   Point2D,
 } from '../../types';
 import { Home, PenTool } from 'lucide-react';
+
+Konva.dragButtons = [0];
 
 export const CADCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -95,6 +98,12 @@ export const CADCanvas: React.FC = () => {
     boundaryMode,
     activeBoundaryTool,
     activeView,
+    routeEditLineId,
+    setRouteEditLine,
+    addLineWaypoint,
+    moveLineWaypoint,
+    removeLineWaypoint,
+    clearLineWaypoints,
   } = useProjectStore();
 
   const autoLayout = useMemo(() => {
@@ -130,11 +139,36 @@ export const CADCanvas: React.FC = () => {
     [devices, rooms, freePartitions, settings.defaultWallThicknessMm]
   );
 
+  const [waypointPreview, setWaypointPreview] = useState<{
+    lineId: string;
+    index: number;
+    point: Point2D;
+    sourcePanel: typeof panel;
+  } | null>(null);
+  const routeEditing = activeTool === 'select' && designMode === 'electrical';
+  if (waypointPreview && (waypointPreview.sourcePanel !== panel || waypointPreview.lineId !== routeEditLineId || !routeEditing)) {
+    setWaypointPreview(null);
+  }
+  const previewPanel = useMemo(() => {
+    if (!panel || !waypointPreview || !routeEditing || waypointPreview.lineId !== routeEditLineId) return panel;
+    return {
+      ...panel,
+      lines: panel.lines.map((line) => line.id === waypointPreview.lineId
+        ? {
+            ...line,
+            waypoints: line.waypoints?.map((point, index) =>
+              index === waypointPreview.index ? waypointPreview.point : point
+            ),
+          }
+        : line),
+    };
+  }, [panel, waypointPreview, routeEditing, routeEditLineId]);
+
   const lineColorMap = useMemo(() => buildLineColorMap(panel), [panel]);
   const lineRoutes = useMemo(
     () =>
       computeLineRoutes({
-        panel,
+        panel: previewPanel,
         devices,
         rooms,
         partitions: freePartitions,
@@ -142,7 +176,7 @@ export const CADCanvas: React.FC = () => {
         walls,
         settings,
       }),
-    [panel, devices, rooms, freePartitions, nodes, walls, settings]
+    [previewPanel, devices, rooms, freePartitions, nodes, walls, settings]
   );
   const deviceLineMap = useMemo(() => buildDeviceLineMap(panel), [panel]);
   const deviceLineIds = useMemo(
@@ -156,6 +190,11 @@ export const CADCanvas: React.FC = () => {
   const assignLine = useMemo(
     () => panel?.lines.find((line) => line.id === lineAssignLineId) ?? null,
     [panel, lineAssignLineId]
+  );
+
+  const routeEditLine = useMemo(
+    () => routeEditing ? panel?.lines.find((line) => line.id === routeEditLineId) ?? null : null,
+    [panel, routeEditLineId, routeEditing]
   );
 
   const toggleDeviceAssignment = useCallback(
@@ -226,12 +265,16 @@ export const CADCanvas: React.FC = () => {
   );
 
   useEffect(() => {
+    if (routeEditLine) {
+      setHighlightedLine(routeEditLine.id);
+      return;
+    }
     if (selection?.kind === 'device') {
       setHighlightedLine(deviceLineMap.get(selection.id)?.id ?? null);
       return;
     }
     if (selection !== null) setHighlightedLine(null);
-  }, [selection, deviceLineMap, setHighlightedLine]);
+  }, [selection, deviceLineMap, routeEditLine, setHighlightedLine]);
 
   const panelPreview = useMemo<{
     position: Point2D;
@@ -304,6 +347,16 @@ export const CADCanvas: React.FC = () => {
       window.removeEventListener('resize', updateSize);
     };
   }, [activeView]);
+
+  useEffect(() => {
+    const stopPanning = () => { isMiddleDraggingRef.current = false; };
+    window.addEventListener('mouseup', stopPanning);
+    window.addEventListener('blur', stopPanning);
+    return () => {
+      window.removeEventListener('mouseup', stopPanning);
+      window.removeEventListener('blur', stopPanning);
+    };
+  }, []);
 
   const screenToWorld = useCallback(
     (screenX: number, screenY: number): Point2D => {
@@ -422,6 +475,7 @@ export const CADCanvas: React.FC = () => {
     if (!stage) return;
 
     if (activeTool === 'select') {
+      if (routeEditLine) return;
       if (e.target === stage && !assignLine) {
         setSelection(null);
         setHighlightedLine(null);
@@ -550,6 +604,25 @@ export const CADCanvas: React.FC = () => {
   // Горячие клавиши
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.code === 'KeyZ' || e.code === 'KeyY') {
+          e.preventDefault();
+          const history = useProjectStore.temporal.getState();
+          if (e.code === 'KeyY' || e.shiftKey) history.redo();
+          else history.undo();
+        }
+        return;
+      }
+      if (e.altKey) return;
+      if (e.code === 'KeyV' || e.code === 'KeyH') {
+        e.preventDefault();
+        useProjectStore.getState().setActiveTool(e.code === 'KeyV' ? 'select' : 'pan');
+        return;
+      }
       const isDrawing =
         activeTool === 'draw_apartment' ||
         activeTool === 'draw_room' ||
@@ -567,6 +640,10 @@ export const CADCanvas: React.FC = () => {
       }
 
       if (e.key === 'Escape') {
+        if (routeEditLineId) {
+          setRouteEditLine(null);
+          return;
+        }
         if (lineAssignLineId) {
           setLineAssignLine(null);
           return;
@@ -576,6 +653,7 @@ export const CADCanvas: React.FC = () => {
         } else if (draftVertices.length > 0) {
           cancelDraft();
         } else {
+          useProjectStore.getState().setActiveTool('select');
           setSelection(null);
           setHighlightedLine(null);
         }
@@ -585,6 +663,7 @@ export const CADCanvas: React.FC = () => {
       if (
         (e.key === 'Delete' || e.key === 'Backspace') &&
         !isDrawing &&
+        !routeEditLineId &&
         activeTool !== 'place_device' &&
         activeTool !== 'place_panel' &&
         selection
@@ -661,6 +740,8 @@ export const CADCanvas: React.FC = () => {
     selection,
     lineAssignLineId,
     setLineAssignLine,
+    routeEditLineId,
+    setRouteEditLine,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
@@ -670,7 +751,7 @@ export const CADCanvas: React.FC = () => {
     <div
       ref={containerRef}
       className={`relative w-full h-full overflow-hidden bg-slate-950 select-none ${
-        activeTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
+        activeTool === 'select' && !routeEditLine ? 'cursor-default' : 'cursor-crosshair'
       }`}
     >
       <Rulers
@@ -696,6 +777,7 @@ export const CADCanvas: React.FC = () => {
         y={stagePos.y}
       >
         <RoomsLayer
+          listening={activeTool === 'select' && !assignLine && !routeEditLine}
           apartment={apartment}
           rooms={rooms}
           shafts={shafts}
@@ -726,6 +808,7 @@ export const CADCanvas: React.FC = () => {
         />
 
         <RoutingLayer
+          listening={activeTool === 'select' && !assignLine && !routeEditLine}
           panel={panel}
           routes={lineRoutes}
           highlightedLineId={highlightedLineId}
@@ -734,6 +817,7 @@ export const CADCanvas: React.FC = () => {
         />
 
         <SelectionLayer
+          listening={activeTool === 'select' && !routeEditLine}
           selection={selection}
           openings={openings}
           partitions={freePartitions}
@@ -779,6 +863,27 @@ export const CADCanvas: React.FC = () => {
           isOpeningTool={activeTool === 'draw_opening'}
           isPartitionTool={activeTool === 'draw_partition'}
         />
+        {routeEditLine && (
+          <WaypointLayer
+            key={routeEditLine.id}
+            line={routeEditLine}
+            color={lineColorMap.get(routeEditLine.id) ?? '#38bdf8'}
+            zoom={zoom}
+            stagePos={stagePos}
+            width={dimensions.width}
+            height={dimensions.height}
+            cursorPosMm={cursorPosMm}
+            gridSnap={gridSnap}
+            gridStepMm={gridStepMm}
+            onAdd={(point) => addLineWaypoint(routeEditLine.id, point)}
+            onPreview={(index, point) => setWaypointPreview({ lineId: routeEditLine.id, index, point, sourcePanel: panel })}
+            onMove={(index, point) => {
+              setWaypointPreview(null);
+              moveLineWaypoint(routeEditLine.id, index, point);
+            }}
+            onRemove={(index) => removeLineWaypoint(routeEditLine.id, index)}
+          />
+        )}
       </Stage>
 
       {assignLine && (
@@ -799,6 +904,41 @@ export const CADCanvas: React.FC = () => {
           </div>
           <button
             onClick={() => setLineAssignLine(null)}
+            className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
+          >
+            Готово
+          </button>
+        </div>
+      )}
+
+      {routeEditLine && (
+        <div className="absolute top-9 left-9 right-3 z-30 flex flex-wrap items-center gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
+          style={{ borderColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
+        >
+          <span
+            className="w-2.5 h-2.5 rounded-full shrink-0"
+            style={{ backgroundColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
+          />
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold text-white truncate max-w-[220px]">
+              Контрольные точки трассы: {routeEditLine.name}
+            </div>
+            <div className="text-[9px] text-slate-400">
+              Точек: {routeEditLine.waypoints?.length ?? 0} · Кабель: {((lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0) / 1000).toFixed(1)} м
+            </div>
+            <div className="text-[9px] text-slate-400">
+              Клик — добавить · перетаскивание — передвинуть · клик на точку — удалить · Esc — выйти
+            </div>
+          </div>
+          <button
+            onClick={() => clearLineWaypoints(routeEditLine.id)}
+            disabled={!routeEditLine.waypoints?.length}
+            className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
+          >
+            Очистить
+          </button>
+          <button
+            onClick={() => setRouteEditLine(null)}
             className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
           >
             Готово
@@ -855,6 +995,8 @@ export const CADCanvas: React.FC = () => {
 
       {draftVertices.length > 0 && (
         <CadFloatingInput
+          width={dimensions.width}
+          height={dimensions.height}
           lastVertex={lastVertex}
           cursorPosMm={cursorPosMm}
           stagePos={stagePos}

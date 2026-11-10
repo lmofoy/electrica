@@ -95,7 +95,7 @@ export const PanelScreen: React.FC = () => {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveView('plan');
+      if (event.key === 'Escape' && !document.querySelector('[role="dialog"][aria-modal="true"]')) setActiveView('plan');
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -180,7 +180,7 @@ export const PanelScreen: React.FC = () => {
   const warnings = warningsList.filter((warning) => warning.severity === 'warning').length;
 
   return (
-    <aside className="w-[420px] xl:w-[500px] shrink-0 h-full overflow-y-auto bg-slate-900 border-l border-slate-800 text-slate-200 select-none">
+    <aside className="w-full md:w-[420px] xl:w-[500px] shrink-0 h-[50%] md:h-full overflow-y-auto bg-slate-900 border-l border-slate-800 text-slate-200 select-none">
       <div className="p-3 space-y-3">
         {/* Шапка модуля */}
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">

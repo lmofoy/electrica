@@ -21,6 +21,7 @@ import {
   Scissors,
   Merge,
   MousePointerClick,
+  Target,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { LineCompositionDialog } from './LineCompositionDialog';
@@ -77,6 +78,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   const [generateMenuOpen, setGenerateMenuOpen] = useState(false);
   const mergePanelLines = useProjectStore((state) => state.mergePanelLines);
   const setLineAssignLine = useProjectStore((state) => state.setLineAssignLine);
+  const setRouteEditLine = useProjectStore((state) => state.setRouteEditLine);
   const setActiveView = useProjectStore((state) => state.setActiveView);
   const lineColors = buildLineColorMap(panel);
 
@@ -162,7 +164,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                     onClick={() => {
                       setGenerateMenuOpen(false);
                       const ok = window.confirm(
-                        'Пересобрать все линии заново? Текущий состав, названия, ручные нагрузки и настройки УЗО будут заменены группировкой по комнатам.'
+                        'Пересобрать все линии заново? Текущий состав, названия, ручные нагрузки, настройки УЗО и точки трасс будут заменены группировкой по комнатам.'
                       );
                       if (ok) onGenerate();
                     }}
@@ -468,7 +470,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   )}
                 </div>
 
-                <div className="mt-1 flex items-center gap-1">
+                <div className="mt-1 flex flex-wrap items-center gap-1">
                   <button
                     onClick={() => setDialog({ lineId: line.id, mode: 'edit' })}
                     className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[9px] text-slate-400 transition"
@@ -497,6 +499,19 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   >
                     <MousePointerClick size={10} />
                     На плане
+                  </button>
+                  <button
+                    onClick={() => {
+                      onHighlight(line.id);
+                      setRouteEditLine(line.id);
+                      setActiveView('plan');
+                    }}
+                    disabled={line.deviceIds.length === 0}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed text-[9px] text-slate-400 transition"
+                    title={line.deviceIds.length === 0 ? 'Сначала добавьте приборы в линию' : 'Расставить контрольные точки трассы на плане'}
+                  >
+                    <Target size={10} />
+                    Точки трассы
                   </button>
                 </div>
               </div>
@@ -542,7 +557,8 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
       <p className="text-[9px] text-slate-500 leading-snug">
         Трасса на плане: сплошная — по потолку, пунктир — по полу. Длина кабеля включает
         вертикальные спуски, запас из настроек и 1,5 м на разделку в щитке. Порядок
-        подключения приборов — цепочкой от щитка.
+        подключения приборов — цепочкой от щитка. «Точки трассы» задают путь от щитка
+        через точки по порядку; между ними — прямоугольные участки без обхода препятствий.
       </p>
 
       {dialog && (

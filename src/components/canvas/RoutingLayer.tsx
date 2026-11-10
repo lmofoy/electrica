@@ -6,6 +6,7 @@ import { buildLineColorMap } from '../../core/electrical/lineColors';
 
 interface RoutingLayerProps {
   panel: ElectricalPanel | null;
+  listening: boolean;
   routes: Map<string, LineRoute>;
   highlightedLineId: string | null;
   zoom: number;
@@ -21,6 +22,7 @@ interface SegmentGeometry {
 
 export const RoutingLayer: React.FC<RoutingLayerProps> = ({
   panel,
+  listening,
   routes,
   highlightedLineId,
   zoom,
@@ -54,7 +56,7 @@ export const RoutingLayer: React.FC<RoutingLayerProps> = ({
   ];
 
   return (
-    <Layer>
+    <Layer listening={listening}>
       {ordered.map((segment, index) => {
         const active = segment.lineId === highlightedLineId;
         const dimmed = highlightedLineId !== null && !active;

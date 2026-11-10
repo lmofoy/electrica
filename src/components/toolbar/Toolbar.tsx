@@ -91,11 +91,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUndo = () => {
-    (useProjectStore.temporal.getState() as any).undo?.();
+    useProjectStore.temporal.getState().undo();
   };
 
   const handleRedo = () => {
-    (useProjectStore.temporal.getState() as any).redo?.();
+    useProjectStore.temporal.getState().redo();
   };
 
   const handleExport = () => {
@@ -129,8 +129,30 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   };
 
   const handleCenterView = () => {
-    setZoom(0.12);
-    setStagePos({ x: 120, y: 120 });
+    const viewport = document.querySelector('main');
+    if (!viewport) return;
+    const state = useProjectStore.getState();
+    const points = [
+      ...(state.apartment?.vertices ?? []),
+      ...state.rooms.flatMap((room) => room.vertices),
+      ...(state.panel?.lines.flatMap((line) => line.waypoints ?? []) ?? []),
+    ];
+    if (points.length === 0) {
+      setZoom(0.12);
+      setStagePos({ x: 120, y: 120 });
+      return;
+    }
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const width = viewport.clientWidth, height = viewport.clientHeight;
+    const scale = Math.max(0.02, Math.min(1.5,
+      Math.max(1, width - 100) / Math.max(1, maxX - minX),
+      Math.max(1, height - 100) / Math.max(1, maxY - minY)));
+    setZoom(scale);
+    setStagePos({ x: width / 2 - (minX + maxX) / 2 * scale,
+      y: height / 2 - (minY + maxY) / 2 * scale });
   };
 
   const roomTypes: { type: RoomType; label: string }[] = [
@@ -145,9 +167,9 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   ];
 
   return (
-    <header className="h-14 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between text-slate-200 select-none z-40">
+    <header className="shrink-0 max-h-[40vh] overflow-y-auto bg-slate-900 border-b border-slate-800 px-3 py-2 flex flex-wrap items-center gap-2 justify-between text-slate-200 select-none z-40">
       {/* Логотип */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-sky-600 text-white font-bold shadow-lg shadow-sky-900/40">
           ⚡
         </div>
@@ -230,7 +252,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
       </div>
 
       {/* Основные инструменты */}
-      <div className="flex items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+      <div className="flex flex-wrap items-center gap-1.5 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
         <button
           onClick={() => setActiveTool('select')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
@@ -562,7 +584,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
       )}
 
       {/* История и Масштаб */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={handleExport}
           className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"

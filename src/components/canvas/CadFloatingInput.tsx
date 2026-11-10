@@ -7,6 +7,8 @@ interface CadFloatingInputProps {
   cursorPosMm: Point2D;
   stagePos: Point2D;
   zoom: number;
+  width: number;
+  height: number;
   dynamicInput: DynamicInputState;
   onCommitVertex: (vertex: Point2D) => void;
   onUpdateInput: (updates: Partial<DynamicInputState>) => void;
@@ -18,6 +20,8 @@ export const CadFloatingInput: React.FC<CadFloatingInputProps> = ({
   cursorPosMm,
   stagePos,
   zoom,
+  width,
+  height,
   dynamicInput,
   onCommitVertex,
   onUpdateInput,
@@ -53,7 +57,7 @@ export const CadFloatingInput: React.FC<CadFloatingInputProps> = ({
     if (e.key === 'Enter') {
       e.preventDefault();
       const val = parseFloat(dynamicInput.currentLengthInput || currentSteppedDist.toString());
-      if (!isNaN(val) && val > 0) {
+      if (Number.isFinite(val) && val > 0) {
         onUpdateInput({
           lockedLength: val,
           step: 'angle',
@@ -71,7 +75,7 @@ export const CadFloatingInput: React.FC<CadFloatingInputProps> = ({
       const angleVal = parseFloat(dynamicInput.currentAngleInput || currentAngle.toString());
       const lengthVal = dynamicInput.lockedLength ?? currentSteppedDist;
 
-      if (!isNaN(angleVal) && lengthVal > 0) {
+      if (Number.isFinite(angleVal) && Number.isFinite(lengthVal) && lengthVal > 0) {
         const finalVertex = polarToPoint(lastVertex, lengthVal, angleVal);
         onCommitVertex(finalVertex);
       }
@@ -84,8 +88,9 @@ export const CadFloatingInput: React.FC<CadFloatingInputProps> = ({
     <div
       style={{
         position: 'absolute',
-        left: Math.min(window.innerWidth - 270, Math.max(20, screenX + 30)),
-        top: Math.min(window.innerHeight - 120, Math.max(70, screenY - 50)),
+        left: Math.max(8, Math.min(width - 270, screenX + 30)),
+        top: Math.max(32, Math.min(height - 160, screenY - 50)),
+        width: Math.min(260, width - 16),
         zIndex: 50,
       }}
       className="pointer-events-auto bg-slate-900/95 border border-sky-500/80 rounded-xl p-3 shadow-2xl backdrop-blur-md text-xs font-mono select-none animate-fadeIn ring-2 ring-sky-500/20"

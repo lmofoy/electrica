@@ -10,6 +10,7 @@ import {
 
 interface SelectionLayerProps {
   selection: Selection | null;
+  listening: boolean;
   openings: Opening[];
   partitions: FreePartition[];
   devices: ResolvedDevice[];
@@ -21,6 +22,7 @@ interface SelectionLayerProps {
 
 export const SelectionLayer: React.FC<SelectionLayerProps> = ({
   selection,
+  listening,
   openings,
   partitions,
   devices,
@@ -33,7 +35,7 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
     selection?.kind === kind && selection.id === id;
 
   return (
-    <Layer>
+    <Layer listening={listening}>
       {/* Проёмы: невидимая широкая линия для попадания мышью */}
       {openings.map((opening) => {
         const selected = isSelected('opening', opening.id);
@@ -45,6 +47,7 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
               strokeWidth={Math.max(opening.wallThicknessMm, 16 / zoom)}
               hitStrokeWidth={Math.max(opening.wallThicknessMm, 16 / zoom)}
               onClick={(e) => {
+                if (e.evt.button !== 0) return;
                 e.cancelBubble = true;
                 onSelect({ kind: 'opening', id: opening.id });
               }}
@@ -76,6 +79,7 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
               hitStrokeWidth={Math.max(partition.thicknessMm, 14 / zoom)}
               lineCap="round"
               onClick={(e) => {
+                if (e.evt.button !== 0) return;
                 e.cancelBubble = true;
                 onSelect({ kind: 'partition', id: partition.id });
               }}
@@ -106,6 +110,7 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
               radius={14 / zoom}
               fill="rgba(2, 6, 23, 0.001)"
               onClick={(e) => {
+                if (e.evt.button !== 0) return;
                 e.cancelBubble = true;
                 onSelect({ kind: 'device', id: resolved.device.id });
               }}
@@ -128,7 +133,8 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
             height={PANEL_SYMBOL_DEPTH_MM}
             fill="rgba(2, 6, 23, 0.001)"
             onClick={(e) => {
-              e.cancelBubble = true;
+              if (e.evt.button !== 0) return;
+                e.cancelBubble = true;
               onSelect({ kind: 'panel', id: panelId });
             }}
           />

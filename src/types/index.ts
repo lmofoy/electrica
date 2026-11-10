@@ -273,6 +273,7 @@ export interface CircuitLine {
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
   routing?: LineRouting; // способ прокладки; не задан — берётся defaultRouting проекта
+  waypoints?: Point2D[]; // ручные контрольные точки трассы (мм); маршрут проходит через них по порядку
 }
 
 export interface PanelSupply {

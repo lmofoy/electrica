@@ -180,6 +180,9 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={mode === 'split' ? 'Разделить линию' : 'Состав линии'}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
       onMouseDown={onClose}
     >

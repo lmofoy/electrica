@@ -443,7 +443,7 @@ export const Sidebar: React.FC = () => {
   };
 
   return (
-    <aside className="w-80 bg-slate-900 border-l border-slate-800 flex flex-col h-full text-slate-200 select-none z-30">
+    <aside className="w-full md:w-80 shrink-0 bg-slate-900 border-t md:border-t-0 md:border-l border-slate-800 flex flex-col h-[40%] md:h-full min-h-0 text-slate-200 select-none z-30">
       {/* 1. Высший уровень иерархии: Квартира */}
       <div className="p-4 border-b border-slate-800 bg-slate-950/60">
         <div className="flex items-center justify-between mb-2">
