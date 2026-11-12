@@ -515,7 +515,7 @@ export function collectLineCompositionWarnings(
         warnings.push({
           id: `wet-device-rcd-${line.id}`,
           severity: 'error',
-          message: `«${line.name}»: влагозащищённых розеток ${wetCount}, но нет УЗО 30 мА типа A (ПУЭ 7.1.48).`,
+          message: `«${line.name}»: влагозащищённых розеток ${wetCount}, но нет УЗО 30 мА типа A (СП 256.1325800.2016; ПУЭ-7 п. 7.1.79).`,
         });
       }
     }

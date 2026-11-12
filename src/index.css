@@ -32,3 +32,99 @@ body,
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* Список порядка точек: узкий скролл и подсветка места вставки */
+.route-stops-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0f172a;
+}
+
+.route-stops-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.route-stops-scroll::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 999px;
+}
+
+.route-stops-scroll::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+@keyframes route-stops-drop-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scaleX(0.97);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+.route-stops-drop {
+  animation: route-stops-drop-pulse 900ms ease-in-out infinite;
+  transform-origin: left center;
+}
+
+/* Печать листа A3 из модального окна чертежа: на бумагу попадает
+   только SVG-лист, интерфейс приложения скрывается. */
+@media print {
+  @page {
+    size: 420mm 297mm;
+    margin: 0;
+  }
+
+  html,
+  body {
+    width: 420mm !important;
+    height: 297mm !important;
+    overflow: hidden !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+
+  #root {
+    display: none !important;
+  }
+
+  .sheet-print-host,
+  .calc-print-host {
+    position: static !important;
+    display: block !important;
+    width: 420mm !important;
+    height: 297mm !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+
+  .sheet-print-toolbar,
+  .calc-print-toolbar {
+    display: none !important;
+  }
+
+  .sheet-print-scroll,
+  .calc-print-scroll {
+    display: block !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    width: 420mm !important;
+    height: 297mm !important;
+  }
+
+  .sheet-print-page,
+  .calc-print-page {
+    width: 420mm !important;
+    height: 297mm !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
+
+  .sheet-print-page svg,
+  .calc-print-page svg {
+    width: 100% !important;
+    height: 100% !important;
+  }
+}

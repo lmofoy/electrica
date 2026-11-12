@@ -230,6 +230,15 @@ export type PanelStrategy = 'budget' | 'optimal' | 'maximum' | 'custom';
 
 export type PanelMounting = 'flush' | 'surface'; // встроенный / накладной
 
+// Система заземления по ПУЭ-7 гл. 1.7. В квартире применяется TN-S
+// или TN-C-S с разделением PEN на N и PE на вводе.
+export type GroundingSystem = 'TN-S' | 'TN-C-S';
+
+// Категория надёжности электроснабжения (ПУЭ-7 гл. 1.2).
+export type ReliabilityCategory = 'I' | 'II' | 'III';
+
+export type PhaseLabel = 'L1' | 'L2' | 'L3';
+
 export type LinePurpose =
   | 'lighting'
   | 'sockets'
@@ -246,20 +255,43 @@ export type LineRouting = 'ceiling' | 'floor';
 
 export interface CableSpec {
   sectionMm2: number; // 1.5 | 2.5 | 4 | 6 | 10 | 16
-  cores: 3; // 1 фаза: L + N + PE
+  cores: 3 | 5; // 3 — однофазная группа (L + N + PE), 5 — трёхфазный ввод
 }
 
 export interface BreakerSpec {
-  poles: 1 | 2;
+  poles: 1 | 2 | 3 | 4; // 3P/4P — трёхфазный ввод
   ratingA: number; // 6, 10, 16, 20, 25, 32, 40, 50, 63
   curve: 'B' | 'C';
 }
 
 export interface RcdSpec {
-  poles: 2; // 1P+N
+  poles: 2 | 4; // 1P+N для групп, 3P+N на трёхфазном вводе
   ratingA: number;
   sensitivityMa: number; // 10 | 30 | 100 | 300
   type: 'A' | 'AC';
+  selective?: boolean; // тип S: выдержка по времени для селективности
+}
+
+export type ManualRouteAnchorKind = 'panel' | 'device' | 'junction';
+
+export interface ManualRouteAnchor {
+  nodeIndex: number; // индекс вершины в ManualRoute.nodes
+  kind: ManualRouteAnchorKind;
+  deviceId?: string; // только для kind === 'device'
+}
+
+// Ручная трасса линии: снимок геометрии, который пользователь редактирует
+// как набор вершин. Общие углы хранятся один раз и двигают все примыкающие
+// участки; пути — отдельные кабельные участки (магистраль и ответвления).
+export interface ManualRoute {
+  nodes: Point2D[];
+  paths: number[][]; // каждый путь — последовательность индексов вершин (>= 2)
+  anchors: ManualRouteAnchor[]; // закреплённые вершины: щиток, приборы, стыки
+  // Служебные вершины-изгибы, появившиеся при перемещении точки. Они нужны
+  // только для геометрии под 90°: маркеры для них не рисуются, вручную они не
+  // редактируются, а при удалении соседней точки схлопываются. Точки
+  // автотрассы и явно вставленные пользователем сюда не попадают.
+  bendNodes?: number[];
 }
 
 export interface CircuitLine {
@@ -269,17 +301,27 @@ export interface CircuitLine {
   roomIds: string[];
   deviceIds: string[]; // фактический состав линии для подсветки и трассировки
   colorIndex?: number; // стабильный цвет линии; не задан — берётся позиция в списке
-  loadW: number;
+  loadW: number; // установленная мощность группы
+  cosPhi?: number; // коэффициент мощности группы; не задан — 1
+  demandFactor?: number; // коэффициент спроса группы; не задан — 1
+  phase?: PhaseLabel; // фаза при трёхфазном вводе; не задана — по порядку линий
   cable: CableSpec;
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
   routing?: LineRouting; // способ прокладки; не задан — берётся defaultRouting проекта
-  waypoints?: Point2D[]; // ручные контрольные точки трассы (мм); маршрут проходит через них по порядку
+  manualRoute?: ManualRoute; // ручная трасса; при наличии заменяет автоматическую
+  waypoints?: Point2D[]; // устаревшие контрольные точки; сохранены только до этапа 2
 }
 
 export interface PanelSupply {
   allocatedPowerW: number; // выделенная мощность по ТУ
-  voltageV: 230;
+  voltageV: 230; // фазное напряжение
+  phases: 1 | 3; // однофазный или трёхфазный ввод
+  system: GroundingSystem;
+  reliabilityCategory: ReliabilityCategory;
+  cosPhi: number; // коэффициент мощности ввода
+  demandFactor: number; // коэффициент спроса по СП 31-110-2003
+  cableBrand: string; // марка кабеля, например ВВГнг(А)-LS
   inputCable: CableSpec;
   inputBreaker: BreakerSpec;
   meter: { enabled: boolean };

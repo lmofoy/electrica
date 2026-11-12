@@ -1,5 +1,4 @@
 import type { CircuitLine, ElectricalPanel, PanelStrategy } from '../../types';
-import { CABLE_AMPACITY_A, VOLTAGE_V, COS_PHI, CABLE_SECTIONS } from './norms';
 
 export type PanelItemKind =
   | 'input_breaker'
@@ -115,7 +114,9 @@ function buildItems(panel: ElectricalPanel): PanelLayoutItem[] {
       id: 'main-rcd',
       kind: 'main_rcd',
       label: `${supply.mainRcd.sensitivityMa} мА`,
-      sublabel: `Противопожарное УЗО ${supply.mainRcd.type}`,
+      sublabel: `Противопожарное УЗО ${supply.mainRcd.type}${
+        supply.mainRcd.selective ? ' · S' : ''
+      }`,
       modules: 2,
       tone: 'protection',
     });
@@ -171,49 +172,16 @@ function layoutRows(items: PanelLayoutItem[], totalModules: number): PanelLayout
   return rows;
 }
 
+// Только предупреждения DIN-раскладки. Нормативные проверки живут
+// в panelValidation.ts и не дублируются здесь.
 function collectWarnings(panel: ElectricalPanel, modulesTotal: number, enclosureModules: number, freeModules: number, reserveTarget: number): PanelWarning[] {
   const warnings: PanelWarning[] = [];
-  const supply = panel.supply;
 
   if (panel.lines.length === 0) {
     warnings.push({
       id: 'no-lines',
       severity: 'warning',
       message: 'В щитке нет ни одной линии. Добавьте линии или соберите черновик из приборов.',
-    });
-  }
-
-  const inputAmpacity = CABLE_AMPACITY_A[supply.inputCable.sectionMm2] ?? 0;
-  if (supply.inputBreaker.ratingA > inputAmpacity) {
-    warnings.push({
-      id: 'input-breaker-cable',
-      severity: 'error',
-      message: `Вводной автомат ${supply.inputBreaker.ratingA} А превышает допуск кабеля ${supply.inputCable.sectionMm2} мм² (${inputAmpacity} А).`,
-    });
-  }
-  if (!(CABLE_SECTIONS as readonly number[]).includes(supply.inputCable.sectionMm2)) {
-    warnings.push({
-      id: 'input-cable-section',
-      severity: 'error',
-      message: `Сечение вводного кабеля ${supply.inputCable.sectionMm2} мм² отсутствует в ряду стандартных сечений.`,
-    });
-  }
-
-  const totalLoad = panel.lines.reduce((sum, line) => sum + line.loadW, 0);
-  if (totalLoad > supply.allocatedPowerW) {
-    warnings.push({
-      id: 'total-load',
-      severity: 'warning',
-      message: `Суммарная нагрузка ${(totalLoad / 1000).toFixed(1)} кВт превышает выделенную мощность ${(supply.allocatedPowerW / 1000).toFixed(1)} кВт.`,
-    });
-  }
-
-  const inputCurrent = totalLoad / (VOLTAGE_V * COS_PHI);
-  if (inputCurrent > supply.inputBreaker.ratingA) {
-    warnings.push({
-      id: 'input-current',
-      severity: 'warning',
-      message: `Расчётный ток ввода ${inputCurrent.toFixed(1)} А превышает номинал вводного автомата ${supply.inputBreaker.ratingA} А.`,
     });
   }
 
@@ -225,73 +193,6 @@ function collectWarnings(panel: ElectricalPanel, modulesTotal: number, enclosure
         message: `«${line.name}»: на линии нет приборов — трасса не строится, нагрузка задана вручную.`,
       });
     }
-    const ampacity = CABLE_AMPACITY_A[line.cable.sectionMm2] ?? 0;
-    if (line.breaker.ratingA > ampacity) {
-      warnings.push({
-        id: `breaker-cable-${line.id}`,
-        severity: 'error',
-        message: `«${line.name}»: автомат ${line.breaker.ratingA} А больше допуска кабеля ${line.cable.sectionMm2} мм² (${ampacity} А).`,
-      });
-    }
-    const current = line.loadW / (VOLTAGE_V * COS_PHI);
-    if (current > line.breaker.ratingA + 0.01) {
-      warnings.push({
-        id: `load-breaker-${line.id}`,
-        severity: 'error',
-        message: `«${line.name}»: ток нагрузки ${current.toFixed(1)} А превышает автомат ${line.breaker.ratingA} А.`,
-      });
-    }
-    if (line.purpose === 'lighting' && line.breaker.curve !== 'B') {
-      warnings.push({
-        id: `lighting-curve-${line.id}`,
-        severity: 'info',
-        message: `«${line.name}»: для освещения рекомендуется характеристика B.`,
-      });
-    }
-    if (line.purpose === 'lighting' && line.rcd) {
-      warnings.push({
-        id: `lighting-rcd-${line.id}`,
-        severity: 'info',
-        message: `«${line.name}»: УЗО на линии освещения не требуется по нормам, но допустимо.`,
-      });
-    }
-    if (line.purpose === 'wet') {
-      const ownRcdOk = line.rcd && line.rcd.sensitivityMa <= 30 && line.rcd.type === 'A';
-      const mainRcdOk = supply.mainRcd && supply.mainRcd.sensitivityMa <= 30;
-      if (!ownRcdOk && !mainRcdOk) {
-        warnings.push({
-          id: `wet-rcd-${line.id}`,
-          severity: 'error',
-          message: `«${line.name}»: влажная зона требует УЗО 30 мА типа A (ПУЭ 7.1.48).`,
-        });
-      }
-    }
-    if (line.purpose !== 'lighting' && !line.rcd) {
-      const commonRcd = supply.mainRcd && supply.mainRcd.sensitivityMa <= 30;
-      if (!commonRcd) {
-        warnings.push({
-          id: `line-rcd-${line.id}`,
-          severity: 'warning',
-          message: `«${line.name}»: розеточная линия без УЗО 30 мА (ПУЭ 7.1.79).`,
-        });
-      }
-    }
-  }
-
-  if (supply.mainRcd && supply.mainRcd.sensitivityMa === 30 && panel.lines.length > 4) {
-    warnings.push({
-      id: 'common-rcd-lines',
-      severity: 'warning',
-      message: `Одно УЗО 30 мА на ${panel.lines.length} линий: при срабатывании отключится весь щит. Для надёжности разделите защиту.`,
-    });
-  }
-
-  if (supply.mainRcd && supply.mainRcd.sensitivityMa > 300) {
-    warnings.push({
-      id: 'main-rcd-high',
-      severity: 'warning',
-      message: `Противопожарное УЗО ${supply.mainRcd.sensitivityMa} мА: по ПУЭ 7.1.84 рекомендуется не более 300 мА.`,
-    });
   }
 
   if (modulesTotal > 72) {

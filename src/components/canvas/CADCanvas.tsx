@@ -9,7 +9,8 @@ import { SelectionLayer } from './SelectionLayer';
 import { RoutingLayer } from './RoutingLayer';
 import { ElectricalLayer } from './ElectricalLayer';
 import { DraftingLayer } from './DraftingLayer';
-import { WaypointLayer } from './WaypointLayer';
+import { ManualRouteLayer } from './ManualRouteLayer';
+import { RouteStopsPopover } from './RouteStopsPopover';
 import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
 import { snapToGrid, distance, polarToPoint, angleDeg, snapAngle } from '../../core/geometry/math';
@@ -24,12 +25,14 @@ import {
 import { resolvePanelPose } from '../../core/electrical/panel';
 import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
-import { computeLineRoutes } from '../../core/electrical/routing';
+import { computeLineRoutes, materializeRouteForLine } from '../../core/electrical/routing';
+import { moveManualRouteNode } from '../../core/electrical/manualRoute';
 import { collectRoomElements, formatRoomDeletionPrompt } from '../../core/model/roomElements';
 import type {
   DevicePartitionAnchor,
   DeviceRoomEdgeAnchor,
   ElectricalDevice,
+  ManualRoute,
   Point2D,
 } from '../../types';
 import { Home, PenTool } from 'lucide-react';
@@ -100,10 +103,11 @@ export const CADCanvas: React.FC = () => {
     activeView,
     routeEditLineId,
     setRouteEditLine,
-    addLineWaypoint,
-    moveLineWaypoint,
-    removeLineWaypoint,
-    clearLineWaypoints,
+    moveLineRouteNode,
+    insertLineRouteNode,
+    removeLineRouteNode,
+    reorderLineRouteStops,
+    resetLineRoute,
   } = useProjectStore();
 
   const autoLayout = useMemo(() => {
@@ -139,30 +143,52 @@ export const CADCanvas: React.FC = () => {
     [devices, rooms, freePartitions, settings.defaultWallThicknessMm]
   );
 
-  const [waypointPreview, setWaypointPreview] = useState<{
+  const [routePreview, setRoutePreview] = useState<{
     lineId: string;
-    index: number;
-    point: Point2D;
+    route: ManualRoute | null;
+    error: string | null;
     sourcePanel: typeof panel;
   } | null>(null);
+  const [routeNodeSelection, setRouteNodeSelection] = useState<{
+    lineId: string;
+    index: number;
+  } | null>(null);
+  // Список порядка открыт по умолчанию. Состояние привязано к своей линии:
+  // при смене линии список снова открыт, без сброса через эффект.
+  const [stopsPanel, setStopsPanel] = useState<{
+    lineId: string | null;
+    open: boolean;
+  }>({ lineId: null, open: true });
   const routeEditing = activeTool === 'select' && designMode === 'electrical';
-  if (waypointPreview && (waypointPreview.sourcePanel !== panel || waypointPreview.lineId !== routeEditLineId || !routeEditing)) {
-    setWaypointPreview(null);
-  }
+  const stopsPanelOpen =
+    stopsPanel.lineId === routeEditLineId ? stopsPanel.open : true;
+
+  // Превью и выделение живут вместе со своей линией и панелью: после смены
+  // линии или отмены действия они просто перестают учитываться без сброса
+  // через эффекты.
+  const activeRoutePreview =
+    routePreview && routePreview.lineId === routeEditLineId ? routePreview : null;
+  const routePreviewRoute =
+    activeRoutePreview && activeRoutePreview.sourcePanel === panel
+      ? activeRoutePreview.route
+      : null;
+  const routePreviewError = activeRoutePreview?.error ?? null;
+  const routeNodeSelectionIndex =
+    routeNodeSelection && routeNodeSelection.lineId === routeEditLineId
+      ? routeNodeSelection.index
+      : null;
+
   const previewPanel = useMemo(() => {
-    if (!panel || !waypointPreview || !routeEditing || waypointPreview.lineId !== routeEditLineId) return panel;
+    if (!panel || !routePreviewRoute || !routeEditing || !routeEditLineId) return panel;
     return {
       ...panel,
-      lines: panel.lines.map((line) => line.id === waypointPreview.lineId
-        ? {
-            ...line,
-            waypoints: line.waypoints?.map((point, index) =>
-              index === waypointPreview.index ? waypointPreview.point : point
-            ),
-          }
-        : line),
+      lines: panel.lines.map((line) =>
+        line.id === routeEditLineId
+          ? { ...line, manualRoute: routePreviewRoute }
+          : line
+      ),
     };
-  }, [panel, waypointPreview, routeEditing, routeEditLineId]);
+  }, [panel, routePreviewRoute, routeEditing, routeEditLineId]);
 
   const lineColorMap = useMemo(() => buildLineColorMap(panel), [panel]);
   const lineRoutes = useMemo(
@@ -196,6 +222,148 @@ export const CADCanvas: React.FC = () => {
     () => routeEditing ? panel?.lines.find((line) => line.id === routeEditLineId) ?? null : null,
     [panel, routeEditLineId, routeEditing]
   );
+
+  const routeEditRoute = useMemo(() => {
+    if (!routeEditLine || !panel) return null;
+    if (routePreviewRoute) return routePreviewRoute;
+    return materializeRouteForLine(
+      {
+        panel,
+        devices,
+        rooms,
+        partitions: freePartitions,
+        nodes,
+        walls,
+        settings,
+      },
+      routeEditLine.id
+    );
+  }, [
+    routeEditLine,
+    routePreviewRoute,
+    panel,
+    devices,
+    rooms,
+    freePartitions,
+    nodes,
+    walls,
+    settings,
+  ]);
+
+  // База перетаскивания фиксируется на весь жест: превью считается от неё,
+  // а не от предыдущего превью, иначе правки накапливались бы.
+  const routeDragBaseRef = useRef<{
+    lineId: string;
+    panel: typeof panel;
+    route: ManualRoute;
+  } | null>(null);
+
+  const selectRouteNode = useCallback(
+    (index: number | null) => {
+      if (index === null || !routeEditLine) {
+        setRouteNodeSelection(null);
+        return;
+      }
+      setRouteNodeSelection({ lineId: routeEditLine.id, index });
+    },
+    [routeEditLine]
+  );
+
+  const previewRouteNode = useCallback(
+    (nodeIndex: number, point: Point2D): Point2D | null => {
+      if (!routeEditLine) return null;
+      const stored = routeDragBaseRef.current;
+      const base =
+        stored && stored.lineId === routeEditLine.id && stored.panel === panel
+          ? stored.route
+          : routeEditRoute;
+      if (!base) return null;
+      routeDragBaseRef.current = { lineId: routeEditLine.id, panel, route: base };
+      const result = moveManualRouteNode(base, nodeIndex, point);
+      setRoutePreview({
+        lineId: routeEditLine.id,
+        sourcePanel: panel,
+        route: result.ok ? result.route : base,
+        error: result.ok ? null : result.error,
+      });
+      return result.ok ? result.route.nodes[result.nodeIndex] ?? null : null;
+    },
+    [routeEditLine, routeEditRoute, panel]
+  );
+
+  const commitRouteNode = useCallback(
+    (nodeIndex: number, point: Point2D) => {
+      if (!routeEditLine) return;
+      routeDragBaseRef.current = null;
+      setRoutePreview(null);
+      const newIndex = moveLineRouteNode(routeEditLine.id, nodeIndex, point);
+      if (newIndex !== null) {
+        setRouteNodeSelection({ lineId: routeEditLine.id, index: newIndex });
+      }
+    },
+    [routeEditLine, moveLineRouteNode]
+  );
+
+  const cancelRoutePreview = useCallback(() => {
+    routeDragBaseRef.current = null;
+    setRoutePreview(null);
+  }, []);
+
+  const insertRouteNode = useCallback(
+    (pathIndex: number, segmentIndex: number, point: Point2D) => {
+      if (!routeEditLine) return;
+      setRoutePreview(null);
+      insertLineRouteNode(
+        routeEditLine.id,
+        pathIndex,
+        segmentIndex,
+        point,
+        10 / zoom
+      );
+    },
+    [routeEditLine, insertLineRouteNode, zoom]
+  );
+
+  const resetRoute = useCallback(() => {
+    if (!routeEditLine) return;
+    routeDragBaseRef.current = null;
+    setRoutePreview(null);
+    setRouteNodeSelection(null);
+    resetLineRoute(routeEditLine.id);
+  }, [routeEditLine, resetLineRoute]);
+
+  const reorderRouteStops = useCallback(
+    (branchIndex: number, fromIndex: number, toIndex: number) => {
+      if (!routeEditLine) return;
+      routeDragBaseRef.current = null;
+      setRoutePreview(null);
+      // После перестановки индексы вершин меняются: выделение сбрасываем.
+      setRouteNodeSelection(null);
+      reorderLineRouteStops(routeEditLine.id, branchIndex, fromIndex, toIndex);
+    },
+    [routeEditLine, reorderLineRouteStops]
+  );
+
+  const removeRouteNode = useCallback(
+    (nodeIndex: number) => {
+      if (!routeEditLine) return;
+      routeDragBaseRef.current = null;
+      setRoutePreview(null);
+      if (removeLineRouteNode(routeEditLine.id, nodeIndex)) {
+        setRouteNodeSelection(null);
+      }
+    },
+    [routeEditLine, removeLineRouteNode]
+  );
+
+  const addDevicesFromRoute = useCallback(() => {
+    if (!routeEditLine) return;
+    routeDragBaseRef.current = null;
+    setRoutePreview(null);
+    setRouteNodeSelection(null);
+    setRouteEditLine(null);
+    setLineAssignLine(routeEditLine.id);
+  }, [routeEditLine, setRouteEditLine, setLineAssignLine]);
 
   const toggleDeviceAssignment = useCallback(
     (deviceId: string) => {
@@ -663,6 +831,19 @@ export const CADCanvas: React.FC = () => {
       if (
         (e.key === 'Delete' || e.key === 'Backspace') &&
         !isDrawing &&
+        routeEditLineId &&
+        routeNodeSelectionIndex !== null
+      ) {
+        e.preventDefault();
+        if (removeLineRouteNode(routeEditLineId, routeNodeSelectionIndex)) {
+          setRouteNodeSelection(null);
+        }
+        return;
+      }
+
+      if (
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        !isDrawing &&
         !routeEditLineId &&
         activeTool !== 'place_device' &&
         activeTool !== 'place_panel' &&
@@ -746,6 +927,8 @@ export const CADCanvas: React.FC = () => {
     setLineAssignLine,
     routeEditLineId,
     setRouteEditLine,
+    routeNodeSelectionIndex,
+    removeLineRouteNode,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
@@ -869,25 +1052,23 @@ export const CADCanvas: React.FC = () => {
           isOpeningTool={activeTool === 'draw_opening'}
           isPartitionTool={activeTool === 'draw_partition'}
         />
-        {routeEditLine && (
-          <WaypointLayer
+        {routeEditLine && routeEditRoute && (
+          <ManualRouteLayer
             key={routeEditLine.id}
-            line={routeEditLine}
+            route={routeEditRoute}
             color={lineColorMap.get(routeEditLine.id) ?? '#38bdf8'}
             zoom={zoom}
             stagePos={stagePos}
             width={dimensions.width}
             height={dimensions.height}
-            cursorPosMm={cursorPosMm}
             gridSnap={gridSnap}
             gridStepMm={gridStepMm}
-            onAdd={(point) => addLineWaypoint(routeEditLine.id, point)}
-            onPreview={(index, point) => setWaypointPreview({ lineId: routeEditLine.id, index, point, sourcePanel: panel })}
-            onMove={(index, point) => {
-              setWaypointPreview(null);
-              moveLineWaypoint(routeEditLine.id, index, point);
-            }}
-            onRemove={(index) => removeLineWaypoint(routeEditLine.id, index)}
+            selectedNode={routeNodeSelectionIndex}
+            onSelectNode={selectRouteNode}
+            onInsert={insertRouteNode}
+            onPreview={previewRouteNode}
+            onMove={commitRouteNode}
+            onCancelPreview={cancelRoutePreview}
           />
         )}
       </Stage>
@@ -926,22 +1107,44 @@ export const CADCanvas: React.FC = () => {
             style={{ backgroundColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
           />
           <div className="min-w-0">
-            <div className="text-[11px] font-bold text-white truncate max-w-[220px]">
-              Контрольные точки трассы: {routeEditLine.name}
+            <div className="text-[11px] font-bold text-white truncate max-w-[260px]">
+              Ручная трасса: {routeEditLine.name} · {routeEditLine.manualRoute ? 'ручная' : 'авто'}
             </div>
             <div className="text-[9px] text-slate-400">
-              Точек: {routeEditLine.waypoints?.length ?? 0} · Кабель: {((lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0) / 1000).toFixed(1)} м
+              Точек: {routeEditRoute ? routeEditRoute.nodes.length - (routeEditRoute.bendNodes?.length ?? 0) : 0} · Кабель: {((lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0) / 1000).toFixed(1)} м
+              {' · '}потолок {settings.ceilingHeightMm} мм · пол {settings.floorLevelMm} мм
             </div>
             <div className="text-[9px] text-slate-400">
-              Клик — добавить · перетаскивание — передвинуть · клик на точку — удалить · Esc — выйти
+              Перетаскивание — свободное в 2D, линия возвращается к соседям ступеньками под 90° без новых точек · наклонная — скольжение вдоль линии · клик по линии — вставить точку · Delete — удалить точку: участок до соседних точек перестроится под 90° · Esc — выйти
             </div>
+            <div className="text-[9px] text-slate-500">
+              «Список» — порядок точек и приборов по ветвям: перетащите строку, и кабель пойдёт строго в этом порядке. Щиток и приборы закреплены, стык подвижен. Цветные маркеры — подвижные точки, серые — точки подключения. Изгибы под 90° точками не считаются.
+            </div>
+            {routePreviewError && (
+              <div className="text-[9px] text-rose-400 font-semibold max-w-[520px]">
+                {routePreviewError}
+              </div>
+            )}
           </div>
           <button
-            onClick={() => clearLineWaypoints(routeEditLine.id)}
-            disabled={!routeEditLine.waypoints?.length}
+            onClick={() =>
+              setStopsPanel({ lineId: routeEditLineId, open: !stopsPanelOpen })
+            }
+            className={`shrink-0 px-2 py-1 rounded-lg border text-[10px] font-bold transition ${
+              stopsPanelOpen
+                ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+            }`}
+            title="Список порядка: точки и приборы по ветвям, перетаскивание меняет порядок подключения"
+          >
+            Список
+          </button>
+          <button
+            onClick={resetRoute}
+            disabled={!routeEditLine.manualRoute && !routeEditLine.waypoints?.length}
             className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
           >
-            Очистить
+            Сбросить к авто
           </button>
           <button
             onClick={() => setRouteEditLine(null)}
@@ -950,6 +1153,23 @@ export const CADCanvas: React.FC = () => {
             Готово
           </button>
         </div>
+      )}
+
+      {routeEditLine && routeEditRoute && stopsPanelOpen && (
+        <RouteStopsPopover
+          line={routeEditLine}
+          route={routeEditRoute}
+          color={lineColorMap.get(routeEditLine.id) ?? '#38bdf8'}
+          devices={devices}
+          selectedNode={routeNodeSelectionIndex}
+          bounds={dimensions}
+          onSelectNode={selectRouteNode}
+          onReorder={reorderRouteStops}
+          onRemoveNode={removeRouteNode}
+          onReset={resetRoute}
+          onAddDevices={addDevicesFromRoute}
+          onClose={() => setStopsPanel({ lineId: routeEditLineId, open: false })}
+        />
       )}
 
       {boundaryMode === 'auto' && rooms.length === 0 && activeTool !== 'draw_room' && (

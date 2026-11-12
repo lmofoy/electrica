@@ -15,16 +15,20 @@ import type {
   RoomZone,
 } from '../../types';
 import { resolveDevice, type DevicePose } from './devices';
+import { sanitizeManualRoute } from './manualRoute';
 import {
+  CABLE_BRAND,
   LINE_PRESETS,
   applyPresetToLine,
   breakerForCurrent,
   cableForBreaker,
   calculateInput,
+  lineDesignCurrentA,
   makeBreaker,
   makeCable,
   makeRcd,
-  loadCurrentA,
+  normalizeCosPhi,
+  normalizeDemandFactor,
 } from './norms';
 
 export const PANEL_SYMBOL_WIDTH_MM = 360;
@@ -37,10 +41,16 @@ export function defaultPanelSupply(allocatedPowerW = 10000): PanelSupply {
   return {
     allocatedPowerW,
     voltageV: 230,
+    phases: 1,
+    system: 'TN-S',
+    reliabilityCategory: 'III',
+    cosPhi: 0.96,
+    demandFactor: 1,
+    cableBrand: CABLE_BRAND,
     inputCable: makeCable(input.cableSectionMm2),
     inputBreaker: makeBreaker(input.breakerRatingA, 'C'),
     meter: { enabled: true },
-    mainRcd: makeRcd(100, 'A', input.breakerRatingA),
+    mainRcd: makeRcd(100, 'A', input.breakerRatingA, true),
     voltageRelay: true,
     surgeProtection: true,
   };
@@ -100,7 +110,32 @@ function sanitizeSupply(supply: PanelSupply): PanelSupply {
   const allocated = Number.isFinite(supply.allocatedPowerW)
     ? Math.max(1000, supply.allocatedPowerW)
     : 10000;
-  return { ...supply, allocatedPowerW: allocated, voltageV: 230 };
+  const phases: 1 | 3 = supply.phases === 3 ? 3 : 1;
+  const mainRcd = supply.mainRcd
+    ? {
+        ...supply.mainRcd,
+        poles: phases === 3 ? (4 as const) : (2 as const),
+        selective: Boolean(supply.mainRcd.selective),
+      }
+    : null;
+  return {
+    ...supply,
+    allocatedPowerW: allocated,
+    voltageV: 230,
+    phases,
+    system: supply.system === 'TN-C-S' ? 'TN-C-S' : 'TN-S',
+    reliabilityCategory:
+      supply.reliabilityCategory === 'I' || supply.reliabilityCategory === 'II'
+        ? supply.reliabilityCategory
+        : 'III',
+    cosPhi: normalizeCosPhi(supply.cosPhi),
+    demandFactor: normalizeDemandFactor(supply.demandFactor),
+    cableBrand:
+      typeof supply.cableBrand === 'string' && supply.cableBrand.trim().length > 0
+        ? supply.cableBrand.trim()
+        : CABLE_BRAND,
+    mainRcd,
+  };
 }
 
 function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
@@ -109,6 +144,13 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
     .map((line) => ({
       ...line,
       loadW: Math.max(0, line.loadW),
+      cosPhi: line.cosPhi === undefined ? undefined : normalizeCosPhi(line.cosPhi),
+      demandFactor:
+        line.demandFactor === undefined ? undefined : normalizeDemandFactor(line.demandFactor),
+      phase:
+        line.phase === 'L1' || line.phase === 'L2' || line.phase === 'L3'
+          ? line.phase
+          : undefined,
       roomIds: line.roomIds ?? [],
       deviceIds: line.deviceIds ?? [],
       colorIndex:
@@ -117,6 +159,7 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
           : undefined,
       routing:
         line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
+      manualRoute: sanitizeManualRoute(line.manualRoute),
       waypoints: sanitizeWaypoints(line.waypoints),
     }));
 }
@@ -220,22 +263,45 @@ export function autoLinesFromDevices(
 // -------------------------------------------------------------
 // Стратегии компоновки: дешёвая, оптимальная, максимальная защита.
 // -------------------------------------------------------------
-export function applyStrategy(panel: ElectricalPanel, strategy: PanelStrategy): ElectricalPanel {
+// Освещение в ванной и санузле относится к влажной зоне: по ГОСТ Р 50571.4.41
+// все цепи такой зоны требуют дополнительной защиты 30 мА, включая свет.
+function needsOwnRcd(line: CircuitLine, rooms?: RoomZone[]): boolean {
+  if (line.purpose !== 'lighting') return true;
+  if (!rooms) return false;
+  return line.roomIds.some((roomId) => {
+    const room = rooms.find((candidate) => candidate.id === roomId);
+    return room?.type === 'bathroom' || room?.type === 'toilet';
+  });
+}
+
+function mainRcdFor(panel: ElectricalPanel, sensitivityMa: number, selective: boolean) {
+  const inputRating = calculateInput(
+    panel.supply.allocatedPowerW,
+    panel.supply.cosPhi
+  ).breakerRatingA;
+  const rcd = makeRcd(sensitivityMa, 'A', inputRating, selective);
+  return panel.supply.phases === 3 ? { ...rcd, poles: 4 as const } : rcd;
+}
+
+export function applyStrategy(
+  panel: ElectricalPanel,
+  strategy: PanelStrategy,
+  rooms?: RoomZone[]
+): ElectricalPanel {
   if (strategy === 'custom') {
     return { ...panel, strategy };
   }
 
-  const inputRating = calculateInput(panel.supply.allocatedPowerW).breakerRatingA;
   const lines = panel.lines.map((line) => applyPresetToLine(line));
 
   if (strategy === 'budget') {
-    // Одно общее УЗО 30 мА на все линии вместо отдельных на каждую.
+    // Одно общее УЗО 30 мА типа A на все линии вместо отдельных на каждую.
     return {
       ...panel,
       strategy,
       supply: {
         ...panel.supply,
-        mainRcd: makeRcd(30, 'AC', inputRating),
+        mainRcd: mainRcdFor(panel, 30, false),
         voltageRelay: false,
         surgeProtection: false,
       },
@@ -244,20 +310,21 @@ export function applyStrategy(panel: ElectricalPanel, strategy: PanelStrategy): 
   }
 
   if (strategy === 'optimal') {
-    // Ввод — селективное противопожарное 100 мА, мокрые зоны — свои 30 мА.
+    // Ввод — селективное противопожарное 100 мА, группы — свои 30 мА.
+    // Свет в ванной и санузле защищается так же, как розетки влажной зоны.
     return {
       ...panel,
       strategy,
       supply: {
         ...panel.supply,
-        mainRcd: makeRcd(100, 'A', inputRating),
+        mainRcd: mainRcdFor(panel, 100, true),
         voltageRelay: true,
         surgeProtection: true,
       },
       lines: lines.map((line) =>
-        line.purpose === 'lighting'
-          ? { ...line, rcd: null }
-          : { ...line, rcd: makeRcd(30, 'A', line.breaker.ratingA) }
+        needsOwnRcd(line, rooms)
+          ? { ...line, rcd: makeRcd(30, 'A', line.breaker.ratingA) }
+          : { ...line, rcd: null }
       ),
     };
   }
@@ -268,7 +335,7 @@ export function applyStrategy(panel: ElectricalPanel, strategy: PanelStrategy): 
     strategy,
     supply: {
       ...panel.supply,
-      mainRcd: makeRcd(100, 'A', inputRating),
+      mainRcd: mainRcdFor(panel, 100, true),
       voltageRelay: true,
       surgeProtection: true,
     },
@@ -307,7 +374,7 @@ export function createLine(
 // Пересчёт только аппаратов защиты по нагрузке. Ручной выбор УЗО сохраняется.
 export function recalculateLine(line: CircuitLine): CircuitLine {
   const preset = LINE_PRESETS[line.purpose];
-  const currentA = loadCurrentA(line.loadW);
+  const currentA = lineDesignCurrentA(line);
   const breakerRatingA = Math.max(
     preset.breakerRatingA,
     breakerForCurrent(currentA, 63)
@@ -324,19 +391,24 @@ export function recalculateLine(line: CircuitLine): CircuitLine {
 }
 
 export function recalculateSupply(supply: PanelSupply): PanelSupply {
-  const input = calculateInput(supply.allocatedPowerW);
+  const input = calculateInput(supply.allocatedPowerW, supply.cosPhi);
+  const phases: 1 | 3 = supply.phases === 3 ? 3 : 1;
   return {
     ...supply,
-    inputCable: makeCable(input.cableSectionMm2),
+    inputCable: makeCable(input.cableSectionMm2, phases === 3 ? 5 : 3),
     inputBreaker: makeBreaker(input.breakerRatingA, 'C'),
     mainRcd: supply.mainRcd
-      ? { ...supply.mainRcd, ratingA: input.breakerRatingA }
+      ? {
+          ...supply.mainRcd,
+          ratingA: input.breakerRatingA,
+          poles: phases === 3 ? 4 : 2,
+        }
       : null,
   };
 }
 
 export function lineCurrentA(line: CircuitLine): number {
-  return loadCurrentA(line.loadW);
+  return lineDesignCurrentA(line);
 }
 
 export function isWetPurpose(purpose: LinePurpose): boolean {

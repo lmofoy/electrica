@@ -1,10 +1,14 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { buildPanelLayout } from '../../core/electrical/panelLayout';
+import { buildPanelCalculation } from '../../core/electrical/calculation';
+import { buildPanelSchematic } from '../../core/electrical/schematic';
 import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
 import { collectLineCompositionWarnings } from '../../core/electrical/lineOps';
 import { computeLineRoutes, formatCableLengthMm } from '../../core/electrical/routing';
 import { PanelScheme } from './PanelScheme';
+import { PanelSheet } from './PanelSheet';
+import { PanelCalculation } from './PanelCalculation';
 import { PanelSupplyForm } from './PanelSupplyForm';
 import { PanelLinesTable } from './PanelLinesTable';
 import {
@@ -19,6 +23,8 @@ import {
   Info,
   XCircle,
   CircuitBoard,
+  DraftingCompass,
+  Calculator,
 } from 'lucide-react';
 import type { PanelStrategy } from '../../types';
 
@@ -69,6 +75,13 @@ const WARNING_STYLE = {
   info: { icon: <Info size={13} />, className: 'text-sky-300 bg-sky-500/10 border-sky-500/30' },
 } as const;
 
+interface PanelCheckItem {
+  id: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  reference?: string;
+}
+
 export const PanelScreen: React.FC = () => {
   const {
     panel,
@@ -92,6 +105,9 @@ export const PanelScreen: React.FC = () => {
     clearPanelLines,
     deletePanel,
   } = useProjectStore();
+
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [calculationOpen, setCalculationOpen] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -131,6 +147,20 @@ export const PanelScreen: React.FC = () => {
     () => (panel ? collectLineCompositionWarnings(panel, devices) : []),
     [panel, devices]
   );
+  const cableLengthsMm = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const [lineId, route] of routes) map.set(lineId, route.cableLengthMm);
+    return map;
+  }, [routes]);
+  const schematic = useMemo(
+    () => (panel ? buildPanelSchematic(panel, { rooms, cableLengthsMm }) : null),
+    [panel, rooms, cableLengthsMm]
+  );
+  const calculation = useMemo(
+    () =>
+      panel ? buildPanelCalculation(panel, { rooms, cableLengthsMm }) : null,
+    [panel, rooms, cableLengthsMm]
+  );
 
   if (!panel || !layout) return null;
 
@@ -145,8 +175,9 @@ export const PanelScreen: React.FC = () => {
         .filter((warning): warning is string => warning !== null)
     ),
   ];
-  const warningsList = [
+  const warningsList: PanelCheckItem[] = [
     ...layout.warnings,
+    ...(schematic?.findings ?? []),
     ...compositionWarnings,
     ...(unassignedDevices.length
       ? [
@@ -180,7 +211,8 @@ export const PanelScreen: React.FC = () => {
   const warnings = warningsList.filter((warning) => warning.severity === 'warning').length;
 
   return (
-    <aside className="w-full md:w-[420px] xl:w-[500px] shrink-0 h-[50%] md:h-full overflow-y-auto bg-slate-900 border-l border-slate-800 text-slate-200 select-none">
+    <>
+      <aside className="w-full md:w-[420px] xl:w-[500px] shrink-0 h-[50%] md:h-full overflow-y-auto bg-slate-900 border-l border-slate-800 text-slate-200 select-none">
       <div className="p-3 space-y-3">
         {/* Шапка модуля */}
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
@@ -202,8 +234,8 @@ export const PanelScreen: React.FC = () => {
 
           <div className="mt-1 text-[10px] text-slate-500 font-mono truncate">
             {panel.mounting === 'flush' ? 'встроенный' : 'накладной'} · H{' '}
-            {panel.heightFromFloorMm} мм · {panel.supply.allocatedPowerW / 1000} кВт ·
-            1 фаза 230 В
+            {panel.heightFromFloorMm} мм · {panel.supply.allocatedPowerW / 1000} кВт ·{' '}
+            {panel.supply.phases === 3 ? '3 фазы 380/220 В' : '1 фаза 230 В'}
           </div>
 
           <div className="mt-2 grid grid-cols-4 gap-1.5">
@@ -250,6 +282,25 @@ export const PanelScreen: React.FC = () => {
                 {errors > 0 ? `${errors} ош.` : warnings > 0 ? `${warnings} зам.` : 'ОК'}
               </div>
             </div>
+          </div>
+
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => setSheetOpen(true)}
+              className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
+              title="Открыть лист A3 с принципиальной схемой щита"
+            >
+              <DraftingCompass size={12} />
+              Чертёж A3
+            </button>
+            <button
+              onClick={() => setCalculationOpen(true)}
+              className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
+              title="Открыть расчётную таблицу нагрузок на листе A3"
+            >
+              <Calculator size={12} />
+              Расчёт
+            </button>
           </div>
         </div>
 
@@ -367,7 +418,14 @@ export const PanelScreen: React.FC = () => {
                     className={`flex items-start gap-1.5 rounded-lg border p-1.5 ${style.className}`}
                   >
                     <span className="mt-0.5 shrink-0">{style.icon}</span>
-                    <span className="text-[9px] leading-snug">{warning.message}</span>
+                    <span className="text-[9px] leading-snug">
+                      {warning.message}
+                      {warning.reference && (
+                        <span className="block mt-0.5 text-[8px] opacity-60">
+                          {warning.reference}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 );
               })}
@@ -390,6 +448,18 @@ export const PanelScreen: React.FC = () => {
           Удалить щиток
         </button>
       </div>
-    </aside>
+      </aside>
+
+      {sheetOpen && schematic && (
+        <PanelSheet schematic={schematic} onClose={() => setSheetOpen(false)} />
+      )}
+
+      {calculationOpen && calculation && (
+        <PanelCalculation
+          calculation={calculation}
+          onClose={() => setCalculationOpen(false)}
+        />
+      )}
+    </>
   );
 };

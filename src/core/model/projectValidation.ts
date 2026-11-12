@@ -124,17 +124,19 @@ function device(value: Entity): boolean {
 }
 
 function cable(value: unknown): boolean {
-  return record(value) && positive(value.sectionMm2) && value.cores === 3;
+  return record(value) && positive(value.sectionMm2) && oneOf(value.cores, [3, 5]);
 }
 
 function breaker(value: unknown): boolean {
-  return record(value) && oneOf(value.poles, [1, 2]) && positive(value.ratingA) &&
+  return record(value) && oneOf(value.poles, [1, 2, 3, 4]) && positive(value.ratingA) &&
     oneOf(value.curve, ['B', 'C']);
 }
 
 function rcd(value: unknown): boolean {
-  return value === null || (record(value) && value.poles === 2 && positive(value.ratingA) &&
-    positive(value.sensitivityMa) && oneOf(value.type, ['A', 'AC']));
+  return value === null || (record(value) && oneOf(value.poles, [2, 4]) &&
+    positive(value.ratingA) && positive(value.sensitivityMa) &&
+    oneOf(value.type, ['A', 'AC']) &&
+    (value.selective === undefined || typeof value.selective === 'boolean'));
 }
 
 function line(value: Entity): boolean {
@@ -145,8 +147,9 @@ function line(value: Entity): boolean {
     (value.roomIds == null || ids(value.roomIds)) &&
     (value.deviceIds == null || ids(value.deviceIds)) &&
     cable(value.cable) && breaker(value.breaker) && rcd(value.rcd);
-  // routing, colorIndex and waypoints are deliberately left to sanitizeLines;
-  // stale/duplicate assignment references are pruned/normalized by loadProject.
+  // routing, colorIndex, manualRoute and waypoints are deliberately left to
+  // sanitizeLines; stale/duplicate assignment references are pruned/normalized
+  // by loadProject.
 }
 
 function panel(value: unknown): boolean {

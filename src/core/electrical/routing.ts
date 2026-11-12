@@ -4,6 +4,7 @@ import type {
   ElectricalPanel,
   FreePartition,
   LineRouting,
+  ManualRoute,
   Node2D,
   Point2D,
   ProjectSettings,
@@ -12,6 +13,13 @@ import type {
 } from '../../types';
 import { distance, isPointInPolygon, projectPointOnSegment } from '../geometry/math';
 import { resolveDevice, type ResolvedDevice } from './devices';
+import {
+  MANUAL_ROUTE_ANCHOR_TOLERANCE_MM,
+  manualRouteAnchorNode,
+  manualRouteLength,
+  materializeManualRoute,
+  sanitizeManualRoute,
+} from './manualRoute';
 import { resolvePanelPose } from './panel';
 
 // Запас на подключение в щитке и разделку жил, мм на линию.
@@ -527,6 +535,76 @@ function appendPath(paths: Point2D[][], points: Point2D[]): number {
   return polylineLength(simplified);
 }
 
+function appendWarning(current: string | null, next: string): string {
+  return current ? `${current} ${next}` : next;
+}
+
+function manualRoutePaths(route: ManualRoute): Point2D[][] {
+  return route.paths.map((path) =>
+    path.map((index) => ({
+      x: route.nodes[index].x,
+      y: route.nodes[index].y,
+    }))
+  );
+}
+
+// Ручная трасса — снимок геометрии. Если щиток или прибор переехал,
+// трасса остаётся на плане, но предупреждает о рассинхронизации.
+function manualRouteWarnings(
+  route: ManualRoute,
+  lineDevices: ResolvedDevice[],
+  missingDeviceCount: number,
+  panelPoint: Point2D
+): string | null {
+  const warnings: string[] = [];
+  if (missingDeviceCount > 0) {
+    warnings.push('Часть приборов линии не найдена на плане.');
+  }
+
+  const panelNode = manualRouteAnchorNode(route, 'panel');
+  if (
+    panelNode === null ||
+    distance(route.nodes[panelNode], panelPoint) >
+      MANUAL_ROUTE_ANCHOR_TOLERANCE_MM
+  ) {
+    warnings.push(
+      'Ручная трасса не привязана к текущему положению щитка — сбросьте трассу.'
+    );
+  }
+
+  let deviceMismatch = false;
+  for (const resolved of lineDevices) {
+    const pose = resolved.poses[0];
+    const node = manualRouteAnchorNode(route, 'device', resolved.device.id);
+    if (
+      node === null ||
+      !pose ||
+      distance(route.nodes[node], pose.position) >
+        MANUAL_ROUTE_ANCHOR_TOLERANCE_MM
+    ) {
+      deviceMismatch = true;
+      break;
+    }
+  }
+  if (!deviceMismatch) {
+    const lineDeviceIds = new Set(
+      lineDevices.map((resolved) => resolved.device.id)
+    );
+    deviceMismatch = route.anchors.some(
+      (anchor) =>
+        anchor.kind === 'device' &&
+        (!anchor.deviceId || !lineDeviceIds.has(anchor.deviceId))
+    );
+  }
+  if (deviceMismatch) {
+    warnings.push(
+      'Ручная трасса не привязана к приборам линии — сбросьте трассу.'
+    );
+  }
+
+  return warnings.length > 0 ? warnings.join(' ') : null;
+}
+
 export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute> {
   const routes = new Map<string, LineRoute>();
   const { panel, settings } = input;
@@ -591,6 +669,48 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
         warning: null,
       });
       continue;
+    }
+
+    // Ручная трасса приоритетнее автотрассировки и устаревших waypoints.
+    if (line.manualRoute) {
+      const manual = sanitizeManualRoute(line.manualRoute);
+      if (!manual) {
+        warning = appendWarning(
+          warning,
+          'Ручная трасса повреждена и проигнорирована.'
+        );
+      } else {
+        const manualPlanLengthMm = manualRouteLength(manual);
+        let manualVerticalMm = Math.abs(
+          panel.heightFromFloorMm - runHeightMm
+        );
+        for (const resolved of lineDevices) {
+          manualVerticalMm += Math.abs(
+            deviceMountHeightMm(resolved, settings) - runHeightMm
+          );
+        }
+        const manualCableLengthMm =
+          (manualPlanLengthMm + manualVerticalMm) *
+            (1 + Math.max(0, settings.cableMarginPercent) / 100) +
+          PANEL_CABLE_RESERVE_MM;
+
+        routes.set(line.id, {
+          lineId: line.id,
+          mode,
+          cableLengthMm: manualCableLengthMm,
+          planLengthMm: manualPlanLengthMm,
+          verticalMm: manualVerticalMm,
+          deviceCount: lineDevices.length,
+          paths: manualRoutePaths(manual),
+          warning: manualRouteWarnings(
+            manual,
+            lineDevices,
+            line.deviceIds.length - lineDevices.length,
+            panelPose.position
+          ),
+        });
+        continue;
+      }
     }
 
     const panelNodeId = graph?.attachmentNodes.get('panel') ?? null;
@@ -703,6 +823,51 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
   }
 
   return routes;
+}
+
+// Ручная трасса для редактора: сохраняет уже существующую или материализует
+// текущую автотрассу один раз, чтобы индексы вершин в UI и в сторе совпадали.
+export function materializeRouteForLine(
+  input: LineRouteInput,
+  lineId: string
+): ManualRoute | null {
+  const panel = input.panel;
+  if (!panel) return null;
+  const line = panel.lines.find((candidate) => candidate.id === lineId);
+  if (!line) return null;
+  if (line.manualRoute) {
+    const existing = sanitizeManualRoute(line.manualRoute);
+    if (existing) return existing;
+  }
+
+  const route = computeLineRoutes(input).get(lineId);
+  if (!route || route.paths.length === 0) return null;
+
+  const thickness = input.settings.defaultWallThicknessMm;
+  const panelPose = resolvePanelPose(
+    panel,
+    input.rooms,
+    input.partitions,
+    thickness
+  );
+  const devicePoints: { deviceId: string; point: Point2D }[] = [];
+  for (const deviceId of line.deviceIds) {
+    const device = input.devices.find((candidate) => candidate.id === deviceId);
+    if (!device) continue;
+    const resolved = resolveDevice(
+      device,
+      input.rooms,
+      input.partitions,
+      thickness
+    );
+    const pose = resolved?.poses[0];
+    if (pose) devicePoints.push({ deviceId, point: pose.position });
+  }
+
+  return materializeManualRoute(route.paths, {
+    panelPoint: panelPose?.position,
+    devicePoints,
+  });
 }
 
 export function formatCableLengthMm(lengthMm: number): string {

@@ -34,6 +34,7 @@ import type {
   ElectricalDevice,
   ElectricalPanel,
   CircuitLine,
+  ManualRoute,
   LinePurpose,
   PanelStrategy,
   PanelSupply,
@@ -73,6 +74,16 @@ import {
   type PanelWallAnchor,
 } from '../core/electrical/panel';
 import { prunePanelRefs } from '../core/electrical/lineAssignment';
+import {
+  insertManualRouteNode,
+  moveManualRouteNode,
+  removeManualRouteNode,
+  reorderManualRouteStops,
+} from '../core/electrical/manualRoute';
+import {
+  materializeRouteForLine,
+  type LineRouteInput,
+} from '../core/electrical/routing';
 import {
   appendUnassignedDevices as appendUnassignedDevicesOp,
   assignDevices,
@@ -124,7 +135,7 @@ interface ProjectState {
   highlightedLineId: string | null;
   // Линия, в которую назначаются приборы кликами на плане (UI-режим)
   lineAssignLineId: string | null;
-  // Линия, у которой редактируются контрольные точки трассы на плане (UI-режим)
+  // Линия, у которой редактируется ручная трасса на плане (UI-режим)
   routeEditLineId: string | null;
 
   // Настройки
@@ -238,6 +249,26 @@ interface ProjectState {
   ) => string | null;
   mergePanelLines: (lineIds: string[]) => string | null;
   setRouteEditLine: (id: string | null) => void;
+  moveLineRouteNode: (
+    lineId: string,
+    nodeIndex: number,
+    point: Point2D
+  ) => number | null;
+  insertLineRouteNode: (
+    lineId: string,
+    pathIndex: number,
+    segmentIndex: number,
+    point: Point2D,
+    maxDistanceMm?: number
+  ) => void;
+  removeLineRouteNode: (lineId: string, nodeIndex: number) => boolean;
+  reorderLineRouteStops: (
+    lineId: string,
+    branchIndex: number,
+    fromIndex: number,
+    toIndex: number
+  ) => boolean;
+  resetLineRoute: (lineId: string) => void;
   addLineWaypoint: (lineId: string, point: Point2D) => void;
   moveLineWaypoint: (lineId: string, index: number, point: Point2D) => void;
   removeLineWaypoint: (lineId: string, index: number) => void;
@@ -245,6 +276,31 @@ interface ProjectState {
 
   resetProject: () => void;
   loadProject: (snapshot: ProjectSnapshot) => void;
+}
+
+function lineRouteInput(state: ProjectState): LineRouteInput {
+  return {
+    panel: state.panel,
+    devices: state.devices,
+    rooms: state.rooms,
+    partitions: state.freePartitions,
+    nodes: state.nodes,
+    walls: state.walls,
+    settings: state.settings,
+  };
+}
+
+function withLineManualRoute(
+  panel: ElectricalPanel,
+  lineId: string,
+  manualRoute: ManualRoute | undefined
+): ElectricalPanel {
+  return {
+    ...panel,
+    lines: panel.lines.map((line) =>
+      line.id === lineId ? { ...line, manualRoute } : line
+    ),
+  };
 }
 
 const DEFAULT_SETTINGS: ProjectSettings = {
@@ -1696,7 +1752,7 @@ export const useProjectStore = create<ProjectState>()(
       setPanelStrategy: (strategy) => {
         const state = get();
         if (!state.panel) return;
-        set({ panel: applyStrategy(state.panel, strategy) });
+        set({ panel: applyStrategy(state.panel, strategy, state.rooms) });
         if (strategy === 'custom') {
           state.addToast('Ручной режим: изменения схемы больше не перезаписываются.', 'info');
         }
@@ -2056,6 +2112,109 @@ export const useProjectStore = create<ProjectState>()(
           },
         });
         state.addToast('Контрольные точки трассы удалены.', 'info');
+      },
+
+      moveLineRouteNode: (lineId, nodeIndex, point) => {
+        const state = get();
+        if (!state.panel) return null;
+        const base = materializeRouteForLine(lineRouteInput(state), lineId);
+        if (!base) {
+          state.addToast('Не удалось построить ручную трассу для линии.', 'error');
+          return null;
+        }
+        const result = moveManualRouteNode(base, nodeIndex, point);
+        if (!result.ok) {
+          state.addToast(result.error, 'error');
+          return null;
+        }
+        set({
+          panel: withLineManualRoute(state.panel, lineId, result.route),
+        });
+        return result.nodeIndex;
+      },
+
+      insertLineRouteNode: (
+        lineId,
+        pathIndex,
+        segmentIndex,
+        point,
+        maxDistanceMm
+      ) => {
+        const state = get();
+        if (!state.panel) return;
+        const base = materializeRouteForLine(lineRouteInput(state), lineId);
+        if (!base) {
+          state.addToast('Не удалось построить ручную трассу для линии.', 'error');
+          return;
+        }
+        const result = insertManualRouteNode(
+          base,
+          pathIndex,
+          segmentIndex,
+          point,
+          maxDistanceMm ?? Number.POSITIVE_INFINITY
+        );
+        if (!result.ok) {
+          state.addToast(result.error, 'error');
+          return;
+        }
+        set({
+          panel: withLineManualRoute(state.panel, lineId, result.route),
+        });
+      },
+
+      removeLineRouteNode: (lineId, nodeIndex) => {
+        const state = get();
+        if (!state.panel) return false;
+        const base = materializeRouteForLine(lineRouteInput(state), lineId);
+        if (!base) return false;
+        const result = removeManualRouteNode(base, nodeIndex);
+        if (!result.ok) {
+          state.addToast(result.error, 'error');
+          return false;
+        }
+        set({
+          panel: withLineManualRoute(state.panel, lineId, result.route),
+        });
+        return true;
+      },
+
+      reorderLineRouteStops: (lineId, branchIndex, fromIndex, toIndex) => {
+        const state = get();
+        if (!state.panel) return false;
+        if (fromIndex === toIndex) return false;
+        const base = materializeRouteForLine(lineRouteInput(state), lineId);
+        if (!base) {
+          state.addToast('Не удалось построить ручную трассу для линии.', 'error');
+          return false;
+        }
+        const result = reorderManualRouteStops(base, branchIndex, fromIndex, toIndex);
+        if (!result.ok) {
+          state.addToast(result.error, 'error');
+          return false;
+        }
+        set({
+          panel: withLineManualRoute(state.panel, lineId, result.route),
+        });
+        return true;
+      },
+
+      resetLineRoute: (lineId) => {
+        const state = get();
+        if (!state.panel) return;
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        if (!line?.manualRoute && !line?.waypoints?.length) return;
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId
+                ? { ...candidate, manualRoute: undefined, waypoints: undefined }
+                : candidate
+            ),
+          },
+        });
+        state.addToast('Ручная трасса сброшена к автоматической.', 'info');
       },
 
       resetProject: () => {

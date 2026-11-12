@@ -48,7 +48,8 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
   onPanel,
 }) => {
   const supply = panel.supply;
-  const input = calculateInput(supply.allocatedPowerW);
+  const mainRcd = supply.mainRcd;
+  const input = calculateInput(supply.allocatedPowerW, supply.cosPhi);
 
   const handlePowerChange = (watts: number) => {
     const safe = Math.max(1000, Math.min(30000, Math.round(watts / 100) * 100));
@@ -72,7 +73,8 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
         <div>
           <div className="text-sm font-bold text-white">Ввод и питание</div>
           <div className="text-[10px] text-slate-400">
-            1 фаза · 230 В · медный кабель 3×
+            {supply.phases === 3 ? '3 фазы · 380/220 В ·' : '1 фаза · 230 В ·'} медный
+            кабель {supply.inputCable.cores}×
           </div>
         </div>
         <div className="text-right">
@@ -120,6 +122,53 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
       </div>
 
       <div className="grid grid-cols-2 gap-2">
+        <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 block">
+          <span className="text-[9px] text-slate-500 uppercase tracking-wider">
+            Система заземления
+          </span>
+          <select
+            value={supply.system}
+            onChange={(e) =>
+              onSupply({ system: e.target.value as PanelSupply['system'] })
+            }
+            className="mt-1 w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-sky-500"
+          >
+            <option value="TN-S">TN-S</option>
+            <option value="TN-C-S">TN-C-S</option>
+          </select>
+        </label>
+        <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 block">
+          <span className="text-[9px] text-slate-500 uppercase tracking-wider">
+            Категория надёжности
+          </span>
+          <select
+            value={supply.reliabilityCategory}
+            onChange={(e) =>
+              onSupply({
+                reliabilityCategory: e.target.value as PanelSupply['reliabilityCategory'],
+              })
+            }
+            className="mt-1 w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-sky-500"
+          >
+            <option value="I">I</option>
+            <option value="II">II</option>
+            <option value="III">III</option>
+          </select>
+        </label>
+      </div>
+
+      <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 block">
+        <span className="text-[9px] text-slate-500 uppercase tracking-wider">
+          Марка кабеля
+        </span>
+        <input
+          value={supply.cableBrand}
+          onChange={(e) => onSupply({ cableBrand: e.target.value })}
+          className="mt-1 w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-sky-500"
+        />
+      </label>
+
+      <div className="grid grid-cols-2 gap-2">
         <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
           <div className="text-[9px] text-slate-500 uppercase tracking-wider">
             Вводной автомат
@@ -133,7 +182,7 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
             Вводной кабель
           </div>
           <div className="text-sm font-bold font-mono text-white">
-            {supply.inputCable.sectionMm2} мм² · 3 жилы
+            {supply.inputCable.sectionMm2} мм² · {supply.inputCable.cores} жил
           </div>
         </div>
       </div>
@@ -213,6 +262,17 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
           </label>
         </div>
       </div>
+
+      {mainRcd && (
+        <Toggle
+          checked={Boolean(mainRcd.selective)}
+          onChange={(selective) =>
+            onSupply({ mainRcd: { ...mainRcd, selective } })
+          }
+          label="Селективное УЗО (тип S)"
+          hint="Выдержка по времени: первым отключается групповая защита"
+        />
+      )}
 
       <div className="grid grid-cols-1 gap-2">
         <Toggle
