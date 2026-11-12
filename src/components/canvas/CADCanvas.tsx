@@ -52,7 +52,6 @@ export const CADCanvas: React.FC = () => {
   const {
     apartment,
     rooms,
-    shafts,
     openings,
     freePartitions,
     devices,
@@ -99,7 +98,6 @@ export const CADCanvas: React.FC = () => {
     addToast,
     drawingStage,
     boundaryMode,
-    activeBoundaryTool,
     activeView,
     routeEditLineId,
     setRouteEditLine,
@@ -114,7 +112,6 @@ export const CADCanvas: React.FC = () => {
     if (boundaryMode !== 'auto') return null;
     return buildAutoLayout(
       rooms,
-      shafts,
       freePartitions,
       openings,
       settings.defaultWallThicknessMm
@@ -122,7 +119,6 @@ export const CADCanvas: React.FC = () => {
   }, [
     boundaryMode,
     rooms,
-    shafts,
     freePartitions,
     openings,
     settings.defaultWallThicknessMm,
@@ -599,7 +595,6 @@ export const CADCanvas: React.FC = () => {
     const isDrawing =
       activeTool === 'draw_apartment' ||
       activeTool === 'draw_room' ||
-      activeTool === 'draw_shaft' ||
       activeTool === 'draw_opening' ||
       activeTool === 'draw_partition';
 
@@ -698,7 +693,6 @@ export const CADCanvas: React.FC = () => {
     const isDrawing =
       activeTool === 'draw_apartment' ||
       activeTool === 'draw_room' ||
-      activeTool === 'draw_shaft' ||
       activeTool === 'draw_opening' ||
       activeTool === 'draw_partition';
     if (!isDrawing) return;
@@ -794,7 +788,6 @@ export const CADCanvas: React.FC = () => {
       const isDrawing =
         activeTool === 'draw_apartment' ||
         activeTool === 'draw_room' ||
-        activeTool === 'draw_shaft' ||
         activeTool === 'draw_opening' ||
         activeTool === 'draw_partition';
 
@@ -862,10 +855,6 @@ export const CADCanvas: React.FC = () => {
         }
         if (selection.kind === 'partition') {
           state.deletePartition(selection.id);
-          return;
-        }
-        if (selection.kind === 'shaft') {
-          state.deleteShaft(selection.id);
           return;
         }
         if (selection.kind === 'device') {
@@ -967,11 +956,8 @@ export const CADCanvas: React.FC = () => {
           listening={activeTool === 'select' && !assignLine && !routeEditLine}
           apartment={apartment}
           rooms={rooms}
-          shafts={shafts}
           selectedRoomId={selection?.kind === 'room' ? selection.id : null}
           onSelectRoom={(id) => setSelection({ kind: 'room', id })}
-          selectedShaftId={selection?.kind === 'shaft' ? selection.id : null}
-          onSelectShaft={(id) => setSelection({ kind: 'shaft', id })}
           zoom={zoom}
           boundaryMode={boundaryMode}
           autoLayout={autoLayout}
@@ -1047,8 +1033,7 @@ export const CADCanvas: React.FC = () => {
           dynamicInput={dynamicInput}
           activeSnap={activeSnap}
           zoom={zoom}
-          isApartmentTool={activeTool === 'draw_apartment' && activeBoundaryTool === 'add'}
-          isShaftTool={activeTool === 'draw_shaft' || (activeTool === 'draw_apartment' && activeBoundaryTool === 'subtract')}
+          isApartmentTool={activeTool === 'draw_apartment'}
           isOpeningTool={activeTool === 'draw_opening'}
           isPartitionTool={activeTool === 'draw_partition'}
         />
@@ -1207,10 +1192,7 @@ export const CADCanvas: React.FC = () => {
                 Очертите внешние границы помещения. Толщина наружных стен будет построена наружу от чистового пола.
               </p>
               <button
-                onClick={() => {
-                  useProjectStore.getState().setBoundaryTool('add');
-                  startApartmentDrawing();
-                }}
+                onClick={() => startApartmentDrawing()}
                 className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-lg shadow-amber-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
               >
                 ⚡ Начертить контур квартиры

@@ -207,7 +207,7 @@ try {
       heightFromFloorMm: 1450,
       lines: [line],
     };
-    const layout = buildAutoLayout([room], [], [], [], settings.defaultWallThicknessMm);
+    const layout = buildAutoLayout([room], [], [], settings.defaultWallThicknessMm);
     const input = {
       panel, devices, rooms: [room], partitions: [],
       nodes: layout.nodes, walls: layout.walls, settings: { ...settings },

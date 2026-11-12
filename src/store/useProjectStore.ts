@@ -17,14 +17,12 @@ import type {
   ApartmentBoundary,
   RoomZone,
   RoomType,
-  ShaftCutout,
   ProjectSettings,
   ProjectSnapshot,
   CADTool,
   DynamicInputState,
   SnapResult,
   DrawingStage,
-  BoundaryTool,
   BoundaryMode,
   ToastMessage,
   DesignMode,
@@ -44,18 +42,14 @@ import {
   calculateRoomsOverlapAreaM2,
   clipRoomToApartment,
   splitRoomByPartition,
-  subtractShaftFromRoom,
   unionApartmentBoundary,
-  differenceApartmentBoundary,
 } from '../core/geometry/csg';
 import { calculateCoveredAreaM2, extractGraphFromPlan } from '../core/geometry/wallsGraph';
 import {
   buildAutoLayout,
   isAutoLayoutConnected,
-  roomTouchesShafts,
   validateNewRoom,
   validatePartitionPlacement,
-  validateShaftPlacement,
   type AutoLayout,
 } from '../core/geometry/autoLayout';
 import {
@@ -127,7 +121,6 @@ interface ProjectState {
   panel: ElectricalPanel | null;
   apartment: ApartmentBoundary | null;
   rooms: RoomZone[];
-  shafts: ShaftCutout[];
   selection: Selection | null;
 
   // Отдельный экран щитка вместо плана и подсветка линии на плане
@@ -164,7 +157,6 @@ interface ProjectState {
   boundaryMode: BoundaryMode;
   drawingStage: DrawingStage;
   boundaryLocked: boolean;
-  activeBoundaryTool: BoundaryTool;
   activeOpeningType: OpeningType;
   toasts: ToastMessage[];
   isCoverageValid: boolean;
@@ -174,7 +166,6 @@ interface ProjectState {
   setSettings: (settings: Partial<ProjectSettings>) => void;
   setActiveTool: (tool: CADTool) => void;
   setDrawingStage: (stage: DrawingStage) => void;
-  setBoundaryTool: (tool: BoundaryTool) => void;
   setActiveOpeningType: (type: OpeningType) => void;
   lockBoundary: () => void;
   addToast: (message: string, type?: 'error' | 'info' | 'success') => void;
@@ -216,7 +207,6 @@ interface ProjectState {
   deleteRoom: (id: string) => void;
   deleteOpening: (id: string) => void;
   deletePartition: (id: string) => void;
-  deleteShaft: (id: string) => void;
   addDevice: (type: DeviceType, anchor: DeviceAnchor, shared: boolean) => void;
   deleteDevice: (id: string) => void;
 
@@ -356,7 +346,6 @@ const VIBRANT_ROOM_COLORS = [
 
 interface AutoProjectState {
   rooms: RoomZone[];
-  shafts: ShaftCutout[];
   freePartitions: FreePartition[];
   openings: Opening[];
   apartment: ApartmentBoundary | null;
@@ -366,16 +355,14 @@ interface AutoProjectState {
 
 function computeAutoProjectState(
   rooms: RoomZone[],
-  shafts: ShaftCutout[],
   freePartitions: FreePartition[],
   openings: Opening[],
   thickness: number
 ): { state: AutoProjectState; removedOpenings: number; layout: AutoLayout } {
-  const layout = buildAutoLayout(rooms, shafts, freePartitions, openings, thickness);
+  const layout = buildAutoLayout(rooms, freePartitions, openings, thickness);
   return {
     state: {
       rooms,
-      shafts,
       freePartitions,
       openings: layout.openings,
       apartment: layout.apartment,
@@ -398,7 +385,6 @@ export const useProjectStore = create<ProjectState>()(
       panel: null,
       apartment: null,
       rooms: [],
-      shafts: [],
       selection: null,
 
       activeView: 'plan',
@@ -428,7 +414,6 @@ export const useProjectStore = create<ProjectState>()(
       boundaryMode: 'auto',
       drawingStage: 'rooms',
       boundaryLocked: false,
-      activeBoundaryTool: 'add',
       activeOpeningType: 'door',
       toasts: [],
       isCoverageValid: true,
@@ -469,18 +454,6 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       setActiveTool: (tool) => {
-        const state = get();
-        if (
-          tool === 'draw_shaft' &&
-          state.boundaryMode === 'manual' &&
-          (state.boundaryLocked || state.drawingStage !== 'boundary')
-        ) {
-          state.addToast(
-            'Шахты вычитаются только на этапе построения контура квартиры.',
-            'error'
-          );
-          return;
-        }
         set({
           activeTool: tool,
           lineAssignLineId: null,
@@ -498,7 +471,6 @@ export const useProjectStore = create<ProjectState>()(
         }
         set(stage === 'boundary' ? { drawingStage: stage, boundaryLocked: false } : { drawingStage: stage });
       },
-      setBoundaryTool: (tool) => set({ activeBoundaryTool: tool }),
       setActiveOpeningType: (type) => set({ activeOpeningType: type }),
       lockBoundary: () => {
         set({ boundaryLocked: true, drawingStage: 'rooms', activeTool: 'select' });
@@ -547,15 +519,17 @@ export const useProjectStore = create<ProjectState>()(
         }),
 
       setActiveDeviceType: (type) =>
-        set({
+        set((state) => ({
           activeDeviceType: type,
+          deviceShared:
+            DEVICE_CATALOG[type].mounting === 'wall' ? state.deviceShared : false,
           lineAssignLineId: null,
           routeEditLineId: null,
           activeTool: 'place_device',
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
-        }),
+        })),
 
       setDeviceShared: (shared) => set({ deviceShared: shared }),
 
@@ -655,16 +629,8 @@ export const useProjectStore = create<ProjectState>()(
 
           let newVertices: Point2D[] = state.draftVertices;
           let newHoles: Point2D[][] = state.apartment?.holes ?? [];
-          let newShaft: ShaftCutout | null = null;
 
-          if (!state.apartment) {
-            // Первый контур
-            if (state.activeBoundaryTool === 'subtract') {
-              state.addToast('Первый контур должен быть основным, а не шахтой!', 'error');
-              set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
-              return;
-            }
-          } else if (state.activeBoundaryTool === 'add') {
+          if (state.apartment) {
             const res = unionApartmentBoundary(
               state.apartment.vertices,
               newHoles,
@@ -677,25 +643,6 @@ export const useProjectStore = create<ProjectState>()(
             }
             newVertices = res.vertices;
             newHoles = res.holes;
-          } else {
-            const previousHoleCount = newHoles.length;
-            const res = differenceApartmentBoundary(
-              state.apartment.vertices,
-              newHoles,
-              state.draftVertices
-            );
-            if (!res.success) {
-              state.addToast(res.error || 'Ошибка вычитания', 'error');
-              set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
-              return;
-            }
-            newVertices = res.vertices;
-            newHoles = res.holes;
-            // Внутренний вырез сохраняется как отдельное кольцо — заводим его в шахты,
-            // чтобы пол и подписи отрисовались корректно.
-            if (newHoles.length > previousHoleCount) {
-              newShaft = { id: makeEntityId('shaft'), vertices: state.draftVertices };
-            }
           }
 
           const rawApt: ApartmentBoundary = {
@@ -719,7 +666,6 @@ export const useProjectStore = create<ProjectState>()(
             rooms: graph.updatedRooms,
             nodes: graph.nodes,
             walls: graph.walls,
-            shafts: newShaft ? [...state.shafts, newShaft] : state.shafts,
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeTool: 'select',
@@ -756,7 +702,6 @@ export const useProjectStore = create<ProjectState>()(
 
             const next = computeAutoProjectState(
               [...state.rooms, newRoom],
-              state.shafts,
               state.freePartitions,
               state.openings,
               state.settings.defaultWallThicknessMm
@@ -873,93 +818,7 @@ export const useProjectStore = create<ProjectState>()(
           return;
         }
 
-        // 3. Вырезание шахт
-        if (state.activeTool === 'draw_shaft') {
-          if (state.boundaryMode === 'auto') {
-            const validation = validateShaftPlacement(
-              state.rooms,
-              state.shafts,
-              state.freePartitions,
-              state.settings.defaultWallThicknessMm,
-              state.draftVertices
-            );
-            if (!validation.ok) {
-              state.addToast(validation.error || 'Не удалось добавить шахту.', 'error');
-              set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
-              return;
-            }
-
-            const next = computeAutoProjectState(
-              state.rooms,
-              [...state.shafts, { id: makeEntityId('shaft'), vertices: state.draftVertices }],
-              state.freePartitions,
-              state.openings,
-              state.settings.defaultWallThicknessMm
-            );
-
-            set({
-              ...next.state,
-              draftVertices: [],
-              dynamicInput: DEFAULT_DYNAMIC_INPUT,
-              activeTool: 'select',
-              drawingStage: 'rooms',
-              boundaryLocked: false,
-            });
-            state.addToast('Шахта вырезана из комнат, стены вокруг построены.', 'success');
-            get().checkCoverage();
-            return;
-          }
-
-          if (state.boundaryLocked || state.drawingStage !== 'boundary') {
-            state.addToast(
-              'Шахты вычитаются только на этапе построения контура квартиры.',
-              'error'
-            );
-            set({ draftVertices: [], dynamicInput: DEFAULT_DYNAMIC_INPUT });
-            return;
-          }
-
-          const { rooms } = state;
-          const updatedRooms: RoomZone[] = [];
-
-          for (const room of rooms) {
-            const cutPolys = subtractShaftFromRoom(room.vertices, state.draftVertices);
-            if (cutPolys.length > 0) {
-              updatedRooms.push({ ...room, vertices: cutPolys[0] });
-              for (let i = 1; i < cutPolys.length; i++) {
-                updatedRooms.push({
-                  ...room,
-                  id: `${makeEntityId('room')}-${i}`,
-                  name: `${room.name} (часть ${i + 1})`,
-                  nodeIds: [],
-                  vertices: cutPolys[i],
-                });
-              }
-            }
-          }
-
-          const graph = extractGraphFromPlan(
-            state.apartment,
-            updatedRooms,
-            state.settings.defaultWallThicknessMm,
-            state.settings.exteriorWallThicknessMm
-          );
-
-          set({
-            apartment: graph.updatedApartment,
-            rooms: graph.updatedRooms,
-            nodes: graph.nodes,
-            walls: graph.walls,
-            shafts: [...state.shafts, { id: makeEntityId('shaft'), vertices: state.draftVertices }],
-            draftVertices: [],
-            dynamicInput: DEFAULT_DYNAMIC_INPUT,
-            activeTool: 'select',
-          });
-          get().checkCoverage();
-          return;
-        }
-
-        // 4. Создание проема (Дверь/Окно)
+        // 3. Создание проема (Дверь/Окно)
         if (state.activeTool === 'draw_opening') {
           if (state.draftVertices.length < 2) return;
           const rawP1 = state.draftVertices[0];
@@ -1089,7 +948,6 @@ export const useProjectStore = create<ProjectState>()(
           if (state.boundaryMode === 'auto') {
             const validation = validatePartitionPlacement(
               state.rooms,
-              state.shafts,
               state.freePartitions,
               state.settings.defaultWallThicknessMm,
               p1,
@@ -1111,7 +969,6 @@ export const useProjectStore = create<ProjectState>()(
 
             const next = computeAutoProjectState(
               state.rooms,
-              state.shafts,
               [...state.freePartitions, newPartition],
               state.openings,
               state.settings.defaultWallThicknessMm
@@ -1299,7 +1156,6 @@ export const useProjectStore = create<ProjectState>()(
           panel: null,
           apartment: null,
           rooms: [],
-          shafts: [],
           selection: null,
           activeView: 'plan',
           highlightedLineId: null,
@@ -1311,7 +1167,6 @@ export const useProjectStore = create<ProjectState>()(
           activeTool: 'select',
           drawingStage: isAuto ? 'rooms' : 'boundary',
           boundaryLocked: false,
-          activeBoundaryTool: 'add',
           coveragePercent: 0,
           isCoverageValid: true,
         });
@@ -1330,7 +1185,6 @@ export const useProjectStore = create<ProjectState>()(
         ) {
           const next = computeAutoProjectState(
             nextRooms,
-            state.shafts,
             state.freePartitions,
             state.openings,
             state.settings.defaultWallThicknessMm
@@ -1382,18 +1236,10 @@ export const useProjectStore = create<ProjectState>()(
             (selection.kind === 'device' && doomedDeviceIds.has(selection.id)));
 
         if (state.boundaryMode === 'auto') {
-          if (roomTouchesShafts(room, state.shafts, thickness)) {
-            state.addToast(
-              'В комнате есть шахта. Сначала удалите шахту или оставьте комнату на месте.',
-              'error'
-            );
-            return;
-          }
-
           const remainingRooms = state.rooms.filter((candidate) => candidate.id !== id);
 
           if (
-            !isAutoLayoutConnected(remainingRooms, state.shafts, thickness)
+            !isAutoLayoutConnected(remainingRooms, thickness)
           ) {
             state.addToast(
               'Удаление разорвёт квартиру на отдельные части. Сначала соедините комнаты.',
@@ -1405,7 +1251,6 @@ export const useProjectStore = create<ProjectState>()(
           if (remainingRooms.length === 0) {
             set({
               rooms: [],
-              shafts: [],
               freePartitions: [],
               openings: [],
               devices: [],
@@ -1425,7 +1270,6 @@ export const useProjectStore = create<ProjectState>()(
 
           const next = computeAutoProjectState(
             remainingRooms,
-            state.shafts,
             remainingPartitions,
             remainingOpenings,
             thickness
@@ -1533,7 +1377,6 @@ export const useProjectStore = create<ProjectState>()(
         if (state.boundaryMode === 'auto') {
           const next = computeAutoProjectState(
             state.rooms,
-            state.shafts,
             remainingPartitions,
             state.openings,
             thickness
@@ -1570,40 +1413,6 @@ export const useProjectStore = create<ProjectState>()(
           });
         }
         state.addToast('Перегородка удалена.', 'success');
-        get().checkCoverage();
-      },
-
-      deleteShaft: (id) => {
-        const state = get();
-        const shaft = state.shafts.find((candidate) => candidate.id === id);
-        if (!shaft) return;
-        const thickness = state.settings.defaultWallThicknessMm;
-        const remainingShafts = state.shafts.filter((candidate) => candidate.id !== id);
-        const selection = state.selection;
-        const selectionRemoved = selection?.kind === 'shaft' && selection.id === id;
-
-        if (state.boundaryMode === 'auto') {
-          const next = computeAutoProjectState(
-            state.rooms,
-            remainingShafts,
-            state.freePartitions,
-            state.openings,
-            thickness
-          );
-          set({
-            ...next.state,
-            selection: selectionRemoved ? null : selection,
-          });
-          if (next.removedOpenings > 0) {
-            state.addToast('Проёмы, потерявшие стену после удаления шахты, удалены.', 'info');
-          }
-        } else {
-          set({
-            shafts: remainingShafts,
-            selection: selectionRemoved ? null : selection,
-          });
-        }
-        state.addToast('Шахта удалена.', 'success');
         get().checkCoverage();
       },
 
@@ -2227,7 +2036,6 @@ export const useProjectStore = create<ProjectState>()(
           panel: null,
           apartment: null,
           rooms: [],
-          shafts: [],
           selection: null,
           activeView: 'plan',
           highlightedLineId: null,
@@ -2243,7 +2051,6 @@ export const useProjectStore = create<ProjectState>()(
           boundaryMode: 'auto',
           drawingStage: 'rooms',
           boundaryLocked: false,
-          activeBoundaryTool: 'add',
           toasts: [],
           isCoverageValid: true,
           coveragePercent: 0,
@@ -2264,7 +2071,6 @@ export const useProjectStore = create<ProjectState>()(
         if (mode === 'auto') {
           const next = computeAutoProjectState(
             snapshot.rooms ?? [],
-            snapshot.shafts ?? [],
             snapshot.freePartitions ?? [],
             snapshot.openings ?? [],
             settings.defaultWallThicknessMm
@@ -2310,7 +2116,6 @@ export const useProjectStore = create<ProjectState>()(
             activeTool: 'select',
             drawingStage: 'rooms',
             boundaryLocked: false,
-            activeBoundaryTool: 'add',
             toasts: [],
           });
           useProjectStore.temporal.getState().clear();
@@ -2352,7 +2157,6 @@ export const useProjectStore = create<ProjectState>()(
           walls: snapshot.walls ?? [],
           openings: snapshot.openings ?? [],
           freePartitions: partitions,
-          shafts: snapshot.shafts ?? [],
           devices,
           panel,
           selection: null,
@@ -2369,7 +2173,6 @@ export const useProjectStore = create<ProjectState>()(
           activeTool: 'select',
           drawingStage: apartment ? 'rooms' : 'boundary',
           boundaryLocked: Boolean(apartment),
-          activeBoundaryTool: 'add',
           toasts: [],
         });
         useProjectStore.temporal.getState().clear();
@@ -2387,7 +2190,6 @@ export const useProjectStore = create<ProjectState>()(
         rooms: state.rooms,
         openings: state.openings,
         freePartitions: state.freePartitions,
-        shafts: state.shafts,
         devices: state.devices,
         panel: state.panel,
       }),
@@ -2396,7 +2198,6 @@ export const useProjectStore = create<ProjectState>()(
         JSON.stringify(pastState.rooms) === JSON.stringify(currentState.rooms) &&
         JSON.stringify(pastState.openings) === JSON.stringify(currentState.openings) &&
         JSON.stringify(pastState.freePartitions) === JSON.stringify(currentState.freePartitions) &&
-        JSON.stringify(pastState.shafts) === JSON.stringify(currentState.shafts) &&
         JSON.stringify(pastState.devices) === JSON.stringify(currentState.devices) &&
         JSON.stringify(pastState.panel) === JSON.stringify(currentState.panel),
     }
@@ -2421,7 +2222,6 @@ export function getProjectSnapshot(): ProjectSnapshot {
     walls: state.walls,
     openings: state.openings,
     freePartitions: state.freePartitions,
-    shafts: state.shafts,
     devices: state.devices,
     panel: state.panel,
   };

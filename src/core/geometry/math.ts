@@ -60,7 +60,7 @@ export function calculatePolygonAreaM2(vertices: Point2D[]): number {
   return Math.abs(area / 2) / 1_000_000;
 }
 
-// Площадь многоугольника с вычетами (шахты, колонны)
+// Площадь многоугольника с вычетами (внутренние вырезы)
 export function calculateNetAreaM2(vertices: Point2D[], holes: Point2D[][] = []): number {
   const holesArea = holes.reduce((sum, hole) => sum + calculatePolygonAreaM2(hole), 0);
   return Math.max(0, calculatePolygonAreaM2(vertices) - holesArea);

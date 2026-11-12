@@ -6,7 +6,6 @@ import type {
   Opening,
   Point2D,
   RoomZone,
-  ShaftCutout,
   Wall,
 } from '../../types';
 import {
@@ -176,10 +175,6 @@ export function partitionStripPolygon(
   ];
 }
 
-export function shaftCutbackPolygon(shaftVertices: Point2D[], thickness: number): Polygon {
-  return polygonOf(computeOutwardWallPolygon(shaftVertices, thickness));
-}
-
 function distanceToOutline(point: Point2D, vertices: Point2D[]): number {
   let min = Infinity;
   for (let i = 0; i < vertices.length; i++) {
@@ -201,19 +196,13 @@ function isInsideRoom(point: Point2D, room: RoomZone): boolean {
 // -------------------------------------------------------------
 export function computeAutoFloors(
   rooms: RoomZone[],
-  shafts: ShaftCutout[],
   partitions: FreePartition[],
   thickness: number
 ): AutoFloor[] {
-  const shaftCutters = shafts.map((shaft) => shaftCutbackPolygon(shaft.vertices, thickness));
-
   return rooms.map((room) => {
-    const cutters: Geom[] = [
-      ...shaftCutters,
-      ...partitions
-        .filter((partition) => partition.roomId === room.id)
-        .map((partition) => partitionStripPolygon(partition, thickness)),
-    ];
+    const cutters: Geom[] = partitions
+      .filter((partition) => partition.roomId === room.id)
+      .map((partition) => partitionStripPolygon(partition, thickness));
 
     let result: MultiPolygon;
     try {
@@ -393,23 +382,15 @@ function buildAutoGraph(
 // -------------------------------------------------------------
 export function buildAutoLayout(
   rooms: RoomZone[],
-  shafts: ShaftCutout[],
   partitions: FreePartition[],
   openings: Opening[],
   thickness: number
 ): AutoLayout {
-  const floors = computeAutoFloors(rooms, shafts, partitions, thickness);
+  const floors = computeAutoFloors(rooms, partitions, thickness);
   const totalFloorAreaM2 = floors.reduce((sum, floor) => sum + floor.areaM2, 0);
 
   const footprints = footprintUnionOf(rooms, thickness);
-  const shaftVoids = shafts.map((shaft) => polygonOf(shaft.vertices));
-
-  let derived: MultiPolygon = [];
-  try {
-    derived = differenceAll(footprints, shaftVoids);
-  } catch {
-    derived = footprints;
-  }
+  const derived = footprints;
 
   const main = [...derived].sort((a, b) => polygonAreaM2(b) - polygonAreaM2(a))[0] ?? null;
   const apartment: ApartmentBoundary | null = main
@@ -431,23 +412,11 @@ export function buildAutoLayout(
     wallRegion = [];
   }
 
-  const shaftRings: Polygon[] = [];
-  for (const shaft of shafts) {
-    try {
-      const ring = differenceAll(shaftCutbackPolygon(shaft.vertices, thickness), [
-        polygonOf(shaft.vertices),
-      ]);
-      shaftRings.push(...ring);
-    } catch {
-      // Вырожденная шахта — стену вокруг не строим
-    }
-  }
-
   const partitionPolys = partitions
     .map((partition) => partitionStripPolygon(partition, thickness))
     .filter((poly) => poly.length > 0);
 
-  const wallGeoms: Geom[] = [wallRegion, ...shaftRings, ...partitionPolys];
+  const wallGeoms: Geom[] = [wallRegion, ...partitionPolys];
   let rawWalls: MultiPolygon = [];
   try {
     rawWalls = unionGeoms(wallGeoms);
@@ -628,116 +597,8 @@ export function validateNewRoom(
   }
 }
 
-export function validateShaftPlacement(
-  rooms: RoomZone[],
-  shafts: ShaftCutout[],
-  partitions: FreePartition[],
-  thickness: number,
-  shaftVertices: Point2D[]
-): AutoValidation {
-  if (rooms.length === 0) {
-    return { ok: false, error: 'Сначала создайте хотя бы одну комнату.' };
-  }
-  if (shaftVertices.length < 3) {
-    return { ok: false, error: 'Шахта должна быть замкнутым контуром.' };
-  }
-  if (calculatePolygonAreaM2(shaftVertices) < 0.01) {
-    return { ok: false, error: 'Шахта слишком мала.' };
-  }
-
-  try {
-    const shaftPoly = polygonOf(shaftVertices);
-    const cutbackPoly = shaftCutbackPolygon(shaftVertices, thickness);
-    const cutbackArea = polygonAreaM2(cutbackPoly);
-    // Стену вокруг шахты можно строить по существующим стенам и по полу,
-    // поэтому проверяем габарит комнат вместе со стенами: шахта может
-    // вырезаться сразу из нескольких смежных комнат через общую стену.
-    const footprintUnion = footprintUnionOf(rooms, thickness);
-
-    const affectedRooms = rooms.filter(
-      (room) => intersectionAreaM2(shaftPoly, polygonOf(room.vertices, room.holes ?? [])) > AREA_TOLERANCE_M2
-    );
-    if (affectedRooms.length === 0) {
-      return { ok: false, error: 'Шахта должна находиться внутри комнаты.' };
-    }
-
-    const containedArea = intersectionAreaM2(cutbackPoly, footprintUnion);
-    if (containedArea < cutbackArea - Math.max(0.0005, cutbackArea * 0.002)) {
-      return {
-        ok: false,
-        error:
-          'Шахта слишком близко к внешней стене: стена вокруг шахты выйдет за пределы квартиры.',
-      };
-    }
-
-    for (const existing of shafts) {
-      const existingPoly = polygonOf(existing.vertices);
-      if (intersectionAreaM2(shaftPoly, existingPoly) > AREA_TOLERANCE_M2) {
-        return { ok: false, error: 'Шахты пересекаются. Разместите их отдельно друг от друга.' };
-      }
-      const existingCutback = shaftCutbackPolygon(existing.vertices, thickness);
-      if (
-        intersectionAreaM2(shaftPoly, existingCutback) > AREA_TOLERANCE_M2 ||
-        intersectionAreaM2(cutbackPoly, existingPoly) > AREA_TOLERANCE_M2
-      ) {
-        return {
-          ok: false,
-          error: 'Стена новой шахты заходит в существующую шахту. Оставьте между ними зазор.',
-        };
-      }
-    }
-
-    for (const partition of partitions) {
-      const strip = partitionStripPolygon(partition, thickness);
-      if (
-        intersectionAreaM2(strip, shaftPoly) > AREA_TOLERANCE_M2 ||
-        intersectionAreaM2(strip, cutbackPoly) > AREA_TOLERANCE_M2
-      ) {
-        return { ok: false, error: 'Шахта пересекает перегородку. Сдвиньте шахту или перегородку.' };
-      }
-    }
-
-    const existingCutbacks = shafts.map((shaft) =>
-      shaftCutbackPolygon(shaft.vertices, thickness)
-    );
-    const roomsWithWall = rooms.filter(
-      (room) => intersectionAreaM2(cutbackPoly, polygonOf(room.vertices, room.holes ?? [])) > AREA_TOLERANCE_M2
-    );
-
-    for (const room of roomsWithWall) {
-      const roomPartitions = partitions
-        .filter((partition) => partition.roomId === room.id)
-        .map((partition) => partitionStripPolygon(partition, thickness));
-
-      const result = differenceAll(polygonOf(room.vertices, room.holes ?? []), [
-        ...existingCutbacks,
-        cutbackPoly,
-        ...roomPartitions,
-      ]);
-
-      if (result.length > 1) {
-        return {
-          ok: false,
-          error: `Шахта разделяет комнату «${room.name}» на части. Уменьшите шахту или прижмите её к стене.`,
-        };
-      }
-      if (multiAreaM2(result) < 0.1) {
-        return {
-          ok: false,
-          error: `После выреза в комнате «${room.name}» почти не остаётся площади.`,
-        };
-      }
-    }
-
-    return { ok: true };
-  } catch {
-    return { ok: false, error: 'Не удалось проверить геометрию шахты.' };
-  }
-}
-
 export function validatePartitionPlacement(
   rooms: RoomZone[],
-  shafts: ShaftCutout[],
   partitions: FreePartition[],
   thickness: number,
   p1: Point2D,
@@ -794,19 +655,6 @@ export function validatePartitionPlacement(
       }
     }
 
-    for (const shaft of shafts) {
-      if (
-        intersectionAreaM2(strip, polygonOf(shaft.vertices)) > AREA_TOLERANCE_M2 ||
-        intersectionAreaM2(strip, shaftCutbackPolygon(shaft.vertices, thickness)) >
-          AREA_TOLERANCE_M2
-      ) {
-        return {
-          ok: false,
-          error: 'Перегородка пересекает шахту. Сдвиньте перегородку.',
-        };
-      }
-    }
-
     for (const partition of partitions) {
       if (
         intersectionAreaM2(strip, partitionStripPolygon(partition, thickness)) >
@@ -820,7 +668,6 @@ export function validatePartitionPlacement(
     }
 
     const roomCutters: Geom[] = [
-      ...shafts.map((shaft) => shaftCutbackPolygon(shaft.vertices, thickness)),
       ...partitions
         .filter((partition) => partition.roomId === room.id)
         .map((partition) => partitionStripPolygon(partition, thickness)),
@@ -852,33 +699,13 @@ export function validatePartitionPlacement(
 
 export function isAutoLayoutConnected(
   rooms: RoomZone[],
-  shafts: ShaftCutout[],
   thickness: number
 ): boolean {
   if (rooms.length === 0) return true;
   try {
     const footprints = footprintUnionOf(rooms, thickness);
-    if (footprints.length === 0) return false;
-    const derived = differenceAll(
-      footprints,
-      shafts.map((shaft) => polygonOf(shaft.vertices))
-    );
-    return derived.length <= 1;
+    return footprints.length <= 1;
   } catch {
     return false;
   }
-}
-
-export function roomTouchesShafts(
-  room: RoomZone,
-  shafts: ShaftCutout[],
-  thickness: number
-): boolean {
-  const roomPoly = polygonOf(room.vertices, room.holes ?? []);
-  return shafts.some(
-    (shaft) =>
-      intersectionAreaM2(roomPoly, polygonOf(shaft.vertices)) > AREA_TOLERANCE_M2 ||
-      intersectionAreaM2(roomPoly, shaftCutbackPolygon(shaft.vertices, thickness)) >
-        AREA_TOLERANCE_M2
-  );
 }

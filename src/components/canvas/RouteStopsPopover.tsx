@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
+  Droplets,
   GitFork,
   GripVertical,
   Lightbulb,
@@ -51,9 +52,10 @@ interface DragSource {
 const CARD_WIDTH = 326;
 
 function deviceIcon(type: DeviceType) {
-  if (type === 'light_ceiling') return Lightbulb;
-  if (type === 'switch_1k' || type === 'switch_2k') return ToggleLeft;
-  return Plug;
+  const entry = DEVICE_CATALOG[type];
+  if (entry.group === 'light') return Lightbulb;
+  if (entry.group === 'switch') return ToggleLeft;
+  return entry.ipRating !== 'IP20' ? Droplets : Plug;
 }
 
 function stopMeta(

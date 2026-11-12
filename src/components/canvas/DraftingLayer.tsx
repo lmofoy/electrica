@@ -10,7 +10,6 @@ interface DraftingLayerProps {
   activeSnap: SnapResult;
   zoom: number;
   isApartmentTool: boolean;
-  isShaftTool: boolean;
   isOpeningTool: boolean;
   isPartitionTool: boolean;
 }
@@ -22,7 +21,6 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   activeSnap,
   zoom,
   isApartmentTool,
-  isShaftTool,
   isOpeningTool,
   isPartitionTool,
 }) => {
@@ -75,8 +73,10 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         {/* Уровень 3: Стена (Edge Snap) — Ромб / Перпендикуляр */}
         {snapType === 'wall_edge' && (
           <Rect
-            x={-6 / zoom}
-            y={-6 / zoom}
+            x={0}
+            y={0}
+            offsetX={6 / zoom}
+            offsetY={6 / zoom}
             width={12 / zoom}
             height={12 / zoom}
             rotation={45}
@@ -222,7 +222,6 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
 
   let colorPrimary = '#38bdf8'; // Комнаты - голубой
   if (isApartmentTool) colorPrimary = '#fbbf24'; // Квартира - золотистый
-  if (isShaftTool) colorPrimary = '#ef4444'; // Шахта - красный
   if (isOpeningTool) colorPrimary = '#a855f7'; // Проем - фиолетовый
   if (isPartitionTool) colorPrimary = '#94a3b8'; // Перегородка - серый
 

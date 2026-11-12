@@ -250,28 +250,6 @@ export function splitRoomByPartition(
   return parts;
 }
 
-export function subtractShaftFromRoom(
-  roomVertices: Point2D[],
-  shaftVertices: Point2D[]
-): Point2D[][] {
-  try {
-    const poly1: Polygon = [pointsToRing(roomVertices)];
-    const poly2: Polygon = [pointsToRing(shaftVertices)];
-    const result = polygonClipping.difference(poly1, poly2);
-
-    const resultingPolygons: Point2D[][] = [];
-    for (const multiPoly of result) {
-      if (multiPoly.length > 0) {
-        resultingPolygons.push(ringToPoints(multiPoly[0]));
-      }
-    }
-    return resultingPolygons;
-  } catch (err) {
-    console.error('Ошибка вычитания шахты:', err);
-    return [roomVertices];
-  }
-}
-
 export interface BoundaryResult {
   vertices: Point2D[];
   holes: Point2D[][];
@@ -310,53 +288,6 @@ export function unionApartmentBoundary(
     };
   } catch (err) {
     console.error('Ошибка объединения контура квартиры:', err);
-    return { vertices: existingVertices, holes: existingHoles, success: false, error: 'Критическая ошибка геометрии.' };
-  }
-}
-
-export function differenceApartmentBoundary(
-  existingVertices: Point2D[],
-  existingHoles: Point2D[][],
-  cutoutVertices: Point2D[]
-): BoundaryResult {
-  try {
-    const poly1: Polygon = [
-      pointsToRing(existingVertices),
-      ...existingHoles.map((hole) => pointsToRing(hole)),
-    ];
-    const poly2: Polygon = [pointsToRing(cutoutVertices)];
-
-    const intersection = polygonClipping.intersection(poly1, poly2);
-    if (intersection.length === 0) {
-      return {
-        vertices: existingVertices,
-        holes: existingHoles,
-        success: false,
-        error: 'Шахта должна находиться внутри контура квартиры.',
-      };
-    }
-
-    const result = polygonClipping.difference(poly1, poly2);
-    if (result.length === 0) {
-      return { vertices: existingVertices, holes: existingHoles, success: false, error: 'Вычитание удалило весь контур.' };
-    }
-    if (result.length > 1) {
-      return {
-        vertices: existingVertices,
-        holes: existingHoles,
-        success: false,
-        error: 'Область разрезает квартиру на части. Уменьшите вырез или прижмите его к краю.',
-      };
-    }
-
-    const [outer, ...holes] = result[0];
-    return {
-      vertices: ringToPoints(outer),
-      holes: holes.map((hole) => ringToPoints(hole)),
-      success: true,
-    };
-  } catch (err) {
-    console.error('Ошибка вычитания контура квартиры:', err);
     return { vertices: existingVertices, holes: existingHoles, success: false, error: 'Критическая ошибка геометрии.' };
   }
 }

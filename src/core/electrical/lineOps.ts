@@ -18,6 +18,7 @@ import {
   linePurposeFor,
   recalculateLine,
 } from './panel';
+import { DEVICE_CATALOG } from './devices';
 
 // Операции над составом линий. Прибор принадлежит ровно одной линии,
 // единственный источник истины — panel.lines[].deviceIds.
@@ -474,7 +475,7 @@ export interface LineCompositionWarning {
 }
 
 function isLightingDevice(device: ElectricalDevice): boolean {
-  return device.type === 'light_ceiling' || device.type.startsWith('switch_');
+  return DEVICE_CATALOG[device.type]?.suggestedPurpose === 'lighting';
 }
 
 // Предупреждения по фактическому составу линий: смешение света и розеток,
@@ -506,7 +507,7 @@ export function collectLineCompositionWarnings(
     }
 
     const wetCount = lineDevices.filter(
-      (device) => device.type === 'socket_wet'
+      (device) => DEVICE_CATALOG[device.type]?.suggestedPurpose === 'wet'
     ).length;
     if (wetCount > 0) {
       const ownRcdOk =

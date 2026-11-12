@@ -292,7 +292,6 @@ export const Sidebar: React.FC = () => {
     rooms,
     walls,
     nodes,
-    shafts,
     openings,
     freePartitions,
     devices,
@@ -377,9 +376,9 @@ export const Sidebar: React.FC = () => {
   const autoFloors = useMemo(
     () =>
       boundaryMode === 'auto'
-        ? computeAutoFloors(rooms, shafts, freePartitions, wallThicknessMm)
+        ? computeAutoFloors(rooms, freePartitions, wallThicknessMm)
         : [],
-    [boundaryMode, rooms, shafts, freePartitions, wallThicknessMm]
+    [boundaryMode, rooms, freePartitions, wallThicknessMm]
   );
 
   const autoFloorAreaByRoom = useMemo(() => {
@@ -459,7 +458,7 @@ export const Sidebar: React.FC = () => {
             ? rooms.length > 0 && (
                 <button
                   onClick={() => {
-                    if (confirm('Удалить все комнаты, шахты, проёмы и перегородки?')) {
+                    if (confirm('Удалить все комнаты, проёмы и перегородки?')) {
                       deleteApartment();
                     }
                   }}
@@ -498,7 +497,6 @@ export const Sidebar: React.FC = () => {
                 </div>
                 <div className="text-[10px] text-slate-500 mt-0.5">
                   Толщина стен: {settings.defaultWallThicknessMm} мм
-                  {shafts.length > 0 && ` • Шахт: ${shafts.length}`}
                 </div>
               </div>
               <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">

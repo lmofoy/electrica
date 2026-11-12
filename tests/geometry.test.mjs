@@ -91,46 +91,21 @@ try {
   });
 
   // ---- shared snapshot builder (auto layout nodes/walls/apartment) ----
-  function buildSnapshot(skew, { manual = false, shafts = [] } = {}) {
+  function buildSnapshot(skew, { manual = false } = {}) {
     const room = {
       id: ROOM_ID, name: 'Room', type: 'living', nodeIds: [],
       vertices: roomRing(skew, false), holes: [], color: '#888', wallThicknessMm: 120,
     };
-    const layout = buildAutoLayout([room], shafts, [], [], settings.defaultWallThicknessMm);
+    const layout = buildAutoLayout([room], [], [], settings.defaultWallThicknessMm);
     return {
       version: 1, savedAt: new Date(0).toISOString(),
       boundaryMode: manual ? 'manual' : 'auto',
       settings: clone(settings), apartment: clone(layout.apartment),
       rooms: clone(layout.rooms ?? [room]), nodes: clone(layout.nodes), walls: clone(layout.walls),
-      openings: [], freePartitions: [], shafts: clone(shafts),
+      openings: [], freePartitions: [],
       devices: [], panel: null,
     };
   }
-
-  // ---- #5: shafts can be deleted; room touching a shaft becomes removable ----
-  await test('#5 deleteShaft removes the shaft, keeps the room, recomputes layout', () => {
-    const shaft = { id: 'shaft-1', vertices: [{ x: 1000, y: 1000 }, { x: 1500, y: 1000 }, { x: 1500, y: 1500 }, { x: 1000, y: 1500 }] };
-    state().loadProject(buildSnapshot(0, { shafts: [shaft] }));
-    assert.equal(state().shafts.length, 1, 'shaft loaded');
-    assert.equal(state().rooms.length, 1, 'room loaded');
-    state().setSelection({ kind: 'shaft', id: 'shaft-1' });
-    state().deleteShaft('shaft-1');
-    assert.equal(state().shafts.length, 0, 'shaft removed');
-    assert.equal(state().rooms.length, 1, 'room preserved');
-    assert.equal(state().selection, null, 'selection cleared after deleting selected shaft');
-    assert.ok(state().walls.length > 0, 'walls recomputed');
-  });
-
-  await test('#5 deleteShaft is undoable', () => {
-    const shaft = { id: 'shaft-2', vertices: [{ x: 1000, y: 1000 }, { x: 1500, y: 1000 }, { x: 1500, y: 1500 }, { x: 1000, y: 1500 }] };
-    state().loadProject(buildSnapshot(0, { shafts: [shaft] }));
-    const past = store.temporal.getState().pastStates.length;
-    state().deleteShaft('shaft-2');
-    assert.equal(state().shafts.length, 0);
-    assert.ok(store.temporal.getState().pastStates.length > past, 'history grew');
-    store.temporal.getState().undo();
-    assert.equal(state().shafts.length, 1, 'undo restored the shaft');
-  });
 
   // ---- #6: overlapping openings on the same wall are rejected ----
   function wallPoints() {

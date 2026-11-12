@@ -12,7 +12,7 @@ import type {
   Wall,
 } from '../../types';
 import { distance, isPointInPolygon, projectPointOnSegment } from '../geometry/math';
-import { resolveDevice, type ResolvedDevice } from './devices';
+import { DEVICE_CATALOG, resolveDevice, type ResolvedDevice } from './devices';
 import {
   MANUAL_ROUTE_ANCHOR_TOLERANCE_MM,
   manualRouteAnchorNode,
@@ -523,7 +523,7 @@ function deviceMountHeightMm(
   resolved: ResolvedDevice,
   settings: ProjectSettings
 ): number {
-  return resolved.device.type === 'light_ceiling'
+  return DEVICE_CATALOG[resolved.device.type]?.mounting === 'ceiling'
     ? settings.ceilingHeightMm
     : resolved.device.heightFromFloorMm;
 }

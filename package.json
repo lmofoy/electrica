@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "node tests/waypoints.test.mjs && node tests/geometry.test.mjs && node tests/manualRoute.test.mjs && node tests/manualRouteStore.test.mjs && node tests/routeStops.test.mjs && node tests/panelSchematic.test.mjs && node tests/panelSheet.test.mjs && node tests/panelCalculation.test.mjs",
+    "test": "node tests/waypoints.test.mjs && node tests/geometry.test.mjs && node tests/manualRoute.test.mjs && node tests/manualRouteStore.test.mjs && node tests/routeStops.test.mjs && node tests/panelSchematic.test.mjs && node tests/panelSheet.test.mjs && node tests/panelCalculation.test.mjs && node tests/deviceCatalog.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

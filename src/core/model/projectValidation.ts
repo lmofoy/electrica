@@ -178,7 +178,7 @@ export function validateProjectSnapshot(
     !settings(value.settings, defaults) ||
     (value.boundaryMode !== undefined && !oneOf(value.boundaryMode, ['auto', 'manual'])) ||
     !record(value.nodes) || !entities(value.rooms) || !entities(value.walls) ||
-    !entities(value.openings) || !entities(value.freePartitions) || !entities(value.shafts) ||
+    !entities(value.openings) || !entities(value.freePartitions) ||
     (value.devices !== undefined && (!entities(value.devices) || !value.devices.every(device)))) {
     return false;
   }
@@ -201,7 +201,6 @@ export function validateProjectSnapshot(
     typeof apartment.name !== 'string' || !ring(apartment.vertices) || !holes(apartment.holes) ||
     !positive(apartment.exteriorWallThicknessMm) || !refs(apartment.nodeIds, nodeIds))) return false;
 
-  for (const shaft of value.shafts) if (!ring(shaft.vertices)) return false;
   for (const partition of value.freePartitions) {
     if (!segment(partition.p1, partition.p2) || !positive(partition.thicknessMm) ||
       !id(partition.roomId) || !roomIds.has(partition.roomId)) return false;

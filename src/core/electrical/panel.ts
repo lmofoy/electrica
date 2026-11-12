@@ -14,7 +14,7 @@ import type {
   RoomType,
   RoomZone,
 } from '../../types';
-import { resolveDevice, type DevicePose } from './devices';
+import { DEVICE_CATALOG, resolveDevice, type DevicePose } from './devices';
 import { sanitizeManualRoute } from './manualRoute';
 import {
   CABLE_BRAND,
@@ -185,11 +185,13 @@ export function roomPurposeFor(room: RoomZone, hasWetSocket: boolean): LinePurpo
 }
 
 export function linePurposeFor(device: ElectricalDevice, room: RoomZone): LinePurpose {
-  const isLighting =
-    device.type === 'light_ceiling' || device.type.startsWith('switch_');
-  return isLighting
-    ? 'lighting'
-    : roomPurposeFor(room, device.type === 'socket_wet');
+  const entry = DEVICE_CATALOG[device.type];
+  if (!entry) return roomPurposeFor(room, false);
+  if (entry.suggestedPurpose === 'lighting') return 'lighting';
+  if (entry.requiresDedicatedLine && entry.suggestedPurpose) {
+    return entry.suggestedPurpose;
+  }
+  return roomPurposeFor(room, entry.suggestedPurpose === 'wet');
 }
 
 

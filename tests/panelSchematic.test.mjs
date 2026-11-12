@@ -436,7 +436,6 @@ try {
       ],
       openings: [],
       freePartitions: [],
-      shafts: [],
       devices: [],
       panel: panel({
         lines: [line('a', 'sockets')],

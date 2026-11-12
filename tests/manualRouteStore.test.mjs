@@ -101,7 +101,7 @@ try {
       id: ROOM_ID, name: 'Route test', type: 'living', nodeIds: [],
       vertices, holes: [], color: '#888888', wallThicknessMm: 120,
     };
-    const layout = buildAutoLayout([room], [], [], [], settings.defaultWallThicknessMm);
+    const layout = buildAutoLayout([room], [], [], settings.defaultWallThicknessMm);
     function anchor(edge, fraction) {
       const a = vertices[edge];
       const b = vertices[(edge + 1) % vertices.length];
@@ -136,7 +136,7 @@ try {
       version: 1, savedAt: new Date(0).toISOString(), boundaryMode: 'auto',
       settings: clone(f.input.settings), apartment: clone(f.layout.apartment),
       rooms: clone(f.input.rooms), nodes: clone(f.input.nodes), walls: clone(f.input.walls),
-      openings: [], freePartitions: [], shafts: [],
+      openings: [], freePartitions: [],
       devices: clone(f.input.devices), panel: clone(f.input.panel),
     };
   }

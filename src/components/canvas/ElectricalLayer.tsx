@@ -22,14 +22,18 @@ interface ElectricalLayerProps {
   assignLineId: string | null;
 }
 
-const DEVICE_COLORS: Record<DeviceType, string> = {
-  socket_single: '#38bdf8',
-  socket_double: '#7dd3fc',
-  socket_wet: '#22d3ee',
-  switch_1k: '#fbbf24',
-  switch_2k: '#f59e0b',
-  light_ceiling: '#fde047',
+const GROUP_COLORS: Record<'socket' | 'switch' | 'light', string> = {
+  socket: '#38bdf8',
+  switch: '#fbbf24',
+  light: '#fde047',
 };
+
+function deviceColor(type: DeviceType): string {
+  const entry = DEVICE_CATALOG[type];
+  if (entry.connection === 'provision') return '#a78bfa';
+  if (entry.group === 'socket' && entry.ipRating !== 'IP20') return '#22d3ee';
+  return GROUP_COLORS[entry.group];
+}
 
 const DeviceGlyph: React.FC<{
   type: DeviceType;
@@ -37,9 +41,191 @@ const DeviceGlyph: React.FC<{
   color: string;
   highlighted: boolean;
 }> = ({ type, zoom, color, highlighted }) => {
+  const entry = DEVICE_CATALOG[type];
+  const glyph = entry.glyph;
   const strokeWidth = 1.8 / zoom;
+  const wet = entry.ipRating !== 'IP20';
 
-  if (type === 'light_ceiling') {
+  if (glyph === 'socket') {
+    // Полукруг на стене + штыри внутрь комнаты: число пар = число гнёзд.
+    const r = 7 / zoom;
+    const centers =
+      entry.outlets === 3
+        ? [-6 / zoom, 0, 6 / zoom]
+        : entry.outlets === 2
+          ? [-3.75 / zoom, 3.75 / zoom]
+          : [0];
+    return (
+      <Group>
+        <Shape
+          sceneFunc={(ctx, shape) => {
+            ctx.beginPath();
+            ctx.arc(0, 0, r, Math.PI, 2 * Math.PI, false);
+            ctx.closePath();
+            ctx.fillStrokeShape(shape);
+          }}
+          fill="#0f172a"
+          stroke={color}
+          strokeWidth={strokeWidth}
+        />
+        {centers.flatMap((cx) =>
+          [-1.6 / zoom, 1.6 / zoom].map((dx) => (
+            <Line
+              key={`prong-${cx}-${dx}`}
+              points={[cx + dx, -r + 1 / zoom, cx + dx, -r - 5 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+          ))
+        )}
+        {entry.connection === 'terminal' && (
+          <Rect
+            x={-2.6 / zoom}
+            y={1 / zoom}
+            width={5.2 / zoom}
+            height={2.4 / zoom}
+            cornerRadius={0.6 / zoom}
+            fill={color}
+          />
+        )}
+        {wet && <Circle x={0} y={-r * 0.45} radius={1.6 / zoom} fill={color} />}
+      </Group>
+    );
+  }
+
+  if (
+    glyph === 'switch_key' ||
+    glyph === 'switch_pass' ||
+    glyph === 'switch_cross' ||
+    glyph === 'switch_dimmer' ||
+    glyph === 'switch_motion' ||
+    glyph === 'switch_presence' ||
+    glyph === 'switch_provision'
+  ) {
+    const stem = 4 / zoom;
+    const r = 4.5 / zoom;
+    const cy = -stem - r;
+    const keys = entry.keys ?? 1;
+    return (
+      <Group>
+        <Line points={[0, 0, 0, -stem]} stroke={color} strokeWidth={strokeWidth} />
+        <Circle
+          x={0}
+          y={cy}
+          radius={r}
+          fill="#0f172a"
+          stroke={color}
+          strokeWidth={strokeWidth}
+          dash={glyph === 'switch_provision' ? [2.5 / zoom, 2 / zoom] : undefined}
+        />
+        {glyph === 'switch_key' &&
+          Array.from({ length: keys }, (_, index) => {
+            const offset = ((index - (keys - 1) / 2) * 3.2) / zoom;
+            return (
+              <Line
+                key={`key-${index}`}
+                points={[
+                  offset - 1.6 / zoom,
+                  cy + 1.5 / zoom,
+                  offset + 2.2 / zoom,
+                  cy - 3 / zoom,
+                ]}
+                stroke={color}
+                strokeWidth={strokeWidth}
+              />
+            );
+          })}
+        {glyph === 'switch_pass' && (
+          <>
+            <Line
+              points={[-3 / zoom, cy + 3 / zoom, 3 / zoom, cy - 3 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Line
+              points={[-3 / zoom, cy + 3 / zoom, -1.2 / zoom, cy + 3 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Line
+              points={[-3 / zoom, cy + 3 / zoom, -3 / zoom, cy + 1.2 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Line
+              points={[3 / zoom, cy - 3 / zoom, 1.2 / zoom, cy - 3 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Line
+              points={[3 / zoom, cy - 3 / zoom, 3 / zoom, cy - 1.2 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+          </>
+        )}
+        {glyph === 'switch_cross' && (
+          <>
+            <Line
+              points={[-3 / zoom, cy - 3 / zoom, 3 / zoom, cy + 3 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Line
+              points={[-3 / zoom, cy + 3 / zoom, 3 / zoom, cy - 3 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+          </>
+        )}
+        {glyph === 'switch_dimmer' && (
+          <>
+            <Line
+              points={[-3 / zoom, cy + 3 / zoom, 3 / zoom, cy - 3 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Shape
+              sceneFunc={(ctx, shape) => {
+                ctx.beginPath();
+                ctx.moveTo(-1 / zoom, cy + 3.4 / zoom);
+                ctx.lineTo(3 / zoom, cy + 3.4 / zoom);
+                ctx.lineTo(3 / zoom, cy - 0.6 / zoom);
+                ctx.closePath();
+                ctx.fillStrokeShape(shape);
+              }}
+              fill={color}
+              stroke={color}
+              strokeWidth={1 / zoom}
+            />
+          </>
+        )}
+        {(glyph === 'switch_motion' || glyph === 'switch_presence') && (
+          <Shape
+            sceneFunc={(ctx, shape) => {
+              ctx.beginPath();
+              ctx.arc(0, cy, r + 2.5 / zoom, -Math.PI * 0.15, Math.PI * 0.65);
+              ctx.strokeShape(shape);
+            }}
+            stroke={color}
+            strokeWidth={strokeWidth}
+            fillEnabled={false}
+          />
+        )}
+        {(glyph === 'switch_presence' || glyph === 'switch_provision') && (
+          <Circle x={0} y={cy} radius={1.4 / zoom} fill={color} />
+        )}
+      </Group>
+    );
+  }
+
+  if (
+    glyph === 'light_ceiling' ||
+    glyph === 'light_surface' ||
+    glyph === 'light_recessed' ||
+    glyph === 'light_outdoor' ||
+    glyph === 'light_provision'
+  ) {
     const r = 8 / zoom;
     return (
       <Group>
@@ -48,70 +234,118 @@ const DeviceGlyph: React.FC<{
           fill="#0f172a"
           stroke={color}
           strokeWidth={strokeWidth}
+          dash={glyph === 'light_provision' ? [3 / zoom, 2 / zoom] : undefined}
           shadowColor={color}
           shadowBlur={highlighted ? 16 / zoom : 0}
         />
-        <Line points={[-r * 0.7, -r * 0.7, r * 0.7, r * 0.7]} stroke={color} strokeWidth={strokeWidth} />
-        <Line points={[-r * 0.7, r * 0.7, r * 0.7, -r * 0.7]} stroke={color} strokeWidth={strokeWidth} />
+        {glyph === 'light_ceiling' && (
+          <>
+            <Line points={[-r * 0.7, -r * 0.7, r * 0.7, r * 0.7]} stroke={color} strokeWidth={strokeWidth} />
+            <Line points={[-r * 0.7, r * 0.7, r * 0.7, -r * 0.7]} stroke={color} strokeWidth={strokeWidth} />
+          </>
+        )}
+        {glyph === 'light_surface' && (
+          <Line points={[-r * 0.8, -r * 0.8, r * 0.8, -r * 0.8]} stroke={color} strokeWidth={strokeWidth} />
+        )}
+        {glyph === 'light_recessed' && (
+          <Circle
+            radius={r * 0.52}
+            stroke={color}
+            strokeWidth={strokeWidth}
+            dash={[2 / zoom, 1.5 / zoom]}
+          />
+        )}
+        {glyph === 'light_outdoor' &&
+          Array.from({ length: 8 }, (_, index) => {
+            const angle = (Math.PI / 4) * index;
+            return (
+              <Line
+                key={`ray-${index}`}
+                points={[
+                  Math.cos(angle) * r * 1.15,
+                  Math.sin(angle) * r * 1.15,
+                  Math.cos(angle) * r * 1.6,
+                  Math.sin(angle) * r * 1.6,
+                ]}
+                stroke={color}
+                strokeWidth={strokeWidth}
+              />
+            );
+          })}
+        {glyph === 'light_provision' && <Circle radius={1.6 / zoom} fill={color} />}
       </Group>
     );
   }
 
-  if (type === 'switch_1k' || type === 'switch_2k') {
-    const stem = 4 / zoom;
+  if (glyph === 'light_sconce' || glyph === 'light_wall_wet') {
+    const stem = 3 / zoom;
     const r = 4.5 / zoom;
     return (
       <Group>
         <Line points={[0, 0, 0, -stem]} stroke={color} strokeWidth={strokeWidth} />
-        <Circle x={0} y={-stem - r} radius={r} fill="#0f172a" stroke={color} strokeWidth={strokeWidth} />
-        <Line
-          points={[0, -stem - r, 7 / zoom, -stem - r - 7 / zoom]}
+        <Shape
+          sceneFunc={(ctx, shape) => {
+            ctx.beginPath();
+            ctx.arc(0, -stem, r, Math.PI, 2 * Math.PI, false);
+            ctx.closePath();
+            ctx.fillStrokeShape(shape);
+          }}
+          fill="#0f172a"
           stroke={color}
           strokeWidth={strokeWidth}
         />
-        {type === 'switch_2k' && (
-          <Line
-            points={[3 / zoom, -stem - r - 2 / zoom, 9 / zoom, -stem - r - 9 / zoom]}
-            stroke={color}
-            strokeWidth={strokeWidth}
-          />
+        <Line
+          points={[-r * 0.6, -stem - r * 0.6, -r * 1.3, -stem - r * 1.3]}
+          stroke={color}
+          strokeWidth={strokeWidth}
+        />
+        <Line
+          points={[r * 0.6, -stem - r * 0.6, r * 1.3, -stem - r * 1.3]}
+          stroke={color}
+          strokeWidth={strokeWidth}
+        />
+        {glyph === 'light_wall_wet' && (
+          <Circle x={0} y={-stem - r * 0.45} radius={1.5 / zoom} fill={color} />
         )}
       </Group>
     );
   }
 
-  // Розетки: полукруг на стене + штыри внутрь комнаты
-  const r = 7 / zoom;
-  const prongY = -r - 5 / zoom;
-  const prongPairs =
-    type === 'socket_double'
-      ? [-4.5 / zoom, -1.5 / zoom, 1.5 / zoom, 4.5 / zoom]
-      : [-2.5 / zoom, 2.5 / zoom];
-
-  return (
-    <Group>
-      <Shape
-        sceneFunc={(ctx, shape) => {
-          ctx.beginPath();
-          ctx.arc(0, 0, r, Math.PI, 2 * Math.PI, false);
-          ctx.closePath();
-          ctx.fillStrokeShape(shape);
-        }}
-        fill="#0f172a"
-        stroke={color}
-        strokeWidth={strokeWidth}
-      />
-      {prongPairs.map((x) => (
+  if (glyph === 'light_track') {
+    const half = 8 / zoom;
+    return (
+      <Group>
         <Line
-          key={`prong-${x}`}
-          points={[x, -r + 1 / zoom, x, prongY]}
+          points={[-half, -6 / zoom, half, -6 / zoom]}
           stroke={color}
           strokeWidth={strokeWidth}
         />
-      ))}
-      {type === 'socket_wet' && (
-        <Circle x={0} y={-r * 0.45} radius={1.6 / zoom} fill={color} />
-      )}
+        {[-0.6, 0, 0.6].map((ratio) => (
+          <Group key={`track-${ratio}`}>
+            <Line
+              points={[ratio * half, -6 / zoom, ratio * half, -2.5 / zoom]}
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
+            <Circle x={ratio * half} y={-2.5 / zoom} radius={1.2 / zoom} fill={color} />
+          </Group>
+        ))}
+      </Group>
+    );
+  }
+
+  // Светодиодная лента — единственный оставшийся вариант каталога.
+  const half = 9 / zoom;
+  return (
+    <Group>
+      <Line
+        points={[-half, 0, half, 0]}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        dash={[3 / zoom, 2 / zoom]}
+      />
+      <Line points={[-half, -2 / zoom, -half, 2 / zoom]} stroke={color} strokeWidth={strokeWidth} />
+      <Line points={[half, -2 / zoom, half, 2 / zoom]} stroke={color} strokeWidth={strokeWidth} />
     </Group>
   );
 };
@@ -125,7 +359,7 @@ const DeviceSymbol: React.FC<{
   dimmed: boolean;
   assignHint: boolean;
 }> = ({ resolved, zoom, selected, lineColor, lineHighlighted, dimmed, assignHint }) => {
-  const color = DEVICE_COLORS[resolved.device.type];
+  const color = deviceColor(resolved.device.type);
 
   return (
     <Group>

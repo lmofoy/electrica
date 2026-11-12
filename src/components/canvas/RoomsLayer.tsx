@@ -1,10 +1,9 @@
 import React, { useMemo } from 'react';
-import { Layer, Line, Text, Group, Circle, Shape } from 'react-konva';
+import { Layer, Text, Group, Circle, Shape } from 'react-konva';
 import type {
   ApartmentBoundary,
   BoundaryMode,
   RoomZone,
-  ShaftCutout,
   Point2D,
 } from '../../types';
 import type { AutoLayout } from '../../core/geometry/autoLayout';
@@ -13,11 +12,8 @@ import { calculateCentroid, calculateNetAreaM2 } from '../../core/geometry/math'
 interface RoomsLayerProps {
   apartment: ApartmentBoundary | null;
   rooms: RoomZone[];
-  shafts: ShaftCutout[];
   selectedRoomId: string | null;
   onSelectRoom: (id: string) => void;
-  selectedShaftId: string | null;
-  onSelectShaft: (id: string) => void;
   zoom: number;
   boundaryMode: BoundaryMode;
   autoLayout: AutoLayout | null;
@@ -28,11 +24,8 @@ interface RoomsLayerProps {
 export const RoomsLayer: React.FC<RoomsLayerProps> = ({
   apartment,
   rooms,
-  shafts,
   selectedRoomId,
   onSelectRoom,
-  selectedShaftId,
-  onSelectShaft,
   zoom,
   boundaryMode,
   autoLayout,
@@ -51,7 +44,7 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
   return (
     <Layer listening={listening}>
       {grid}
-      {/* 1. Общий пол квартиры — с вырезами шахт через evenodd */}
+      {/* 1. Общий пол квартиры — с внутренними вырезами через evenodd */}
       {apartment && apartment.vertices.length >= 3 && (
         <Shape
           fill="#1e293b"
@@ -161,58 +154,6 @@ export const RoomsLayer: React.FC<RoomsLayerProps> = ({
                 shadowBlur={8 / zoom}
               />
             </Group>
-          </Group>
-        );
-      })}
-
-      {/* 3. Шахты и монолитные колонны */}
-      {shafts.map((shaft) => {
-        const flatPoints = shaft.vertices.flatMap((v) => [v.x, v.y]);
-        const centroid = calculateCentroid(shaft.vertices);
-        const isSelected = shaft.id === selectedShaftId;
-
-        return (
-          <Group
-            key={shaft.id}
-            onClick={(event) => { if (event.evt.button === 0) onSelectShaft(shaft.id); }}
-            onTap={() => onSelectShaft(shaft.id)}
-          >
-            <Line
-              points={flatPoints}
-              closed
-              fill={isSelected ? '#7f1d1d' : '#090d16'}
-              stroke={isSelected ? '#fca5a5' : '#ef4444'}
-              strokeWidth={(isSelected ? 3 : 2) / zoom}
-              dash={[8 / zoom, 4 / zoom]}
-            />
-            {shaft.vertices.length >= 4 && (
-              <>
-                <Line
-                  points={[shaft.vertices[0].x, shaft.vertices[0].y, shaft.vertices[2].x, shaft.vertices[2].y]}
-                  stroke="#ef4444"
-                  strokeWidth={1 / zoom}
-                  opacity={0.6}
-                />
-                <Line
-                  points={[shaft.vertices[1].x, shaft.vertices[1].y, shaft.vertices[3].x, shaft.vertices[3].y]}
-                  stroke="#ef4444"
-                  strokeWidth={1 / zoom}
-                  opacity={0.6}
-                />
-              </>
-            )}
-            <Text
-              x={centroid.x}
-              y={centroid.y}
-              text="ШАХТА"
-              fontSize={10 / zoom}
-              fontStyle="bold"
-              fill="#ef4444"
-              align="center"
-              offsetX={30 / zoom}
-              offsetY={5 / zoom}
-              width={60 / zoom}
-            />
           </Group>
         );
       })}

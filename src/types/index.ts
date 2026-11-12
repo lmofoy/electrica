@@ -39,7 +39,7 @@ export interface ApartmentBoundary {
   name: string;
   nodeIds: string[]; // замкнутая цепочка узлов
   vertices: Point2D[]; // внутренние чистовые границы квартиры в мм
-  holes: Point2D[][]; // внутренние вырезы (шахты, колонны)
+  holes: Point2D[][]; // внутренние вырезы контура
   exteriorWallThicknessMm: number; // толщина наружных стен (250 мм)
 }
 
@@ -50,14 +50,9 @@ export interface RoomZone {
   type: RoomType;
   nodeIds: string[]; // замкнутый контур узлов: [node1, node2, node3, ...]
   vertices: Point2D[]; // координаты вершин чистового пола в мм
-  holes?: Point2D[][]; // вырезы внутри комнаты (шахты, колонны)
+  holes?: Point2D[][]; // вырезы внутри комнаты
   color: string;
   wallThicknessMm: number; // базовая толщина стен
-}
-
-export interface ShaftCutout {
-  id: string;
-  vertices: Point2D[]; // контур выреза вентшахты или несущей колонны в мм
 }
 
 export interface ProjectSettings {
@@ -75,7 +70,6 @@ export type CADTool =
   | 'pan'
   | 'draw_apartment' // очерчивание контура квартиры
   | 'draw_room'      // очерчивание комнат внутри квартиры
-  | 'draw_shaft'     // вырезание шахт и колонн
   | 'draw_opening'   // установка дверей и окон
   | 'draw_partition' // рисование одиночных перегородок
   | 'place_device'   // расстановка электроточек
@@ -89,7 +83,6 @@ export type Selection =
   | { kind: 'room'; id: string }
   | { kind: 'opening'; id: string }
   | { kind: 'partition'; id: string }
-  | { kind: 'shaft'; id: string }
   | { kind: 'device'; id: string }
   | { kind: 'panel'; id: string };
 
@@ -116,7 +109,6 @@ export interface FreePartition {
 }
 
 export type DrawingStage = 'boundary' | 'rooms';
-export type BoundaryTool = 'add' | 'subtract';
 export type BoundaryMode = 'auto' | 'manual';
 
 export interface ProjectSnapshot {
@@ -130,7 +122,6 @@ export interface ProjectSnapshot {
   walls: Wall[];
   openings: Opening[];
   freePartitions: FreePartition[];
-  shafts: ShaftCutout[];
   devices?: ElectricalDevice[]; // отсутствует в проектах до этапа «Электрика»
   panel?: ElectricalPanel | null; // отсутствует в проектах до этапа «Щиток»
 }
@@ -173,11 +164,38 @@ export interface SnapResult {
 // -------------------------------------------------------------
 export type DeviceType =
   | 'socket_single'
-  | 'socket_double'
   | 'socket_wet'
+  | 'socket_outdoor'
+  | 'socket_double'
+  | 'socket_double_wet'
+  | 'socket_double_outdoor'
+  | 'socket_double_usb'
+  | 'socket_triple'
+  | 'socket_triple_wet'
+  | 'socket_hob'
+  | 'socket_oven'
+  | 'socket_appliance'
+  | 'socket_fridge'
   | 'switch_1k'
   | 'switch_2k'
-  | 'light_ceiling';
+  | 'switch_3k'
+  | 'switch_pass_1k'
+  | 'switch_pass_2k'
+  | 'switch_cross'
+  | 'switch_dimmer'
+  | 'switch_motion'
+  | 'switch_presence'
+  | 'switch_wet'
+  | 'switch_provision'
+  | 'light_ceiling'
+  | 'light_surface'
+  | 'light_recessed'
+  | 'light_sconce'
+  | 'light_wall_wet'
+  | 'light_track'
+  | 'light_strip'
+  | 'light_outdoor'
+  | 'light_provision';
 
 // Грань комнаты: edgeIndex — индекс ребра vertices[i] → vertices[i+1]
 export interface DeviceRoomEdgeAnchor {

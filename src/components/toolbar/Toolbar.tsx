@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   MousePointer,
   Hand,
@@ -11,7 +11,6 @@ import {
   Trash2,
   Settings,
   Plus,
-  Minus,
   Check,
   Lock,
   Eye,
@@ -22,35 +21,40 @@ import {
   Save,
   Upload,
   Plug,
-  Plug2,
-  Droplets,
-  ToggleLeft,
-  SlidersHorizontal,
-  Lightbulb,
   Repeat2,
   Layers,
   CircuitBoard,
+  ChevronDown,
+  X,
 } from 'lucide-react';
 import {
   getProjectSnapshot,
   isProjectSnapshot,
   useProjectStore,
 } from '../../store/useProjectStore';
-import { DEVICE_CATALOG, DEVICE_TYPES } from '../../core/electrical/devices';
+import {
+  DEVICE_CATALOG,
+  DEVICE_CATALOG_TREE,
+  deviceCatalogPath,
+  type DeviceCatalogSectionId,
+} from '../../core/electrical/devices';
+import {
+  loadDeviceUiPreferences,
+  rememberRecentDevice,
+  saveDeviceUiPreferences,
+  toggleFavoriteDevice,
+  type DeviceUiPreferences,
+} from '../../core/electrical/devicePreferences';
+import {
+  DeviceCatalogMenu,
+  DeviceSectionIcon,
+  DeviceTypeIcon,
+} from './DeviceCatalogMenu';
 import type { DeviceType, RoomType } from '../../types';
 
 interface ToolbarProps {
   onOpenSettings: () => void;
 }
-
-const DEVICE_ICONS: Record<DeviceType, React.ReactNode> = {
-  socket_single: <Plug size={13} />,
-  socket_double: <Plug2 size={13} />,
-  socket_wet: <Droplets size={13} />,
-  switch_1k: <ToggleLeft size={13} />,
-  switch_2k: <SlidersHorizontal size={13} />,
-  light_ceiling: <Lightbulb size={13} />,
-};
 
 export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   const {
@@ -79,8 +83,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
     drawingStage,
     boundaryMode,
     boundaryLocked,
-    activeBoundaryTool,
-    setBoundaryTool,
     setDrawingStage,
     lockBoundary,
     addToast,
@@ -89,6 +91,74 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   } = useProjectStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sectionAnchors = useRef<
+    Partial<Record<DeviceCatalogSectionId, HTMLDivElement | null>>
+  >({});
+  const [devicePreferences, setDevicePreferences] = useState<DeviceUiPreferences>(
+    () => loadDeviceUiPreferences()
+  );
+  const [catalogMenu, setCatalogMenu] = useState<{
+    section: DeviceCatalogSectionId;
+    anchorEl: HTMLElement;
+  } | null>(null);
+
+  const updateDevicePreferences = (
+    update: (current: DeviceUiPreferences) => DeviceUiPreferences
+  ) => {
+    setDevicePreferences((current) => {
+      const next = update(current);
+      saveDeviceUiPreferences(next);
+      return next;
+    });
+  };
+
+  const selectDeviceType = (type: DeviceType) => {
+    setActiveDeviceType(type);
+    updateDevicePreferences((current) => rememberRecentDevice(type, current));
+    setCatalogMenu(null);
+  };
+
+  const toggleFavorite = (type: DeviceType) => {
+    updateDevicePreferences((current) => toggleFavoriteDevice(type, current));
+  };
+
+  const openCatalogMenu = (section: DeviceCatalogSectionId) => {
+    const anchorEl = sectionAnchors.current[section];
+    if (!anchorEl) return;
+    setCatalogMenu({ section, anchorEl });
+  };
+
+  const toggleCatalogMenu = (section: DeviceCatalogSectionId) => {
+    setCatalogMenu((current) => {
+      if (current?.section === section) return null;
+      const anchorEl = sectionAnchors.current[section];
+      return anchorEl ? { section, anchorEl } : null;
+    });
+  };
+
+  const handleDeviceSectionClick = (section: DeviceCatalogSectionId) => {
+    const view = DEVICE_CATALOG_TREE.find(
+      (candidate) => candidate.section.id === section
+    );
+    const leaves = view?.subsections.flatMap((subsection) => subsection.leaves) ?? [];
+    if (leaves.length === 0) {
+      openCatalogMenu(section);
+      return;
+    }
+    const recent = devicePreferences.recentDeviceTypes.find((type) =>
+      leaves.some((leaf) => leaf.type === type)
+    );
+    selectDeviceType(recent ?? leaves[0].type);
+  };
+
+  const activeSectionId =
+    designMode === 'electrical' && activeTool === 'place_device'
+      ? DEVICE_CATALOG[activeDeviceType].section
+      : null;
+  const activeDevicePath =
+    designMode === 'electrical' && activeTool === 'place_device'
+      ? deviceCatalogPath(activeDeviceType)
+      : null;
 
   const handleUndo = () => {
     useProjectStore.temporal.getState().undo();
@@ -167,6 +237,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   ];
 
   return (
+    <>
     <header className="shrink-0 max-h-[40vh] overflow-y-auto bg-slate-900 border-b border-slate-800 px-3 py-2 flex flex-wrap items-center gap-2 justify-between text-slate-200 select-none z-40">
       {/* Логотип */}
       <div className="flex flex-wrap items-center gap-3">
@@ -300,19 +371,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
             </button>
 
             <button
-              onClick={() => setActiveTool('draw_shaft')}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
-                activeTool === 'draw_shaft'
-                  ? 'bg-rose-500 text-white shadow-lg shadow-rose-950/40'
-                  : 'text-rose-400 bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20'
-              }`}
-              title="Вырезать шахту из одной или нескольких комнат"
-            >
-              <Minus size={14} />
-              <span>Шахта</span>
-            </button>
-
-            <button
               onClick={() => setActiveTool('draw_opening')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
                 activeTool === 'draw_opening'
@@ -344,13 +402,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         {boundaryMode === 'manual' && drawingStage === 'boundary' && (
           <>
             <button
-              onClick={() => {
-                setBoundaryTool('add');
-                startApartmentDrawing();
-              }}
+              onClick={() => startApartmentDrawing()}
               disabled={boundaryLocked}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
-                activeTool === 'draw_apartment' && activeBoundaryTool === 'add'
+                activeTool === 'draw_apartment'
                   ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-950/40'
                   : boundaryLocked 
                   ? 'text-slate-600 cursor-not-allowed opacity-50'
@@ -360,25 +415,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
             >
               <Plus size={14} />
               <span>Добавить контур</span>
-            </button>
-
-            <button
-              onClick={() => {
-                setBoundaryTool('subtract');
-                startApartmentDrawing();
-              }}
-              disabled={boundaryLocked || !apartment}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
-                activeTool === 'draw_apartment' && activeBoundaryTool === 'subtract'
-                  ? 'bg-rose-500 text-white shadow-lg shadow-rose-950/40'
-                  : boundaryLocked || !apartment
-                  ? 'text-slate-600 cursor-not-allowed opacity-50'
-                  : 'text-rose-400 bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20'
-              }`}
-              title="Вычесть область из контура (Шахта/Колонна)"
-            >
-              <Minus size={14} />
-              <span>Шахта / Вычитание</span>
             </button>
 
             <div className="w-px h-5 bg-slate-800 mx-1" />
@@ -463,43 +499,121 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
 
         {designMode === 'electrical' && (
           <>
-            <div className="flex items-center gap-1">
-              {DEVICE_TYPES.map((type) => {
-                const catalog = DEVICE_CATALOG[type];
-                const isActive = activeTool === 'place_device' && activeDeviceType === type;
+            <div className="flex flex-wrap items-center gap-1">
+              {DEVICE_CATALOG_TREE.map(({ section, count }) => {
+                const isActive = activeSectionId === section.id;
                 return (
-                  <button
-                    key={type}
-                    onClick={() => setActiveDeviceType(type)}
-                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition ${
+                  <div
+                    key={section.id}
+                    ref={(element) => {
+                      sectionAnchors.current[section.id] = element;
+                    }}
+                    className={`flex items-stretch rounded-lg border transition ${
                       isActive
-                        ? 'bg-sky-500 text-white shadow-lg shadow-sky-950/40'
-                        : 'text-sky-300 bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20'
+                        ? 'border-sky-400 bg-sky-500 text-white shadow-lg shadow-sky-950/40'
+                        : count === 0
+                          ? 'border-slate-700 bg-slate-900/60 text-slate-500'
+                          : 'border-sky-500/20 bg-sky-500/10 text-sky-300'
                     }`}
-                    title={`${catalog.label} · H ${catalog.defaultHeightMm} мм`}
                   >
-                    {DEVICE_ICONS[type]}
-                    <span>{catalog.shortLabel}</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeviceSectionClick(section.id)}
+                      className="flex items-center gap-1 rounded-l-lg px-2.5 py-1.5 text-[11px] font-semibold transition hover:bg-white/5"
+                      title={
+                        count === 0
+                          ? `${section.hint}. Раздел пока пуст — откройте каталог.`
+                          : `${section.hint}. Клик — последний элемент, стрелка — выбрать.`
+                      }
+                    >
+                      <DeviceSectionIcon section={section.id} size={13} />
+                      <span>{section.label}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleCatalogMenu(section.id)}
+                      className={`rounded-r-lg border-l px-1 py-1.5 transition ${
+                        isActive
+                          ? 'border-white/20 hover:bg-white/10'
+                          : count === 0
+                            ? 'border-slate-700 hover:bg-white/5'
+                            : 'border-sky-500/20 hover:bg-white/5'
+                      }`}
+                      title="Открыть каталог раздела"
+                      aria-label={`Открыть каталог: ${section.label}`}
+                    >
+                      <ChevronDown size={11} />
+                    </button>
+                  </div>
                 );
               })}
             </div>
 
-            <div className="w-px h-5 bg-slate-800 mx-1" />
-
-            <button
-              onClick={() => setDeviceShared(!deviceShared)}
-              disabled={DEVICE_CATALOG[activeDeviceType].mounting === 'ceiling'}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
-                deviceShared
-                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                  : 'text-slate-400 border-slate-700 hover:text-white hover:bg-slate-800'
-              } disabled:opacity-40 disabled:cursor-not-allowed`}
-              title="Сквозной прибор: один и тот же прибор принадлежит двум смежным комнатам"
-            >
-              <Repeat2 size={13} />
-              Сквозная
-            </button>
+            {activeDevicePath && (
+              <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-100">
+                <DeviceTypeIcon
+                  type={activeDeviceType}
+                  size={13}
+                  className="text-sky-300"
+                />
+                <button
+                  type="button"
+                  onClick={() => toggleCatalogMenu(activeDevicePath.section.id)}
+                  className="flex items-center gap-1 rounded px-1 py-0.5 transition hover:bg-sky-500/10"
+                  title="Изменить активный элемент"
+                >
+                  <span className="text-sky-400">
+                    {activeDevicePath.section.label}
+                  </span>
+                  <span className="text-sky-700">→</span>
+                  <span className="text-sky-300">{activeDevicePath.subsection}</span>
+                  <span className="text-sky-700">→</span>
+                  <span className="font-semibold text-white">
+                    {activeDevicePath.leaf.entry.shortLabel}
+                  </span>
+                  {activeDevicePath.leaf.entry.badge &&
+                    activeDevicePath.leaf.entry.badge !==
+                      activeDevicePath.leaf.entry.ipRating && (
+                      <span className="rounded border border-sky-500/30 bg-sky-500/10 px-1 py-0.5 text-[9px] font-semibold text-sky-200">
+                        {activeDevicePath.leaf.entry.badge}
+                      </span>
+                    )}
+                </button>
+                <span className="font-mono text-[9px] text-sky-300/70">
+                  {activeDevicePath.leaf.entry.mounting === 'ceiling'
+                    ? 'Потолок'
+                    : `H ${activeDevicePath.leaf.entry.defaultHeightMm}`}
+                </span>
+                {activeDevicePath.leaf.entry.defaultPowerWatts > 0 && (
+                  <span className="font-mono text-[9px] text-sky-300/70">
+                    {activeDevicePath.leaf.entry.defaultPowerWatts} Вт
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setDeviceShared(!deviceShared)}
+                  disabled={activeDevicePath.leaf.entry.mounting === 'ceiling'}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold transition ${
+                    deviceShared
+                      ? 'bg-amber-500/20 text-amber-300'
+                      : 'text-sky-300/70 hover:bg-sky-500/10 hover:text-sky-200'
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                  title="Сквозной прибор: один и тот же прибор принадлежит двум смежным комнатам"
+                >
+                  <Repeat2 size={11} />
+                  Сквозная
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTool('select')}
+                  className="rounded p-0.5 text-sky-400/70 transition hover:bg-sky-500/10 hover:text-white"
+                  title="Выйти из режима размещения (Esc)"
+                  aria-label="Выйти из режима размещения"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
 
             <div className="w-px h-5 bg-slate-800 mx-1" />
 
@@ -685,5 +799,19 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         </button>
       </div>
     </header>
+
+    {catalogMenu && (
+      <DeviceCatalogMenu
+        key={catalogMenu.section}
+        anchorEl={catalogMenu.anchorEl}
+        initialSection={catalogMenu.section}
+        activeDeviceType={activeDeviceType}
+        preferences={devicePreferences}
+        onSelect={selectDeviceType}
+        onToggleFavorite={toggleFavorite}
+        onClose={() => setCatalogMenu(null)}
+      />
+    )}
+    </>
   );
 };
