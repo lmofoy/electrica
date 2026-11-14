@@ -99,11 +99,41 @@ export function sanitizePanel(
 ): ElectricalPanel | null {
   if (!panel) return null;
   if (resolvePanelPose(panel, rooms, partitions, thickness) === null) return null;
-  return {
+  const lines = sanitizeLines(panel.lines);
+  const dinOrder = sanitizeDinOrder(panel.dinOrder, lines);
+  const result: ElectricalPanel = {
     ...panel,
-    lines: sanitizeLines(panel.lines),
+    lines,
     supply: sanitizeSupply(panel.supply),
   };
+  if (dinOrder) result.dinOrder = dinOrder;
+  else delete result.dinOrder;
+  return result;
+}
+
+// Ручной порядок хранит только существующие аппараты: новые линии
+// добавляются в конец автопорядка, удалённые — выпадают из списка.
+function sanitizeDinOrder(order: unknown, lines: CircuitLine[]): string[] | undefined {
+  if (!Array.isArray(order)) return undefined;
+  const allowed = new Set<string>([
+    'input-breaker',
+    'meter',
+    'main-rcd',
+    'voltage-relay',
+    'spd',
+  ]);
+  for (const line of lines) {
+    allowed.add(`${line.id}-breaker`);
+    if (line.rcd) allowed.add(`${line.id}-rcd`);
+  }
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of order) {
+    if (typeof id !== 'string' || !allowed.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+  }
+  return result.length > 0 ? result : undefined;
 }
 
 function sanitizeSupply(supply: PanelSupply): PanelSupply {

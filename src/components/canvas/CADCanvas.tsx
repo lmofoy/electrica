@@ -10,6 +10,7 @@ import { RoutingLayer } from './RoutingLayer';
 import { ElectricalLayer } from './ElectricalLayer';
 import { DraftingLayer } from './DraftingLayer';
 import { ManualRouteLayer } from './ManualRouteLayer';
+import { ManualDrawLayer, type ManualDrawHover } from './ManualDrawLayer';
 import { RouteStopsPopover } from './RouteStopsPopover';
 import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
@@ -27,6 +28,22 @@ import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { computeLineRoutes, materializeRouteForLine } from '../../core/electrical/routing';
 import { moveManualRouteNode } from '../../core/electrical/manualRoute';
+import {
+  addManualDrawJunction,
+  appendManualDrawDevice,
+  appendManualDrawPoint,
+  cancelManualDrawChain,
+  createManualDrawSession,
+  fixManualDrawChain,
+  manualDrawConnectedDevices,
+  manualDrawJunctionSnap,
+  manualDrawRoute,
+  popManualDrawPoint,
+  removeLastManualDrawChain,
+  startManualDrawChain,
+  type ManualDrawAxis,
+  type ManualDrawSession,
+} from '../../core/electrical/manualDraw';
 import { collectRoomElements, formatRoomDeletionPrompt } from '../../core/model/roomElements';
 import type {
   DevicePartitionAnchor,
@@ -106,6 +123,7 @@ export const CADCanvas: React.FC = () => {
     removeLineRouteNode,
     reorderLineRouteStops,
     resetLineRoute,
+    setLineManualRoute,
   } = useProjectStore();
 
   const autoLayout = useMemo(() => {
@@ -155,6 +173,16 @@ export const CADCanvas: React.FC = () => {
     lineId: string | null;
     open: boolean;
   }>({ lineId: null, open: true });
+  // Черновик ручной трассировки живёт только в компоненте: в проект и историю
+  // он попадает одним действием на «Готово».
+  const [manualDraw, setManualDraw] = useState<{
+    lineId: string;
+    session: ManualDrawSession;
+    axisFirst: ManualDrawAxis;
+    tool: 'line' | 'junction';
+    hover: ManualDrawHover | null;
+  } | null>(null);
+  const [manualDrawConfirm, setManualDrawConfirm] = useState(false);
   const routeEditing = activeTool === 'select' && designMode === 'electrical';
   const stopsPanelOpen =
     stopsPanel.lineId === routeEditLineId ? stopsPanel.open : true;
@@ -219,8 +247,13 @@ export const CADCanvas: React.FC = () => {
     [panel, routeEditLineId, routeEditing]
   );
 
+  const activeManualDraw =
+    manualDraw && routeEditLine && manualDraw.lineId === routeEditLine.id
+      ? manualDraw
+      : null;
+
   const routeEditRoute = useMemo(() => {
-    if (!routeEditLine || !panel) return null;
+    if (!routeEditLine || !panel || activeManualDraw) return null;
     if (routePreviewRoute) return routePreviewRoute;
     return materializeRouteForLine(
       {
@@ -244,6 +277,7 @@ export const CADCanvas: React.FC = () => {
     nodes,
     walls,
     settings,
+    activeManualDraw,
   ]);
 
   // База перетаскивания фиксируется на весь жест: превью считается от неё,
@@ -428,6 +462,314 @@ export const CADCanvas: React.FC = () => {
     [panel, rooms, freePartitions, settings.defaultWallThicknessMm]
   );
 
+  const manualDrawDeviceNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    if (!routeEditLine) return names;
+    for (const deviceId of routeEditLine.deviceIds) {
+      const device = devices.find((candidate) => candidate.id === deviceId);
+      if (device) names[deviceId] = device.name;
+    }
+    return names;
+  }, [routeEditLine, devices]);
+
+  const updateManualDrawSession = useCallback((session: ManualDrawSession) => {
+    setManualDraw((prev) => (prev ? { ...prev, session } : prev));
+  }, []);
+
+  const beginManualDraw = useCallback(() => {
+    setManualDrawConfirm(false);
+    if (!routeEditLine) return;
+    if (!panelPose) {
+      addToast('Щиток не размещён на плане: ручную трассу начать нельзя.', 'error');
+      return;
+    }
+    if (routeEditLine.deviceIds.length === 0) {
+      addToast('В линии нет приборов — соединять нечего.', 'error');
+      return;
+    }
+    const devicePoints: { deviceId: string; point: Point2D }[] = [];
+    for (const deviceId of routeEditLine.deviceIds) {
+      const resolved = resolvedDevices.find(
+        (entry) => entry.device.id === deviceId
+      );
+      const pose = resolved?.poses[0];
+      if (!pose) {
+        addToast('Часть приборов линии не найдена на плане.', 'error');
+        return;
+      }
+      devicePoints.push({ deviceId, point: pose.position });
+    }
+    setLineManualRoute(routeEditLine.id, undefined);
+    setManualDraw({
+      lineId: routeEditLine.id,
+      session: createManualDrawSession(panelPose.position, devicePoints),
+      axisFirst: 'h',
+      tool: 'line',
+      hover: null,
+    });
+  }, [routeEditLine, panelPose, resolvedDevices, setLineManualRoute, addToast]);
+
+  const exitManualDraw = useCallback(() => {
+    if (!activeManualDraw) return;
+    const hasWork =
+      activeManualDraw.session.chains.length > 0 ||
+      activeManualDraw.session.active !== null;
+    if (
+      hasWork &&
+      !window.confirm('Выйти из ручной трассировки? Черновик будет потерян.')
+    ) {
+      return;
+    }
+    setManualDraw(null);
+  }, [activeManualDraw]);
+
+  const snapManualDraw = useCallback(
+    (raw: Point2D): ManualDrawHover => {
+      if (!activeManualDraw) return { point: raw, kind: 'grid' };
+      const session = activeManualDraw.session;
+      const tolerance = 16 / zoom;
+      if (activeManualDraw.tool === 'junction') {
+        const snap = manualDrawJunctionSnap(session, raw, tolerance);
+        if (snap) return { point: snap.point, kind: 'segment' };
+      }
+      if (distance(raw, session.panelPoint) <= tolerance) {
+        return { point: session.panelPoint, kind: 'panel' };
+      }
+      let bestDevice: {
+        deviceId: string;
+        point: Point2D;
+        distance: number;
+      } | null = null;
+      for (const device of session.devices) {
+        const span = distance(raw, device.point);
+        if (span <= tolerance && (!bestDevice || span < bestDevice.distance)) {
+          bestDevice = { deviceId: device.deviceId, point: device.point, distance: span };
+        }
+      }
+      if (bestDevice) {
+        return {
+          point: bestDevice.point,
+          kind: 'device',
+          deviceId: bestDevice.deviceId,
+          connected: manualDrawConnectedDevices(session).has(bestDevice.deviceId),
+        };
+      }
+      for (const junction of session.junctions) {
+        if (distance(raw, junction) <= tolerance) {
+          return { point: junction, kind: 'junction' };
+        }
+      }
+      return {
+        point: gridSnap ? snapToGrid(raw, gridStepMm) : raw,
+        kind: 'grid',
+      };
+    },
+    [activeManualDraw, zoom, gridSnap, gridStepMm]
+  );
+
+  const toggleManualDrawTool = useCallback(() => {
+    setManualDraw((prev) =>
+      prev
+        ? {
+            ...prev,
+            tool: prev.tool === 'line' ? 'junction' : 'line',
+            hover: null,
+          }
+        : prev
+    );
+  }, []);
+
+  const handleManualDrawClick = useCallback(
+    (snap: ManualDrawHover) => {
+      if (!activeManualDraw) return;
+      const { session, tool, axisFirst } = activeManualDraw;
+
+      if (tool === 'junction') {
+        const result = addManualDrawJunction(session, snap.point, 16 / zoom);
+        if (!result.ok) {
+          addToast(result.error, 'error');
+          return;
+        }
+        updateManualDrawSession(result.session);
+        addToast('Узел поставлен: от него можно вести ветвь.', 'success');
+        return;
+      }
+
+      if (!session.active) {
+        if (
+          snap.kind !== 'panel' &&
+          snap.kind !== 'device' &&
+          snap.kind !== 'junction'
+        ) {
+          addToast('Начните цепь от щитка, подключённого прибора или узла.', 'info');
+          return;
+        }
+        const result = startManualDrawChain(session, {
+          kind: snap.kind,
+          point: snap.point,
+          deviceId: snap.deviceId,
+        });
+        if (!result.ok) {
+          addToast(result.error, 'error');
+          return;
+        }
+        updateManualDrawSession(result.session);
+        return;
+      }
+
+      if (
+        snap.kind === 'panel' ||
+        snap.kind === 'junction' ||
+        (snap.kind === 'device' && snap.connected)
+      ) {
+        addToast(
+          'Вершина уже используется: цепь заканчивается на приборе, а ветвь начинайте от узла.',
+          'error'
+        );
+        return;
+      }
+
+      if (snap.kind === 'device' && snap.deviceId) {
+        const result = appendManualDrawDevice(session, snap.deviceId, axisFirst);
+        if (!result.ok) {
+          addToast(result.error, 'error');
+          return;
+        }
+        updateManualDrawSession(result.session);
+        return;
+      }
+
+      const result = appendManualDrawPoint(session, snap.point, axisFirst);
+      if (!result.ok) {
+        addToast(result.error, 'error');
+        return;
+      }
+      updateManualDrawSession(result.session);
+    },
+    [activeManualDraw, zoom, addToast, updateManualDrawSession]
+  );
+
+  const fixManualDrawActiveChain = useCallback(() => {
+    if (!activeManualDraw) return;
+    const result = fixManualDrawChain(activeManualDraw.session);
+    if (!result.ok) {
+      addToast(result.error, 'error');
+      return;
+    }
+    updateManualDrawSession(result.session);
+    addToast('Цепь зафиксирована. Начните следующую от прибора, узла или щитка.', 'success');
+  }, [activeManualDraw, updateManualDrawSession, addToast]);
+
+  const removeManualDrawLastChain = useCallback(() => {
+    if (!activeManualDraw) return;
+    if (activeManualDraw.session.active) {
+      addToast('Сначала зафиксируйте или отмените текущую цепь.', 'info');
+      return;
+    }
+    const result = removeLastManualDrawChain(activeManualDraw.session);
+    if (!result.ok) {
+      addToast(result.error, 'error');
+      return;
+    }
+    updateManualDrawSession(result.session);
+  }, [activeManualDraw, updateManualDrawSession, addToast]);
+
+  const saveManualDrawRoute = useCallback(() => {
+    if (!activeManualDraw) return;
+    const result = manualDrawRoute(activeManualDraw.session, {
+      deviceNames: manualDrawDeviceNames,
+    });
+    if (!result.ok) {
+      addToast(result.error, 'error');
+      return;
+    }
+    setLineManualRoute(activeManualDraw.lineId, result.route);
+    setManualDraw(null);
+    addToast(
+      result.warnings.length > 0
+        ? `Ручная трасса сохранена. ${result.warnings.join(' ')}`
+        : 'Ручная трасса сохранена.',
+      result.warnings.length > 0 ? 'info' : 'success'
+    );
+  }, [activeManualDraw, manualDrawDeviceNames, setLineManualRoute, addToast]);
+
+  const handleManualDrawKeyDown = useCallback(
+    (e: KeyboardEvent): boolean => {
+      if (!activeManualDraw) return false;
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.code !== 'KeyZ') return false;
+        e.preventDefault();
+        if (activeManualDraw.session.active) {
+          const result = popManualDrawPoint(activeManualDraw.session);
+          if (result.ok) updateManualDrawSession(result.session);
+        } else {
+          const result = removeLastManualDrawChain(activeManualDraw.session);
+          if (result.ok) updateManualDrawSession(result.session);
+          else addToast('Убирать нечего: цепей ещё нет.', 'info');
+        }
+        return true;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (activeManualDraw.tool === 'junction') {
+          setManualDraw((prev) =>
+            prev ? { ...prev, tool: 'line', hover: null } : prev
+          );
+          return true;
+        }
+        if (activeManualDraw.session.active) {
+          const result = cancelManualDrawChain(activeManualDraw.session);
+          if (result.ok) updateManualDrawSession(result.session);
+          return true;
+        }
+        exitManualDraw();
+        return true;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        fixManualDrawActiveChain();
+        return true;
+      }
+
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        setManualDraw((prev) =>
+          prev
+            ? { ...prev, axisFirst: prev.axisFirst === 'h' ? 'v' : 'h' }
+            : prev
+        );
+        return true;
+      }
+
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        if (!activeManualDraw.session.active) {
+          addToast('Нет активной цепи: начните её от щитка, прибора или узла.', 'info');
+          return true;
+        }
+        const result = popManualDrawPoint(activeManualDraw.session);
+        if (!result.ok) {
+          addToast(result.error, 'error');
+          return true;
+        }
+        updateManualDrawSession(result.session);
+        return true;
+      }
+
+      return false;
+    },
+    [
+      activeManualDraw,
+      updateManualDrawSession,
+      exitManualDraw,
+      fixManualDrawActiveChain,
+      addToast,
+    ]
+  );
+
   useEffect(() => {
     if (routeEditLine) {
       setHighlightedLine(routeEditLine.id);
@@ -589,6 +931,26 @@ export const CADCanvas: React.FC = () => {
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
 
+    if (activeManualDraw) {
+      const snapped = snapManualDraw(screenToWorld(pointer.x, pointer.y));
+      setCursorPosMm(snapped.point);
+      setManualDraw((prev) => {
+        if (!prev) return prev;
+        const current = prev.hover;
+        if (
+          current &&
+          current.kind === snapped.kind &&
+          current.deviceId === snapped.deviceId &&
+          current.connected === snapped.connected &&
+          distance(current.point, snapped.point) < 0.01
+        ) {
+          return prev;
+        }
+        return { ...prev, hover: snapped };
+      });
+      return;
+    }
+
     let worldPos = screenToWorld(pointer.x, pointer.y);
     const rawWorldPos = worldPos;
 
@@ -636,6 +998,13 @@ export const CADCanvas: React.FC = () => {
 
     const stage = stageRef.current;
     if (!stage) return;
+
+    if (activeManualDraw) {
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+      handleManualDrawClick(snapManualDraw(screenToWorld(pointer.x, pointer.y)));
+      return;
+    }
 
     if (activeTool === 'select') {
       if (routeEditLine) return;
@@ -763,12 +1132,18 @@ export const CADCanvas: React.FC = () => {
     addDraftVertex(snappedVertex);
   };
 
+  const handleStageDoubleClick = () => {
+    if (activeManualDraw) fixManualDrawActiveChain();
+  };
+
   // Горячие клавиши
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       const target = e.target;
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
+
+      if (handleManualDrawKeyDown(e)) return;
 
       if (e.ctrlKey || e.metaKey) {
         if (e.code === 'KeyZ' || e.code === 'KeyY') {
@@ -918,10 +1293,21 @@ export const CADCanvas: React.FC = () => {
     setRouteEditLine,
     routeNodeSelectionIndex,
     removeLineRouteNode,
+    handleManualDrawKeyDown,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
   const activeDeviceCatalog = DEVICE_CATALOG[activeDeviceType];
+  const manualDrawConnectedCount = activeManualDraw
+    ? manualDrawConnectedDevices(activeManualDraw.session).size
+    : 0;
+  const manualDrawHint = !activeManualDraw
+    ? ''
+    : activeManualDraw.tool === 'junction'
+      ? 'Клик по проложенной линии — поставить узел. Его можно ставить сколько угодно; Esc — вернуться к рисованию.'
+      : activeManualDraw.session.active
+        ? 'Клик — следующая точка или прибор. Enter или двойной клик — зафиксировать цепь. Tab — ось ступеньки. Backspace — убрать точку. Esc — отменить цепь.'
+        : 'Клик — старт цепи: щиток, подключённый прибор или узел. За каждый клик добавляется точка со ступенькой под 90°. Esc — выйти.';
 
   return (
     <div
@@ -947,6 +1333,7 @@ export const CADCanvas: React.FC = () => {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onClick={handleStageClick}
+        onDblClick={handleStageDoubleClick}
         scaleX={zoom}
         scaleY={zoom}
         x={stagePos.x}
@@ -987,6 +1374,7 @@ export const CADCanvas: React.FC = () => {
           panel={panel}
           routes={lineRoutes}
           highlightedLineId={highlightedLineId}
+          hiddenLineId={activeManualDraw?.lineId ?? null}
           zoom={zoom}
           onSelectLine={setHighlightedLine}
         />
@@ -1056,6 +1444,16 @@ export const CADCanvas: React.FC = () => {
             onCancelPreview={cancelRoutePreview}
           />
         )}
+        {activeManualDraw && routeEditLine && (
+          <ManualDrawLayer
+            session={activeManualDraw.session}
+            color={lineColorMap.get(routeEditLine.id) ?? '#38bdf8'}
+            zoom={zoom}
+            hover={activeManualDraw.hover}
+            axisFirst={activeManualDraw.axisFirst}
+            tool={activeManualDraw.tool}
+          />
+        )}
       </Stage>
 
       {assignLine && (
@@ -1083,7 +1481,7 @@ export const CADCanvas: React.FC = () => {
         </div>
       )}
 
-      {routeEditLine && (
+      {routeEditLine && !activeManualDraw && (
         <div className="absolute top-9 left-9 right-3 z-30 flex flex-wrap items-center gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
           style={{ borderColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
         >
@@ -1125,6 +1523,13 @@ export const CADCanvas: React.FC = () => {
             Список
           </button>
           <button
+            onClick={() => setManualDrawConfirm(true)}
+            className="shrink-0 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
+            title="Удалить текущую трассу и нарисовать её заново вручную"
+          >
+            Проложить вручную
+          </button>
+          <button
             onClick={resetRoute}
             disabled={!routeEditLine.manualRoute && !routeEditLine.waypoints?.length}
             className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
@@ -1137,6 +1542,111 @@ export const CADCanvas: React.FC = () => {
           >
             Готово
           </button>
+        </div>
+      )}
+
+      {activeManualDraw && routeEditLine && (
+        <div
+          className="absolute top-9 left-9 right-3 z-30 flex flex-wrap items-start gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
+          style={{ borderColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
+        >
+          <span
+            className="mt-1 w-2.5 h-2.5 rounded-full shrink-0"
+            style={{ backgroundColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
+          />
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold text-white truncate max-w-[320px]">
+              Ручная трассировка: {routeEditLine.name}
+            </div>
+            <div className="text-[9px] text-slate-300">
+              Приборы: {manualDrawConnectedCount} / {activeManualDraw.session.devices.length}
+              {' · '}цепей: {activeManualDraw.session.chains.length}
+              {activeManualDraw.session.active ? ' · текущая цепь не зафиксирована' : ''}
+              {' · '}ступенька: {activeManualDraw.axisFirst === 'h' ? 'сначала горизонталь' : 'сначала вертикаль'}
+            </div>
+            <div className="text-[9px] text-slate-400 max-w-[760px]">
+              {manualDrawHint}
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={toggleManualDrawTool}
+              className={`shrink-0 px-2 py-1 rounded-lg border text-[10px] font-bold transition ${
+                activeManualDraw.tool === 'junction'
+                  ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
+                  : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="Поставить узел на уже проложенной линии"
+            >
+              Узел
+            </button>
+            <button
+              onClick={fixManualDrawActiveChain}
+              disabled={!activeManualDraw.session.active}
+              className="shrink-0 px-2 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
+            >
+              Зафиксировать цепь
+            </button>
+            <button
+              onClick={removeManualDrawLastChain}
+              disabled={
+                activeManualDraw.session.active !== null ||
+                activeManualDraw.session.chains.length === 0
+              }
+              className="shrink-0 px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 text-[10px] font-bold transition"
+            >
+              Убрать цепь
+            </button>
+            <button
+              onClick={saveManualDrawRoute}
+              disabled={activeManualDraw.session.chains.length === 0}
+              className="shrink-0 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-[10px] font-bold transition"
+            >
+              Готово
+            </button>
+            <button
+              onClick={exitManualDraw}
+              className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold transition"
+            >
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+
+      {manualDrawConfirm && routeEditLine && (
+        <div
+          className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm px-6"
+          onClick={() => setManualDrawConfirm(false)}
+        >
+          <div
+            className="w-full max-w-[440px] rounded-2xl border border-amber-500/40 bg-slate-900 p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="text-sm font-bold text-white mb-2">
+              Проложить трассу вручную?
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Текущая трасса линии «{routeEditLine.name}» будет удалена вместе с её
+              точками и узлами. Приборы останутся в линии. После сохранения линия
+              будет прокладываться только вручную; вернуть автотрассу можно кнопкой
+              «Сбросить к авто».
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setManualDrawConfirm(false)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold transition"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={beginManualDraw}
+                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-bold transition"
+              >
+                Удалить и начать
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

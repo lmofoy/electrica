@@ -1,4 +1,4 @@
-import type { CircuitLine, ElectricalPanel, PanelStrategy } from '../../types';
+import type { CircuitLine, ElectricalPanel, PanelStrategy, RoomZone } from '../../types';
 
 export type PanelItemKind =
   | 'input_breaker'
@@ -17,12 +17,26 @@ export interface PanelLayoutItem {
   modules: number;
   lineId?: string;
   tone: 'input' | 'protection' | 'line';
+  zoneId?: string;
+  zoneName?: string;
+  zoneColorIndex?: number;
 }
 
 export interface PanelWarning {
   id: string;
   severity: 'error' | 'warning' | 'info';
   message: string;
+}
+
+// Зона раскладки: «Ввод и защита» или комната. Границы зон показываются
+// на DIN-схеме и на листе ЭС-04.
+export interface PanelLayoutZone {
+  id: string;
+  name: string;
+  colorIndex?: number;
+  itemIds: string[];
+  lineIds: string[];
+  modules: number;
 }
 
 export interface PanelLayout {
@@ -36,11 +50,20 @@ export interface PanelLayout {
   freeModules: number;
   reservePercent: number;
   reserveTarget: number;
+  zones: PanelLayoutZone[];
+  manualOrder: boolean;
   warnings: PanelWarning[];
+}
+
+export interface PanelLayoutOptions {
+  rooms?: RoomZone[];
 }
 
 export const RAIL_MODULES = 12;
 export const ENCLOSURE_SERIES = [12, 24, 36, 48, 60, 72];
+export const INPUT_ZONE_ID = 'input';
+export const INPUT_ZONE_NAME = 'Ввод и защита';
+const NO_ROOM_ZONE_ID = 'no-room';
 
 export function reserveTargetFor(strategy: PanelStrategy): number {
   switch (strategy) {
@@ -151,6 +174,173 @@ function buildItems(panel: ElectricalPanel): PanelLayoutItem[] {
   return items;
 }
 
+function lineZoneName(line: CircuitLine, rooms: RoomZone[] | undefined): string {
+  const roomId = line.roomIds[0];
+  const room = roomId ? rooms?.find((entry) => entry.id === roomId) : undefined;
+  if (room) return room.name;
+  const prefix = line.name.split('—')[0]?.trim();
+  return prefix || 'Без комнаты';
+}
+
+// Каждая линия относится к зоне своей первой комнаты. Приборы ввода
+// собраны в отдельную зону «Ввод и защита».
+function decorateItems(
+  items: PanelLayoutItem[],
+  panel: ElectricalPanel,
+  rooms: RoomZone[] | undefined
+): PanelLayoutItem[] {
+  const zones = new Map<string, { id: string; name: string; colorIndex?: number }>();
+  panel.lines.forEach((line, index) => {
+    const roomId = line.roomIds[0];
+    const id = roomId ? roomId : NO_ROOM_ZONE_ID;
+    zones.set(line.id, {
+      id,
+      name: lineZoneName(line, rooms),
+      colorIndex: line.colorIndex ?? index,
+    });
+  });
+
+  return items.map((item) => {
+    if (!item.lineId) {
+      return {
+        ...item,
+        zoneId: INPUT_ZONE_ID,
+        zoneName: INPUT_ZONE_NAME,
+        zoneColorIndex: undefined,
+      };
+    }
+    const zone = zones.get(item.lineId);
+    return {
+      ...item,
+      zoneId: zone?.id ?? NO_ROOM_ZONE_ID,
+      zoneName: zone?.name ?? 'Без комнаты',
+      zoneColorIndex: zone?.colorIndex,
+    };
+  });
+}
+
+// Автопорядок: ввод первым, затем зоны в порядке появления линий,
+// внутри зоны — порядок линий в щитке.
+function orderByZones(items: PanelLayoutItem[]): PanelLayoutItem[] {
+  const ranks = new Map<string, number>([[INPUT_ZONE_ID, 0]]);
+  for (const item of items) {
+    const zoneId = item.zoneId ?? INPUT_ZONE_ID;
+    if (!ranks.has(zoneId)) ranks.set(zoneId, ranks.size);
+  }
+  const fallback = ranks.size;
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const rankA = ranks.get(a.item.zoneId ?? INPUT_ZONE_ID) ?? fallback;
+      const rankB = ranks.get(b.item.zoneId ?? INPUT_ZONE_ID) ?? fallback;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.item);
+}
+
+// Ручной порядок хранится плоским списком id. Аппараты, которых в списке
+// ещё нет (например, новая линия), встают в конец в автопорядке.
+function applyDinOrder(items: PanelLayoutItem[], order: string[] | undefined): PanelLayoutItem[] {
+  if (!order || order.length === 0) return items;
+  const rank = new Map(order.map((id, index) => [id, index] as const));
+  const listed = items
+    .filter((item) => rank.has(item.id))
+    .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  const rest = items.filter((item) => !rank.has(item.id));
+  return [...listed, ...rest];
+}
+
+function collectZones(items: PanelLayoutItem[]): PanelLayoutZone[] {
+  const zones = new Map<string, PanelLayoutZone>();
+  for (const item of items) {
+    const id = item.zoneId ?? INPUT_ZONE_ID;
+    let zone = zones.get(id);
+    if (!zone) {
+      zone = {
+        id,
+        name: item.zoneName ?? (id === INPUT_ZONE_ID ? INPUT_ZONE_NAME : 'Без комнаты'),
+        colorIndex: item.zoneColorIndex,
+        itemIds: [],
+        lineIds: [],
+        modules: 0,
+      };
+      zones.set(id, zone);
+    }
+    zone.itemIds.push(item.id);
+    zone.modules += item.modules;
+    if (item.lineId && !zone.lineIds.includes(item.lineId)) {
+      zone.lineIds.push(item.lineId);
+    }
+  }
+  return [...zones.values()];
+}
+
+function lineNameOf(item: PanelLayoutItem): string {
+  return item.sublabel.split('·')[0]?.trim() || item.label;
+}
+
+// Проверки только для ручного порядка: опасные перестановки.
+function collectOrderWarnings(items: PanelLayoutItem[], manual: boolean): PanelWarning[] {
+  if (!manual) return [];
+  const warnings: PanelWarning[] = [];
+  const indexOf = new Map<string, number>();
+  items.forEach((item, index) => indexOf.set(item.id, index));
+
+  const inputIndex = indexOf.get('input-breaker');
+  const firstLineIndex = items.findIndex((item) => item.zoneId !== INPUT_ZONE_ID);
+  if (
+    inputIndex !== undefined &&
+    firstLineIndex !== -1 &&
+    inputIndex > firstLineIndex
+  ) {
+    warnings.push({
+      id: 'din-input-not-first',
+      severity: 'error',
+      message:
+        'Вводной автомат стоит не в начале раскладки — верните его на первую позицию.',
+    });
+  }
+
+  for (const item of items) {
+    if (item.kind !== 'line_rcd' || !item.lineId) continue;
+    const breakerIndex = indexOf.get(`${item.lineId}-breaker`);
+    const rcdIndex = indexOf.get(item.id);
+    if (breakerIndex === undefined || rcdIndex === undefined) continue;
+    if (rcdIndex < breakerIndex) {
+      warnings.push({
+        id: `din-rcd-first-${item.lineId}`,
+        severity: 'error',
+        message: `УЗО линии «${lineNameOf(item)}» стоит раньше своего автомата — сначала автомат, затем УЗО.`,
+      });
+    } else if (rcdIndex > breakerIndex + 1) {
+      warnings.push({
+        id: `din-pair-split-${item.lineId}`,
+        severity: 'warning',
+        message: `Автомат и УЗО линии «${lineNameOf(item)}» разнесены по раскладке — ставьте их рядом.`,
+      });
+    }
+  }
+
+  for (const zone of collectZones(items)) {
+    if (zone.id === INPUT_ZONE_ID || zone.itemIds.length < 2) continue;
+    const positions = zone.itemIds
+      .map((id) => indexOf.get(id))
+      .filter((index): index is number => index !== undefined);
+    if (positions.length < 2) continue;
+    const span = Math.max(...positions) - Math.min(...positions) + 1;
+    if (span !== positions.length) {
+      warnings.push({
+        id: `din-zone-split-${zone.id}`,
+        severity: 'info',
+        message: `Зона «${zone.name}» разорвана другими аппаратами — для читаемости держите её вместе.`,
+      });
+    }
+  }
+
+  return warnings;
+}
+
 function layoutRows(items: PanelLayoutItem[], totalModules: number): PanelLayoutItem[][] {
   const rows: PanelLayoutItem[][] = [];
   let current: PanelLayoutItem[] = [];
@@ -221,8 +411,13 @@ function collectWarnings(panel: ElectricalPanel, modulesTotal: number, enclosure
   return warnings;
 }
 
-export function buildPanelLayout(panel: ElectricalPanel): PanelLayout {
-  const items = buildItems(panel);
+export function buildPanelLayout(
+  panel: ElectricalPanel,
+  options: PanelLayoutOptions = {}
+): PanelLayout {
+  const manualOrder = Boolean(panel.dinOrder && panel.dinOrder.length > 0);
+  const autoItems = orderByZones(decorateItems(buildItems(panel), panel, options.rooms));
+  const items = applyDinOrder(autoItems, panel.dinOrder);
   const modulesTotal = items.reduce((sum, item) => sum + item.modules, 0);
   const reserveTarget = reserveTargetFor(panel.strategy);
   const requiredModules = Math.ceil(modulesTotal / (1 - reserveTarget));
@@ -232,13 +427,16 @@ export function buildPanelLayout(panel: ElectricalPanel): PanelLayout {
   const reservePercent = enclosureModules > 0 ? (freeModules / enclosureModules) * 100 : 0;
 
   const rows = layoutRows(items, Math.max(enclosureModules, modulesTotal));
-  const warnings = collectWarnings(
-    panel,
-    modulesTotal,
-    enclosureModules,
-    freeModules,
-    reserveTarget
-  );
+  const warnings = [
+    ...collectWarnings(
+      panel,
+      modulesTotal,
+      enclosureModules,
+      freeModules,
+      reserveTarget
+    ),
+    ...collectOrderWarnings(items, manualOrder),
+  ];
 
   return {
     items,
@@ -251,6 +449,8 @@ export function buildPanelLayout(panel: ElectricalPanel): PanelLayout {
     freeModules,
     reservePercent,
     reserveTarget,
+    zones: collectZones(items),
+    manualOrder,
     warnings,
   };
 }

@@ -3,12 +3,15 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { buildPanelLayout } from '../../core/electrical/panelLayout';
 import { buildPanelCalculation } from '../../core/electrical/calculation';
 import { buildPanelSchematic } from '../../core/electrical/schematic';
+import { buildPanelSpecification } from '../../core/electrical/specification';
 import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
 import { collectLineCompositionWarnings } from '../../core/electrical/lineOps';
 import { computeLineRoutes, formatCableLengthMm } from '../../core/electrical/routing';
 import { PanelScheme } from './PanelScheme';
 import { PanelSheet } from './PanelSheet';
 import { PanelCalculation } from './PanelCalculation';
+import { PanelSpecification } from './PanelSpecification';
+import { PanelDinSheet } from './PanelDinSheet';
 import { PanelSupplyForm } from './PanelSupplyForm';
 import { PanelLinesTable } from './PanelLinesTable';
 import {
@@ -25,6 +28,8 @@ import {
   CircuitBoard,
   DraftingCompass,
   Calculator,
+  ClipboardList,
+  LayoutPanelTop,
 } from 'lucide-react';
 import type { PanelStrategy } from '../../types';
 
@@ -103,11 +108,15 @@ export const PanelScreen: React.FC = () => {
     updatePanelLine,
     deletePanelLine,
     clearPanelLines,
+    movePanelDinItem,
+    resetPanelDinOrder,
     deletePanel,
   } = useProjectStore();
 
   const [sheetOpen, setSheetOpen] = useState(false);
   const [calculationOpen, setCalculationOpen] = useState(false);
+  const [specificationOpen, setSpecificationOpen] = useState(false);
+  const [dinOpen, setDinOpen] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -117,7 +126,10 @@ export const PanelScreen: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveView]);
 
-  const layout = useMemo(() => (panel ? buildPanelLayout(panel) : null), [panel]);
+  const layout = useMemo(
+    () => (panel ? buildPanelLayout(panel, { rooms }) : null),
+    [panel, rooms]
+  );
   const routes = useMemo(
     () =>
       computeLineRoutes({
@@ -160,6 +172,17 @@ export const PanelScreen: React.FC = () => {
     () =>
       panel ? buildPanelCalculation(panel, { rooms, cableLengthsMm }) : null,
     [panel, rooms, cableLengthsMm]
+  );
+  const specification = useMemo(
+    () =>
+      panel
+        ? buildPanelSpecification(panel, {
+            rooms,
+            cableLengthsMm,
+            findings: schematic?.findings,
+          })
+        : null,
+    [panel, rooms, cableLengthsMm, schematic]
   );
 
   if (!panel || !layout) return null;
@@ -301,6 +324,22 @@ export const PanelScreen: React.FC = () => {
               <Calculator size={12} />
               Расчёт
             </button>
+            <button
+              onClick={() => setSpecificationOpen(true)}
+              className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
+              title="Спецификация оборудования и ведомость материалов на листе A3"
+            >
+              <ClipboardList size={12} />
+              Спецификация
+            </button>
+            <button
+              onClick={() => setDinOpen(true)}
+              className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
+              title="DIN-лист: расположение аппаратов в корпусе щита"
+            >
+              <LayoutPanelTop size={12} />
+              Компоновка
+            </button>
           </div>
         </div>
 
@@ -392,6 +431,8 @@ export const PanelScreen: React.FC = () => {
             layout={layout}
             highlightedLineId={highlightedLineId}
             onHighlight={setHighlightedLine}
+            onMoveItem={movePanelDinItem}
+            onResetOrder={resetPanelDinOrder}
           />
         </section>
 
@@ -459,6 +500,17 @@ export const PanelScreen: React.FC = () => {
           calculation={calculation}
           onClose={() => setCalculationOpen(false)}
         />
+      )}
+
+      {specificationOpen && specification && (
+        <PanelSpecification
+          specification={specification}
+          onClose={() => setSpecificationOpen(false)}
+        />
+      )}
+
+      {dinOpen && (
+        <PanelDinSheet panel={panel} rooms={rooms} onClose={() => setDinOpen(false)} />
       )}
     </>
   );

@@ -9,6 +9,7 @@ interface RoutingLayerProps {
   listening: boolean;
   routes: Map<string, LineRoute>;
   highlightedLineId: string | null;
+  hiddenLineId?: string | null;
   zoom: number;
   onSelectLine: (id: string | null) => void;
 }
@@ -25,6 +26,7 @@ export const RoutingLayer: React.FC<RoutingLayerProps> = ({
   listening,
   routes,
   highlightedLineId,
+  hiddenLineId = null,
   zoom,
   onSelectLine,
 }) => {
@@ -34,6 +36,7 @@ export const RoutingLayer: React.FC<RoutingLayerProps> = ({
   const segments: SegmentGeometry[] = [];
 
   for (const line of panel.lines) {
+    if (line.id === hiddenLineId) continue;
     const route = routes.get(line.id);
     if (!route) continue;
     const color = colors.get(line.id) ?? '#38bdf8';

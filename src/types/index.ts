@@ -357,4 +357,5 @@ export interface ElectricalPanel {
   supply: PanelSupply;
   strategy: PanelStrategy;
   lines: CircuitLine[];
+  dinOrder?: string[]; // ручной порядок аппаратов на DIN-рейках (id из PanelLayoutItem)
 }

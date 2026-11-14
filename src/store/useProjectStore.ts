@@ -67,6 +67,7 @@ import {
   sanitizePanel,
   type PanelWallAnchor,
 } from '../core/electrical/panel';
+import { buildPanelLayout } from '../core/electrical/panelLayout';
 import { prunePanelRefs } from '../core/electrical/lineAssignment';
 import {
   insertManualRouteNode,
@@ -106,6 +107,16 @@ function keepLineHighlight(
   return panel?.lines.some((line) => line.id === highlightedLineId)
     ? highlightedLineId
     : null;
+}
+
+function withDinOrder(
+  panel: ElectricalPanel,
+  order: string[] | undefined
+): ElectricalPanel {
+  const next = { ...panel };
+  if (order && order.length > 0) next.dinOrder = order;
+  else delete next.dinOrder;
+  return next;
 }
 
 // 100 мм²: отсекаем погрешность вычислений, но ловим реальное наложение
@@ -224,6 +235,8 @@ interface ProjectState {
   updatePanelLine: (id: string, updates: Partial<CircuitLine>) => void;
   deletePanelLine: (id: string) => void;
   clearPanelLines: () => void;
+  movePanelDinItem: (itemId: string, targetIndex: number) => void;
+  resetPanelDinOrder: () => void;
   setLineAssignLine: (id: string | null) => void;
   assignDevicesToLine: (lineId: string, deviceIds: string[]) => void;
   unassignDevicesFromLines: (deviceIds: string[]) => void;
@@ -258,6 +271,7 @@ interface ProjectState {
     fromIndex: number,
     toIndex: number
   ) => boolean;
+  setLineManualRoute: (lineId: string, manualRoute: ManualRoute | undefined) => void;
   resetLineRoute: (lineId: string) => void;
   addLineWaypoint: (lineId: string, point: Point2D) => void;
   moveLineWaypoint: (lineId: string, index: number, point: Point2D) => void;
@@ -288,7 +302,7 @@ function withLineManualRoute(
   return {
     ...panel,
     lines: panel.lines.map((line) =>
-      line.id === lineId ? { ...line, manualRoute } : line
+      line.id === lineId ? { ...line, manualRoute, waypoints: undefined } : line
     ),
   };
 }
@@ -1663,11 +1677,17 @@ export const useProjectStore = create<ProjectState>()(
       deletePanelLine: (id) => {
         const state = get();
         if (!state.panel) return;
+        const dinOrder = state.panel.dinOrder?.filter(
+          (itemId) => itemId !== `${id}-breaker` && itemId !== `${id}-rcd`
+        );
         set({
-          panel: {
-            ...state.panel,
-            lines: state.panel.lines.filter((line) => line.id !== id),
-          },
+          panel: withDinOrder(
+            {
+              ...state.panel,
+              lines: state.panel.lines.filter((line) => line.id !== id),
+            },
+            dinOrder
+          ),
           highlightedLineId:
             state.highlightedLineId === id ? null : state.highlightedLineId,
           lineAssignLineId:
@@ -1680,13 +1700,51 @@ export const useProjectStore = create<ProjectState>()(
       clearPanelLines: () => {
         const state = get();
         if (!state.panel) return;
+        const lineItemIds = new Set(
+          state.panel.lines.flatMap((line) => [
+            `${line.id}-breaker`,
+            `${line.id}-rcd`,
+          ])
+        );
         set({
-          panel: { ...state.panel, lines: [], strategy: 'custom' },
+          panel: withDinOrder(
+            { ...state.panel, lines: [], strategy: 'custom' },
+            state.panel.dinOrder?.filter((itemId) => !lineItemIds.has(itemId))
+          ),
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,
         });
         state.addToast('Схема очищена. Добавляйте линии вручную.', 'info');
+      },
+
+      movePanelDinItem: (itemId, targetIndex) => {
+        const state = get();
+        if (!state.panel) return;
+        const layout = buildPanelLayout(state.panel, { rooms: state.rooms });
+        const currentIds = layout.items.map((item) => item.id);
+        if (!currentIds.includes(itemId)) return;
+        const nextIds = currentIds.filter((id) => id !== itemId);
+        const insertAt = Math.max(0, Math.min(Math.round(targetIndex), nextIds.length));
+        nextIds.splice(insertAt, 0, itemId);
+        if (nextIds.every((id, index) => id === currentIds[index])) return;
+
+        // Совпало с автопорядком — не храним ручной список вовсе.
+        const auto = buildPanelLayout(
+          withDinOrder(state.panel, undefined),
+          { rooms: state.rooms }
+        ).items.map((item) => item.id);
+        const isAuto =
+          nextIds.length === auto.length &&
+          nextIds.every((id, index) => id === auto[index]);
+        set({ panel: withDinOrder(state.panel, isAuto ? undefined : nextIds) });
+      },
+
+      resetPanelDinOrder: () => {
+        const state = get();
+        if (!state.panel?.dinOrder?.length) return;
+        set({ panel: withDinOrder(state.panel, undefined) });
+        state.addToast('Порядок аппаратов возвращён к автоматическому.', 'info');
       },
 
       setLineAssignLine: (id) => {
@@ -2006,6 +2064,17 @@ export const useProjectStore = create<ProjectState>()(
           panel: withLineManualRoute(state.panel, lineId, result.route),
         });
         return true;
+      },
+
+      setLineManualRoute: (lineId, manualRoute) => {
+        const state = get();
+        if (!state.panel) return;
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        if (!line) return;
+        if (!manualRoute && !line.manualRoute && !line.waypoints?.length) return;
+        set({
+          panel: withLineManualRoute(state.panel, lineId, manualRoute),
+        });
       },
 
       resetLineRoute: (lineId) => {
