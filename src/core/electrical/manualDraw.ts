@@ -39,6 +39,8 @@ export interface ManualDrawSession {
   junctions: Point2D[];
   chains: ManualDrawChain[];
   active: ManualDrawActiveChain | null;
+  // Вершины, сквозь которые прошло плечо цепи без соединения.
+  overlaps: Point2D[];
 }
 
 export type ManualDrawStartKind = 'panel' | 'device' | 'junction';
@@ -93,6 +95,7 @@ function cloneSession(session: ManualDrawSession): ManualDrawSession {
           endDeviceId: session.active.endDeviceId,
         }
       : null,
+    overlaps: session.overlaps.map((point) => ({ ...point })),
   };
 }
 
@@ -171,6 +174,7 @@ export function createManualDrawSession(
     junctions: [],
     chains: [],
     active: null,
+    overlaps: [],
   };
 }
 
@@ -220,6 +224,60 @@ function pointCollides(
     }
   }
   return session.junctions.some((junction) => samePoint(junction, point));
+}
+
+function sessionSegments(
+  session: ManualDrawSession
+): { a: Point2D; b: Point2D }[] {
+  const segments: { a: Point2D; b: Point2D }[] = [];
+  const pushChain = (points: Point2D[]) => {
+    for (let i = 1; i < points.length; i += 1) {
+      segments.push({ a: points[i - 1], b: points[i] });
+    }
+  };
+  for (const chain of session.chains) pushChain(chain.points);
+  if (session.active) pushChain(session.active.points);
+  return segments;
+}
+
+// Вершины, существующие до нового клика: щиток, цепи, узлы и приборы линии.
+function existingVertices(session: ManualDrawSession): Point2D[] {
+  const points: Point2D[] = [session.panelPoint];
+  for (const chain of session.chains) points.push(...chain.points);
+  if (session.active) points.push(...session.active.points);
+  points.push(...session.junctions);
+  for (const device of session.devices) points.push(device.point);
+  return points;
+}
+
+// Плечо проходит сквозь уже проложенную вершину: в материале трассы узла
+// там не будет, кабель наложится на участок без соединения. Только
+// предупреждение — пользователь решает, нужен узел или обход.
+function recordLegOverlaps(
+  target: ManualDrawSession,
+  session: ManualDrawSession,
+  from: Point2D,
+  legPoints: Point2D[]
+): void {
+  const vertices = existingVertices(session);
+  let previous = from;
+  for (const point of legPoints) {
+    for (const vertex of vertices) {
+      if (samePoint(vertex, previous) || samePoint(vertex, point)) continue;
+      if (!pointStrictlyInsideSegment(vertex, previous, point)) continue;
+      if (target.overlaps.some((hit) => samePoint(hit, vertex))) continue;
+      target.overlaps.push({ ...vertex });
+    }
+    previous = point;
+  }
+}
+
+// Откат точки или цепи убирает наложения, которых больше нет на геометрии.
+function pruneOverlaps(session: ManualDrawSession): void {
+  const segments = sessionSegments(session);
+  session.overlaps = session.overlaps.filter((hit) =>
+    segments.some((segment) => pointStrictlyInsideSegment(hit, segment.a, segment.b))
+  );
 }
 
 export function isManualDrawPanelUsed(session: ManualDrawSession): boolean {
@@ -311,6 +369,7 @@ export function appendManualDrawPoint(
 
   const next = cloneSession(session);
   if (!next.active) return { ok: false, error: 'Цепь уже завершена.' };
+  recordLegOverlaps(next, session, from, connection.points);
   next.active.points.push(...connection.points);
   next.active.endDeviceId = null;
   return { ok: true, session: next };
@@ -349,6 +408,7 @@ export function appendManualDrawDevice(
 
   const next = cloneSession(session);
   if (!next.active) return { ok: false, error: 'Цепь уже завершена.' };
+  recordLegOverlaps(next, session, from, connection.points);
   next.active.points.push(...connection.points);
   next.active.endDeviceId = device.deviceId;
   return { ok: true, session: next };
@@ -366,12 +426,14 @@ export function popManualDrawPoint(session: ManualDrawSession): ManualDrawResult
   next.active.points.pop();
   if (next.active.points.length === 0) {
     next.active = null;
+    pruneOverlaps(next);
     return { ok: true, session: next };
   }
   const last = next.active.points[next.active.points.length - 1];
   const device = deviceAtPoint(next, last);
   next.active.endDeviceId =
     device && next.active.points.length >= 2 ? device.deviceId : null;
+  pruneOverlaps(next);
   return { ok: true, session: next };
 }
 
@@ -383,6 +445,7 @@ export function cancelManualDrawChain(
   }
   const next = cloneSession(session);
   next.active = null;
+  pruneOverlaps(next);
   return { ok: true, session: next };
 }
 
@@ -542,6 +605,7 @@ export function removeLastManualDrawChain(
       (junction) => !pointOnChain(removed, junction)
     );
   }
+  pruneOverlaps(next);
   return { ok: true, session: next };
 }
 
@@ -612,6 +676,46 @@ function collectDegreeWarnings(
     );
   }
   return warnings;
+}
+
+// Вершина строго внутри сегмента: расстояние до прямой не больше допуска,
+// до концов — дальше допуска. Точное вычисление без округления проекции.
+function pointStrictlyInsideSegment(
+  point: Point2D,
+  a: Point2D,
+  b: Point2D
+): boolean {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= MANUAL_DRAW_EPS_MM) return false;
+  const cross = Math.abs((point.x - a.x) * dy - (point.y - a.y) * dx);
+  if (cross > MANUAL_DRAW_EPS_MM * length) return false;
+  const along = (point.x - a.x) * dx + (point.y - a.y) * dy;
+  return (
+    along > MANUAL_DRAW_EPS_MM * length &&
+    along < (length - MANUAL_DRAW_EPS_MM) * length
+  );
+}
+
+function formatPointMm(point: Point2D): string {
+  return `(${Math.round(point.x)}; ${Math.round(point.y)})`;
+}
+
+function overlapWarnings(hits: Point2D[]): string[] {
+  if (hits.length === 0) return [];
+  if (hits.length === 1) {
+    return [
+      `Плечо трассы проходит через уже существующую вершину ${formatPointMm(
+        hits[0]
+      )} — кабель наложится на проложенный участок без соединения. Поставьте там узел или обойдите вершину.`,
+    ];
+  }
+  return [
+    `Плечо трассы проходит через уже существующие вершины, например ${formatPointMm(
+      hits[0]
+    )} (всего ${hits.length}) — кабели наложатся на проложенные участки без соединения. Поставьте узлы или обойдите вершины.`,
+  ];
 }
 
 export function manualDrawRoute(
@@ -714,6 +818,9 @@ export function manualDrawRoute(
   return {
     ok: true,
     route,
-    warnings: collectDegreeWarnings(route, options),
+    warnings: [
+      ...collectDegreeWarnings(route, options),
+      ...overlapWarnings(session.overlaps),
+    ],
   };
 }

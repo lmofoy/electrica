@@ -1563,6 +1563,11 @@ export const CADCanvas: React.FC = () => {
               {' · '}цепей: {activeManualDraw.session.chains.length}
               {activeManualDraw.session.active ? ' · текущая цепь не зафиксирована' : ''}
               {' · '}ступенька: {activeManualDraw.axisFirst === 'h' ? 'сначала горизонталь' : 'сначала вертикаль'}
+              {activeManualDraw.session.overlaps.length > 0 && (
+                <span className="text-amber-300">
+                  {' · '}наложений: {activeManualDraw.session.overlaps.length}
+                </span>
+              )}
             </div>
             <div className="text-[9px] text-slate-400 max-w-[760px]">
               {manualDrawHint}

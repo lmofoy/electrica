@@ -180,6 +180,66 @@ try {
     assert.match(ring.error, /Кольцо/);
   });
 
+  await test('плечо через уже существующую вершину даёт предупреждение о наложении', () => {
+    const w1 = { deviceId: 'd1', point: { x: 1000, y: 1000 } };
+    const w2 = { deviceId: 'd2', point: { x: 3000, y: 1000 } };
+    const w3 = { deviceId: 'd3', point: { x: 500, y: 1000 } };
+    let session = createManualDrawSession(panel, [w1, w2, w3]);
+    session = startManualDrawChain(session, {
+      kind: 'panel',
+      point: panel,
+    }).session;
+    session = deviceOk(session, 'd1');
+    session = deviceOk(session, 'd2');
+    session = fixOk(session);
+
+    const branch = startManualDrawChain(session, {
+      kind: 'device',
+      point: w2.point,
+      deviceId: 'd2',
+    });
+    assert.equal(branch.ok, true, branch.ok ? '' : branch.error);
+    const appended = appendManualDrawDevice(branch.session, 'd3', 'h');
+    assert.equal(appended.ok, true, appended.ok ? '' : appended.error);
+    session = fixOk(appended.session);
+    assert.deepEqual(session.overlaps, [{ x: 1000, y: 1000 }]);
+
+    const built = manualDrawRoute(session);
+    assert.equal(built.ok, true, built.ok ? '' : built.error);
+    assert.ok(
+      built.warnings.some(
+        (warning) =>
+          warning.includes('(1000; 1000)') && warning.includes('наложится')
+      ),
+      built.warnings.join(' ')
+    );
+  });
+
+  await test('откат точки снимает предупреждение о наложении', () => {
+    const w1 = { deviceId: 'd1', point: { x: 1000, y: 1000 } };
+    const w2 = { deviceId: 'd2', point: { x: 3000, y: 1000 } };
+    const w3 = { deviceId: 'd3', point: { x: 500, y: 1000 } };
+    let session = createManualDrawSession(panel, [w1, w2, w3]);
+    session = startManualDrawChain(session, {
+      kind: 'panel',
+      point: panel,
+    }).session;
+    session = deviceOk(session, 'd1');
+    session = deviceOk(session, 'd2');
+    session = fixOk(session);
+    session = startManualDrawChain(session, {
+      kind: 'device',
+      point: w2.point,
+      deviceId: 'd2',
+    }).session;
+    session = deviceOk(session, 'd3');
+    assert.equal(session.overlaps.length, 1);
+
+    const popped = popManualDrawPoint(session);
+    assert.equal(popped.ok, true, popped.ok ? '' : popped.error);
+    assert.deepEqual(popped.session.overlaps, []);
+  });
+
   await test('узел ставится на сегмент, расщепляет цепь и даёт ветвь', () => {
     const d2b = { deviceId: 'd2', point: { x: 3000, y: 1500 } };
     let session = begin([d1, d2b]);
