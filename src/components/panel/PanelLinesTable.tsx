@@ -6,7 +6,7 @@ import type {
   LineRouting,
   RoomZone,
 } from '../../types';
-import { CABLE_AMPACITY_A, LINE_PRESETS, LINE_PURPOSES, makeRcd } from '../../core/electrical/norms';
+import { CABLE_AMPACITY_A, LINE_PRESETS, LINE_PURPOSES, makeRcd, makeBreaker, makeCable, BREAKER_RATINGS, CABLE_SECTIONS } from '../../core/electrical/norms';
 import { lineCurrentA } from '../../core/electrical/panel';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { formatCableLengthMm, type LineRoute } from '../../core/electrical/routing';
@@ -15,13 +15,10 @@ import {
   Trash2,
   Wand2,
   AlertTriangle,
-  MapPin,
   ChevronDown,
-  ListChecks,
   Scissors,
   Merge,
-  MousePointerClick,
-  Target,
+  Wrench,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { LineCompositionDialog } from './LineCompositionDialog';
@@ -34,8 +31,7 @@ interface PanelLinesTableProps {
   highlightedLineId: string | null;
   unassignedCount: number;
   onHighlight: (id: string | null) => void;
-  onShowOnPlan: (id: string) => void;
-  onAdd: (purpose: LinePurpose, roomIds: string[]) => void;
+  onCreateEmpty: () => void;
   onUpdate: (id: string, updates: Partial<CircuitLine>) => void;
   onDelete: (id: string) => void;
   onGenerate: () => void;
@@ -61,15 +57,12 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   highlightedLineId,
   unassignedCount,
   onHighlight,
-  onShowOnPlan,
-  onAdd,
+  onCreateEmpty,
   onUpdate,
   onDelete,
   onGenerate,
   onAppend,
 }) => {
-  const [newPurpose, setNewPurpose] = useState<LinePurpose>('sockets');
-  const [newRoomId, setNewRoomId] = useState(rooms[0]?.id ?? '');
   const [dialog, setDialog] = useState<{ lineId: string; mode: 'edit' | 'split' } | null>(
     null
   );
@@ -77,9 +70,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   const [mergeIds, setMergeIds] = useState<Set<string>>(new Set());
   const [generateMenuOpen, setGenerateMenuOpen] = useState(false);
   const mergePanelLines = useProjectStore((state) => state.mergePanelLines);
-  const setLineAssignLine = useProjectStore((state) => state.setLineAssignLine);
   const setRouteEditLine = useProjectStore((state) => state.setRouteEditLine);
-  const setActiveView = useProjectStore((state) => state.setActiveView);
   const lineColors = buildLineColorMap(panel);
 
   const toggleMerge = (lineId: string) => {
@@ -126,6 +117,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
               Объединить
             </button>
           )}
+          {panel.lines.length > 0 && (
           <div className="relative">
             <button
               onClick={() => setGenerateMenuOpen((open) => !open)}
@@ -181,6 +173,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
               </>
             )}
           </div>
+          )}
         </div>
       </div>
 
@@ -209,19 +202,12 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
       )}
 
       {panel.lines.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-6 text-center">
+        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-center">
           <p className="text-xs text-slate-400 mb-1">Линий пока нет.</p>
-          <p className="text-[10px] text-slate-500 mb-3 leading-relaxed">
-            Соберите черновик из приборов на плане или добавьте линии вручную.
-            Освещение и розетки группируются по комнатам.
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            Нажмите «Создать линию»: имя, назначение, автомат, кабель и УЗО задаёте
+            сами, приборы добавляете в составе линии, трассу прокладываете на плане.
           </p>
-          <button
-            onClick={onGenerate}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-xs font-bold transition"
-          >
-            <Wand2 size={13} />
-            Собрать из приборов
-          </button>
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -230,6 +216,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
             const ampacity = CABLE_AMPACITY_A[line.cable.sectionMm2] ?? 0;
             const breakerCableError = line.breaker.ratingA > ampacity;
             const loadError = current > line.breaker.ratingA + 0.01;
+            const rcdMissing = LINE_PRESETS[line.purpose].needsRcd && !line.rcd;
             const roomId = line.roomIds[0] ?? '';
             const lineColor = lineColors.get(line.id) ?? '#38bdf8';
             const active = line.id === highlightedLineId;
@@ -310,13 +297,6 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   >
                     {formatCableLengthMm(route?.cableLengthMm ?? 0)}
                   </span>
-                  <button
-                    onClick={() => onShowOnPlan(line.id)}
-                    className="text-slate-500 hover:text-sky-400 p-0.5 rounded shrink-0"
-                    title="Подсветить линию на плане"
-                  >
-                    <MapPin size={12} />
-                  </button>
                   <button
                     onClick={() => onDelete(line.id)}
                     className="text-slate-500 hover:text-rose-400 p-0.5 rounded shrink-0"
@@ -409,23 +389,68 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
 
                   <div className="min-w-0">
                     <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Защита
+                      Автомат
                     </span>
-                    <div
-                      className={`font-mono text-[10px] leading-tight ${
-                        breakerCableError ? 'text-rose-400' : 'text-slate-200'
+                    <select
+                      value={line.breaker.ratingA}
+                      onChange={(e) =>
+                        onUpdate(line.id, {
+                          breaker: makeBreaker(
+                            Number(e.target.value),
+                            line.breaker.curve
+                          ),
+                        })
+                      }
+                      className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
+                        breakerCableError
+                          ? 'border-rose-700/70 text-rose-300'
+                          : 'border-slate-700 text-slate-200'
                       }`}
+                      title="Номинал автомата — не выше пропускной способности кабеля"
                     >
-                      <div>
-                        {line.breaker.ratingA} А {line.breaker.curve} · {line.breaker.poles}P
-                      </div>
-                      <div className={breakerCableError ? 'text-rose-400' : 'text-slate-500'}>
-                        {line.cable.sectionMm2} мм² · до {ampacity} А
-                      </div>
-                    </div>
+                      {BREAKER_RATINGS.map((rating) => (
+                        <option key={rating} value={rating}>
+                          {rating} А · {line.breaker.curve}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="min-w-0">
+                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                      Кабель
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <select
+                        value={line.cable.sectionMm2}
+                        onChange={(e) =>
+                          onUpdate(line.id, {
+                            cable: makeCable(
+                              Number(e.target.value),
+                              line.cable.cores === 5 ? 5 : 3
+                            ),
+                          })
+                        }
+                        className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
+                          breakerCableError
+                            ? 'border-rose-700/70 text-rose-300'
+                            : 'border-slate-700 text-slate-200'
+                        }`}
+                        title="Сечение жилы кабеля линии"
+                      >
+                        {CABLE_SECTIONS.map((section) => (
+                          <option key={section} value={section}>
+                            {section} мм²
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[8px] text-slate-500 shrink-0">
+                        до {ampacity} А
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="min-w-0 col-span-2">
                     <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
                       УЗО
                     </span>
@@ -455,10 +480,8 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   <span className={loadError ? 'text-rose-400' : ''}>
                     I {current.toFixed(1)} А
                   </span>
-                  {line.deviceIds.length > 0 ? (
+                  {line.deviceIds.length > 0 && (
                     <span>· приборов {line.deviceIds.length}</span>
-                  ) : (
-                    <span className="text-amber-400">· нет приборов</span>
                   )}
                   {route?.warning && (
                     <span className="text-amber-400 truncate" title={route.warning}>
@@ -470,14 +493,45 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   )}
                 </div>
 
+                {(loadError || breakerCableError || line.deviceIds.length === 0 || rcdMissing) && (
+                  <div className="mt-1 space-y-0.5">
+                    {loadError && (
+                      <p className="text-[9px] leading-snug text-rose-300">
+                        Ток {current.toFixed(1)} А выше автомата {line.breaker.ratingA} А:
+                        поднимите автомат и кабель или снизьте нагрузку.
+                      </p>
+                    )}
+                    {breakerCableError && (
+                      <p className="text-[9px] leading-snug text-rose-300">
+                        Автомат {line.breaker.ratingA} А выше допуска кабеля{' '}
+                        {line.cable.sectionMm2} мм² ({ampacity} А): уменьшите автомат или
+                        возьмите кабель толще.
+                      </p>
+                    )}
+                    {line.deviceIds.length === 0 && (
+                      <p className="text-[9px] leading-snug text-amber-300">
+                        В линии нет приборов: откройте «Монтаж линии» и добавьте их кликами по плану.
+                      </p>
+                    )}
+                    {rcdMissing && (
+                      <p className="text-[9px] leading-snug text-amber-300">
+                        Для этого назначения по нормам нужно УЗО 30 мА.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="mt-1 flex flex-wrap items-center gap-1">
                   <button
-                    onClick={() => setDialog({ lineId: line.id, mode: 'edit' })}
-                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[9px] text-slate-400 transition"
-                    title="Изменить состав линии: добавить или убрать приборы"
+                    onClick={() => {
+                      onHighlight(line.id);
+                      setRouteEditLine(line.id);
+                    }}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 text-[9px] text-slate-400 transition"
+                    title="Приборы, порядок подключения и трасса линии — на плане: приборы добавляются кликами, точки двигаются, порядок меняется в «Списке»"
                   >
-                    <ListChecks size={10} />
-                    Состав ({line.deviceIds.length})
+                    <Wrench size={10} />
+                    Монтаж линии
                   </button>
                   <button
                     onClick={() => setDialog({ lineId: line.id, mode: 'split' })}
@@ -488,31 +542,6 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                     <Scissors size={10} />
                     Разделить
                   </button>
-                  <button
-                    onClick={() => {
-                      onHighlight(line.id);
-                      setLineAssignLine(line.id);
-                      setActiveView('plan');
-                    }}
-                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-emerald-500/60 hover:text-emerald-300 text-[9px] text-slate-400 transition"
-                    title="Назначать приборы этой линии кликами прямо на плане"
-                  >
-                    <MousePointerClick size={10} />
-                    На плане
-                  </button>
-                  <button
-                    onClick={() => {
-                      onHighlight(line.id);
-                      setRouteEditLine(line.id);
-                      setActiveView('plan');
-                    }}
-                    disabled={line.deviceIds.length === 0}
-                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed text-[9px] text-slate-400 transition"
-                    title={line.deviceIds.length === 0 ? 'Сначала добавьте приборы в линию' : 'Редактировать трассу на плане: вершины двигаются со ступеньками под 90° без новых точек, кнопка «Список» меняет порядок точек и приборов'}
-                  >
-                    <Target size={10} />
-                    Трасса
-                  </button>
                 </div>
               </div>
             );
@@ -520,44 +549,26 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-800">
-        <span className="text-[10px] text-slate-400">Добавить линию:</span>
-        <select
-          value={newPurpose}
-          onChange={(e) => setNewPurpose(e.target.value as LinePurpose)}
-          className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-        >
-          {LINE_PURPOSES.map((purpose) => (
-            <option key={purpose} value={purpose}>
-              {LINE_PRESETS[purpose].label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={newRoomId}
-          onChange={(e) => setNewRoomId(e.target.value)}
-          className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-        >
-          <option value="">Без комнаты</option>
-          {rooms.map((room) => (
-            <option key={room.id} value={room.id}>
-              {room.name}
-            </option>
-          ))}
-        </select>
+      <div className="pt-2 border-t border-slate-800">
         <button
-          onClick={() => onAdd(newPurpose, newRoomId ? [newRoomId] : [])}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
+          onClick={onCreateEmpty}
+          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[11px] font-bold transition"
+          title="Создать пустую линию: приборы, защиту и трассу добавите сами"
         >
-          <Plus size={12} />
-          Добавить
+          <Plus size={13} />
+          Создать линию
         </button>
+        <p className="mt-1 text-[9px] text-slate-500 leading-snug text-center">
+          Имя, назначение, автомат, кабель и УЗО — в строке линии. Приборы, порядок
+          подключения и трасса — кнопкой «Монтаж линии».
+        </p>
       </div>
 
       <p className="text-[9px] text-slate-500 leading-snug">
         Трасса на плане: сплошная — по потолку, пунктир — по полу. Длина кабеля включает
         вертикальные спуски, запас из настроек и 1,5 м на разделку в щитке. Порядок
-        подключения приборов — цепочкой от щитка. «Трасса» открывает редактор: вершина
+        подключения приборов — цепочкой от щитка. «Монтаж линии» открывает редактор: приборы
+        добавляются кликами по плану, вершина
         двигается свободно, соседние точки остаются на месте, а линия возвращается к ним
         ступеньками под 90°, не создавая новых точек; наклонная вершина скользит вдоль
         своей линии. Точка вставляется кликом по линии, а Delete удаляет точку и

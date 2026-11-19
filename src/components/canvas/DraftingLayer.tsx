@@ -1,6 +1,7 @@
 import React from 'react';
 import { Layer, Line, Circle, Text, Group, Rect } from 'react-konva';
 import type { Point2D, DynamicInputState, SnapResult } from '../../types';
+import type { PlacementDimension } from '../../core/electrical/devices';
 import { distance, angleDeg, polarToPoint, snapAngle } from '../../core/geometry/math';
 
 interface DraftingLayerProps {
@@ -12,6 +13,7 @@ interface DraftingLayerProps {
   isApartmentTool: boolean;
   isOpeningTool: boolean;
   isPartitionTool: boolean;
+  placementDims?: PlacementDimension[];
 }
 
 export const DraftingLayer: React.FC<DraftingLayerProps> = ({
@@ -23,6 +25,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
   isApartmentTool,
   isOpeningTool,
   isPartitionTool,
+  placementDims,
 }) => {
   // Визуализация маркера магнитной привязки
   const renderSnapIndicator = () => {
@@ -122,6 +125,70 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
     );
   };
 
+  // Размерные подсказки при постановке прибора
+  const renderPlacementDims = () => {
+    if (!placementDims || placementDims.length === 0) return null;
+
+    return (
+      <Group>
+        {placementDims.map((dim, i) => {
+          const dx = dim.to.x - dim.from.x;
+          const dy = dim.to.y - dim.from.y;
+          const len = Math.hypot(dx, dy) || 1;
+          const ux = dx / len;
+          const uy = dy / len;
+          const side = dim.labelSide ?? { x: -uy, y: ux };
+          const tick = 7 / zoom;
+          const nx = -uy;
+          const ny = ux;
+          const mid = {
+            x: (dim.from.x + dim.to.x) / 2 + (side.x * 14) / zoom,
+            y: (dim.from.y + dim.to.y) / 2 + (side.y * 14) / zoom,
+          };
+
+          return (
+            <Group key={`placement-dim-${i}`}>
+              <Line
+                points={[dim.from.x, dim.from.y, dim.to.x, dim.to.y]}
+                stroke="#38bdf8"
+                strokeWidth={1.25 / zoom}
+                opacity={0.9}
+              />
+              {[dim.from, dim.to].map((p, tickIndex) => (
+                <Line
+                  key={`tick-${tickIndex}`}
+                  points={[
+                    p.x - (nx * tick),
+                    p.y - (ny * tick),
+                    p.x + (nx * tick),
+                    p.y + (ny * tick),
+                  ]}
+                  stroke="#38bdf8"
+                  strokeWidth={1.25 / zoom}
+                  opacity={0.9}
+                />
+              ))}
+              <Text
+                text={`${Math.round(dim.lengthMm).toLocaleString('ru-RU')} мм`}
+                x={mid.x}
+                y={mid.y}
+                width={170 / zoom}
+                offsetX={85 / zoom}
+                offsetY={5 / zoom}
+                align="center"
+                fontSize={10 / zoom}
+                fontFamily="monospace"
+                fill="#7dd3fc"
+                shadowColor="#090d16"
+                shadowBlur={6 / zoom}
+              />
+            </Group>
+          );
+        })}
+      </Group>
+    );
+  };
+
   // Отрисовка направляющих лучей (Alignment Guides & Polar Rays)
   const renderGuideLines = () => {
     if (!activeSnap.guideLines || activeSnap.guideLines.length === 0) return null;
@@ -131,6 +198,13 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
         {activeSnap.guideLines.map((gl, i) => {
           const isPolar = gl.type === 'polar';
           const strokeColor = isPolar ? '#fbbf24' : '#38bdf8';
+          const gdx = gl.to.x - gl.from.x;
+          const gdy = gl.to.y - gl.from.y;
+          const guideLen = Math.hypot(gdx, gdy);
+          const gux = guideLen > 0 ? gdx / guideLen : 1;
+          const guy = guideLen > 0 ? gdy / guideLen : 0;
+          const labelX = (gl.from.x + gl.to.x) / 2 - (guy * 13) / zoom;
+          const labelY = (gl.from.y + gl.to.y) / 2 + (gux * 13) / zoom;
 
           return (
             <Group key={`guideline-${i}`}>
@@ -154,6 +228,25 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
                   fill="rgba(56, 189, 248, 0.4)"
                 />
               )}
+
+              {/* Длина луча привязки */}
+              {guideLen > 1 && (
+                <Text
+                  text={`${Math.round(guideLen).toLocaleString('ru-RU')} мм`}
+                  x={labelX}
+                  y={labelY}
+                  width={150 / zoom}
+                  offsetX={75 / zoom}
+                  offsetY={5 / zoom}
+                  align="center"
+                  fontSize={9.5 / zoom}
+                  fontFamily="monospace"
+                  fill={strokeColor}
+                  opacity={0.95}
+                  shadowColor="#090d16"
+                  shadowBlur={6 / zoom}
+                />
+              )}
             </Group>
           );
         })}
@@ -166,6 +259,7 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
     return (
       <Layer listening={false}>
         {renderGuideLines()}
+        {renderPlacementDims()}
         {renderSnapIndicator()}
         {!activeSnap.isSnapped && (
           <Circle
@@ -229,6 +323,9 @@ export const DraftingLayer: React.FC<DraftingLayerProps> = ({
     <Layer listening={false}>
       {/* Направляющие лучи (Polar & Alignment) */}
       {renderGuideLines()}
+
+      {/* Размерные подсказки при постановке прибора */}
+      {renderPlacementDims()}
 
       {/* Зафиксированные сегменты чертежа */}
       <Line

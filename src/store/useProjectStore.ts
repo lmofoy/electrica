@@ -36,7 +36,8 @@ import type {
   LinePurpose,
   PanelStrategy,
   PanelSupply,
-  ProjectView,
+  ProjectStep,
+  LinesTab,
 } from '../types';
 import {
   calculateRoomsOverlapAreaM2,
@@ -62,11 +63,11 @@ import {
   autoLinesFromDevices,
   createEmptyPanel,
   createLine,
-  recalculateLine,
   recalculateSupply,
   sanitizePanel,
   type PanelWallAnchor,
 } from '../core/electrical/panel';
+import { applyPresetToLine } from '../core/electrical/norms';
 import { buildPanelLayout } from '../core/electrical/panelLayout';
 import { prunePanelRefs } from '../core/electrical/lineAssignment';
 import {
@@ -134,8 +135,9 @@ interface ProjectState {
   rooms: RoomZone[];
   selection: Selection | null;
 
-  // Отдельный экран щитка вместо плана и подсветка линии на плане
-  activeView: ProjectView;
+  // Шаг проекта и вкладка правой панели линий
+  activeStep: ProjectStep;
+  linesTab: LinesTab;
   highlightedLineId: string | null;
   // Линия, в которую назначаются приборы кликами на плане (UI-режим)
   lineAssignLineId: string | null;
@@ -192,7 +194,6 @@ interface ProjectState {
   checkCoverage: () => void;
 
   // Режим работы
-  setDesignMode: (mode: DesignMode) => void;
   setActiveDeviceType: (type: DeviceType) => void;
   setDeviceShared: (shared: boolean) => void;
 
@@ -222,7 +223,8 @@ interface ProjectState {
   deleteDevice: (id: string) => void;
 
   // Щиток
-  setActiveView: (view: ProjectView) => void;
+  setActiveStep: (step: ProjectStep) => void;
+  setLinesTab: (tab: LinesTab) => void;
   setHighlightedLine: (id: string | null) => void;
   placePanel: (anchor: PanelWallAnchor) => void;
   deletePanel: () => void;
@@ -231,7 +233,7 @@ interface ProjectState {
   setPanelStrategy: (strategy: PanelStrategy) => void;
   generatePanelLines: () => void;
   appendUnassignedDevices: () => void;
-  addPanelLine: (purpose: LinePurpose, roomIds: string[]) => void;
+  createManualPanelLine: () => string | undefined;
   updatePanelLine: (id: string, updates: Partial<CircuitLine>) => void;
   deletePanelLine: (id: string) => void;
   clearPanelLines: () => void;
@@ -401,7 +403,8 @@ export const useProjectStore = create<ProjectState>()(
       rooms: [],
       selection: null,
 
-      activeView: 'plan',
+      activeStep: 'plan',
+      linesTab: 'lines',
       highlightedLineId: null,
       lineAssignLineId: null,
       routeEditLineId: null,
@@ -520,17 +523,6 @@ export const useProjectStore = create<ProjectState>()(
       setGridSnap: (enabled) => set({ gridSnap: enabled }),
       setSelection: (selection) => set({ selection }),
       setActiveSnap: (snap) => set({ activeSnap: snap }),
-
-      setDesignMode: (mode) =>
-        set({
-          designMode: mode,
-          lineAssignLineId: null,
-          routeEditLineId: null,
-          activeTool: 'select',
-          draftVertices: [],
-          dynamicInput: DEFAULT_DYNAMIC_INPUT,
-          activeSnap: DEFAULT_SNAP,
-        }),
 
       setActiveDeviceType: (type) =>
         set((state) => ({
@@ -1171,7 +1163,7 @@ export const useProjectStore = create<ProjectState>()(
           apartment: null,
           rooms: [],
           selection: null,
-          activeView: 'plan',
+          activeStep: 'plan',
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,
@@ -1273,7 +1265,7 @@ export const useProjectStore = create<ProjectState>()(
               nodes: {},
               walls: [],
               selection: null,
-              activeView: 'plan',
+              activeStep: 'plan',
               highlightedLineId: null,
               lineAssignLineId: null,
               routeEditLineId: null,
@@ -1299,7 +1291,7 @@ export const useProjectStore = create<ProjectState>()(
             ...next.state,
             devices: remainingDevices,
             panel: nextPanel,
-            activeView: nextPanel ? state.activeView : 'plan',
+            activeStep: nextPanel ? state.activeStep : 'plan',
             highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
             selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
           });
@@ -1338,7 +1330,7 @@ export const useProjectStore = create<ProjectState>()(
           openings: remainingOpenings,
           devices: remainingDevices,
           panel: nextPanel,
-          activeView: nextPanel ? state.activeView : 'plan',
+          activeStep: nextPanel ? state.activeStep : 'plan',
           highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
           selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
         });
@@ -1404,7 +1396,7 @@ export const useProjectStore = create<ProjectState>()(
             ...next.state,
             devices: remainingDevices,
             panel: nextPanel,
-            activeView: nextPanel ? state.activeView : 'plan',
+            activeStep: nextPanel ? state.activeStep : 'plan',
             highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
             selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
           });
@@ -1421,7 +1413,7 @@ export const useProjectStore = create<ProjectState>()(
             freePartitions: remainingPartitions,
             devices: remainingDevices,
             panel: nextPanel,
-            activeView: nextPanel ? state.activeView : 'plan',
+            activeStep: nextPanel ? state.activeStep : 'plan',
             highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
             selection: selectionRemoved || (state.panel && !nextPanel) ? null : selection,
           });
@@ -1491,21 +1483,20 @@ export const useProjectStore = create<ProjectState>()(
       // ---------------------------------------------------------
       // Щиток
       // ---------------------------------------------------------
-      setActiveView: (view) => {
-        const state = get();
-        if (view === 'panel' && !state.panel) {
-          state.addToast('Сначала разместите щиток на плане.', 'error');
-          return;
-        }
+      setActiveStep: (step) => {
         set({
-          activeView: view,
-          ...(view === 'panel' ? { routeEditLineId: null } : {}),
+          activeStep: step,
+          designMode: step === 'plan' ? 'architecture' : 'electrical',
+          lineAssignLineId: null,
+          routeEditLineId: null,
           activeTool: 'select',
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
         });
       },
+
+      setLinesTab: (tab) => set({ linesTab: tab }),
 
       setHighlightedLine: (id) => {
         if (id === null) {
@@ -1548,7 +1539,7 @@ export const useProjectStore = create<ProjectState>()(
         if (!state.panel) return;
         set({
           panel: null,
-          activeView: 'plan',
+          activeStep: 'plan',
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,
@@ -1638,26 +1629,28 @@ export const useProjectStore = create<ProjectState>()(
         );
       },
 
-      addPanelLine: (purpose, roomIds) => {
+      createManualPanelLine: () => {
         const state = get();
-        if (!state.panel) return;
-        const roomName =
-          roomIds.length > 0
-            ? state.rooms.find((room) => room.id === roomIds[0])?.name ?? 'Группа'
-            : 'Без комнаты';
+        if (!state.panel) return undefined;
         const line = {
           ...createLine(
-            purpose,
-            roomIds,
-            roomName,
+            'other',
+            [],
+            'Без комнаты',
             state.panel.lines.length,
             state.settings.defaultRouting
           ),
+          name: `Линия ${state.panel.lines.length + 1}`,
+          loadW: 0,
+          deviceIds: [],
+          roomIds: [],
           colorIndex: nextColorIndex(state.panel),
         };
         set({
           panel: { ...state.panel, lines: [...state.panel.lines, line] },
+          highlightedLineId: line.id,
         });
+        return line.id;
       },
 
       updatePanelLine: (id, updates) => {
@@ -1666,8 +1659,9 @@ export const useProjectStore = create<ProjectState>()(
         const lines = state.panel.lines.map((line) => {
           if (line.id !== id) return line;
           const merged = { ...line, ...updates, id: line.id };
-          if (updates.loadW !== undefined || updates.purpose !== undefined) {
-            return recalculateLine(merged);
+          // Смена назначения задаёт пресет; нагрузка и защита правятся вручную.
+          if (updates.purpose !== undefined) {
+            return applyPresetToLine(merged);
           }
           return merged;
         });
@@ -2106,7 +2100,8 @@ export const useProjectStore = create<ProjectState>()(
           apartment: null,
           rooms: [],
           selection: null,
-          activeView: 'plan',
+          activeStep: 'plan',
+          linesTab: 'lines',
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,
@@ -2172,7 +2167,8 @@ export const useProjectStore = create<ProjectState>()(
             devices,
             panel,
             selection: null,
-            activeView: 'plan',
+            activeStep: 'plan',
+            linesTab: 'lines',
             highlightedLineId: null,
             lineAssignLineId: null,
             routeEditLineId: null,
@@ -2229,7 +2225,8 @@ export const useProjectStore = create<ProjectState>()(
           devices,
           panel,
           selection: null,
-          activeView: 'plan',
+          activeStep: 'plan',
+          linesTab: 'lines',
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,

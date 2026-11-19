@@ -1061,14 +1061,16 @@ export function resolveDevice(
     };
     const offset = Math.max(0, Math.min(len, anchor.offsetMm));
     const normal = { x: -dir.y * anchor.side, y: dir.x * anchor.side };
+    // Прибор стоит на грани перегородки, а не на её осевой линии.
+    const half = Math.max(0, partition.thicknessMm) / 2;
 
     return {
       device,
       poses: [
         {
           position: {
-            x: partition.p1.x + dir.x * offset,
-            y: partition.p1.y + dir.y * offset,
+            x: partition.p1.x + dir.x * offset + normal.x * half,
+            y: partition.p1.y + dir.y * offset + normal.y * half,
           },
           rotationDeg: rotationForInward(normal),
           roomId: partition.roomId,
@@ -1278,6 +1280,7 @@ export function findDevicePlacement(
       (cursor.x - partition.p1.x) * normal.x + (cursor.y - partition.p1.y) * normal.y >= 0
         ? 1
         : -1;
+    const half = Math.max(0, partition.thicknessMm) / 2;
     return {
       ok: true,
       anchor: {
@@ -1287,8 +1290,8 @@ export function findDevicePlacement(
         side: side as 1 | -1,
       },
       position: {
-        x: partition.p1.x + dir.x * offsetMm,
-        y: partition.p1.y + dir.y * offsetMm,
+        x: partition.p1.x + dir.x * offsetMm + normal.x * side * half,
+        y: partition.p1.y + dir.y * offsetMm + normal.y * side * half,
       },
       rotationDeg: rotationForInward({ x: normal.x * side, y: normal.y * side }),
       roomId: best.roomId,
@@ -1341,6 +1344,144 @@ export function findDevicePlacement(
     roomId: best.roomId,
     isShared,
   };
+}
+
+export interface PlacementDimension {
+  from: Point2D;
+  to: Point2D;
+  lengthMm: number;
+  /** Куда смещать подпись от середины линии (единичный вектор). */
+  labelSide?: Point2D;
+}
+
+function segmentMeasureKey(a: Point2D, b: Point2D): string {
+  const p = `${Math.round(a.x)},${Math.round(a.y)}`;
+  const q = `${Math.round(b.x)},${Math.round(b.y)}`;
+  return p < q ? `${p}|${q}` : `${q}|${p}`;
+}
+
+function wallDimension(
+  cornerA: Point2D,
+  cornerB: Point2D,
+  point: Point2D,
+  labelSide: Point2D
+): PlacementDimension {
+  const da = distance(point, cornerA);
+  const db = distance(point, cornerB);
+  return {
+    from: da <= db ? cornerA : cornerB,
+    to: point,
+    lengthMm: Math.min(da, db),
+    labelSide,
+  };
+}
+
+// Люстра: два перпендикуляра к двум ближайшим стенам. На наклонных стенах
+// линии размеров просто идут по нормали стены, а не строго по X/Y.
+function ceilingDimensions(
+  point: Point2D,
+  room: RoomZone,
+  partitions: FreePartition[]
+): PlacementDimension[] {
+  const segments: { a: Point2D; b: Point2D }[] = [];
+  const count = room.vertices.length;
+  for (let i = 0; i < count; i++) {
+    segments.push({ a: room.vertices[i], b: room.vertices[(i + 1) % count] });
+  }
+
+  for (const partition of partitions) {
+    if (partition.roomId !== room.id) continue;
+    const len = distance(partition.p1, partition.p2);
+    if (len < 1) continue;
+    const dir = {
+      x: (partition.p2.x - partition.p1.x) / len,
+      y: (partition.p2.y - partition.p1.y) / len,
+    };
+    const normal = { x: -dir.y, y: dir.x };
+    const side =
+      (point.x - partition.p1.x) * normal.x + (point.y - partition.p1.y) * normal.y >= 0
+        ? 1
+        : -1;
+    const half = (Math.max(0, partition.thicknessMm) / 2) * side;
+    segments.push({
+      a: { x: partition.p1.x + normal.x * half, y: partition.p1.y + normal.y * half },
+      b: { x: partition.p2.x + normal.x * half, y: partition.p2.y + normal.y * half },
+    });
+  }
+
+  const measured: { dim: PlacementDimension; dist: number }[] = [];
+  const seen = new Set<string>();
+  for (const seg of segments) {
+    const key = segmentMeasureKey(seg.a, seg.b);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const proj = projectPointOnSegment(point, seg.a, seg.b);
+    if (proj.t <= 0.001 || proj.t >= 0.999) continue;
+    if (proj.distance < 1) continue;
+    measured.push({
+      dim: { from: proj.point, to: point, lengthMm: proj.distance },
+      dist: proj.distance,
+    });
+  }
+
+  measured.sort((a, b) => a.dist - b.dist);
+  return measured.slice(0, 2).map((item) => item.dim);
+}
+
+/**
+ * Размерные подсказки при постановке прибора:
+ * настенный — расстояние вдоль стены до ближайшего угла комнаты,
+ * потолочный — два перпендикуляра до ближайших стен.
+ */
+export function buildPlacementDimensions(
+  type: DeviceType,
+  cursor: Point2D,
+  rooms: RoomZone[],
+  partitions: FreePartition[],
+  thickness: number
+): PlacementDimension[] {
+  const placement = findDevicePlacement(type, cursor, rooms, partitions, thickness, false);
+  if (!placement.ok) return [];
+  const anchor = placement.anchor;
+
+  if (DEVICE_CATALOG[type].mounting === 'ceiling') {
+    const room = rooms.find((candidate) => candidate.id === placement.roomId);
+    return room ? ceilingDimensions(placement.position, room, partitions) : [];
+  }
+
+  if (anchor.kind === 'room_edge') {
+    const room = rooms.find((candidate) => candidate.id === anchor.roomId);
+    if (!room || room.vertices.length < 3) return [];
+    const count = room.vertices.length;
+    const index = ((anchor.edgeIndex % count) + count) % count;
+    const a = room.vertices[index];
+    const b = room.vertices[(index + 1) % count];
+    return [wallDimension(a, b, placement.position, inwardNormalForEdge(room, a, b))];
+  }
+
+  if (anchor.kind === 'partition') {
+    const partition = partitions.find((candidate) => candidate.id === anchor.partitionId);
+    if (!partition) return [];
+    const len = distance(partition.p1, partition.p2);
+    if (len < 1) return [];
+    const dir = {
+      x: (partition.p2.x - partition.p1.x) / len,
+      y: (partition.p2.y - partition.p1.y) / len,
+    };
+    const normal = { x: -dir.y * anchor.side, y: dir.x * anchor.side };
+    const half = Math.max(0, partition.thicknessMm) / 2;
+    const a = {
+      x: partition.p1.x + normal.x * half,
+      y: partition.p1.y + normal.y * half,
+    };
+    const b = {
+      x: partition.p2.x + normal.x * half,
+      y: partition.p2.y + normal.y * half,
+    };
+    return [wallDimension(a, b, placement.position, normal)];
+  }
+
+  return [];
 }
 
 export function sanitizeDevices(

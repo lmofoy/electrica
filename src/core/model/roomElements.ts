@@ -79,6 +79,41 @@ export function collectRoomElements(
   };
 }
 
+export interface PlanChecklistItem {
+  id: 'rooms' | 'doors' | 'windows';
+  label: string;
+  count: number;
+  done: boolean;
+}
+
+export interface PlanChecklist {
+  rooms: number;
+  doors: number;
+  windows: number;
+  /** Шаг «План» готов, когда размечена хотя бы одна комната. */
+  complete: boolean;
+  items: PlanChecklistItem[];
+}
+
+export function buildPlanChecklist(
+  rooms: RoomZone[],
+  openings: Opening[]
+): PlanChecklist {
+  const doors = openings.filter((opening) => opening.type === 'door').length;
+  const windows = openings.filter((opening) => opening.type === 'window').length;
+  return {
+    rooms: rooms.length,
+    doors,
+    windows,
+    complete: rooms.length > 0,
+    items: [
+      { id: 'rooms', label: 'Комнат', count: rooms.length, done: rooms.length > 0 },
+      { id: 'doors', label: 'Дверей', count: doors, done: doors > 0 },
+      { id: 'windows', label: 'Окон', count: windows, done: windows > 0 },
+    ],
+  };
+}
+
 export function countRoomElements(elements: RoomElements): number {
   return (
     elements.doors.length +

@@ -237,12 +237,11 @@ export interface ElectricalDevice {
   circuitId?: string;
 }
 
-// -------------------------------------------------------------
-// Электрощиток: отдельный модуль со своей схемой.
-// Щиток привязан к стене (грань комнаты или перегородка), на плане
-// отображается символом, а его схема открывается отдельным экраном.
-// -------------------------------------------------------------
-export type ProjectView = 'plan' | 'panel';
+// Шаги работы над проектом: один вход на функцию, план всегда на экране.
+export type ProjectStep = 'plan' | 'devices' | 'lines' | 'check' | 'docs';
+
+// Вкладки правой панели шага «Линии».
+export type LinesTab = 'lines' | 'panel';
 
 export type PanelStrategy = 'budget' | 'optimal' | 'maximum' | 'custom';
 

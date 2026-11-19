@@ -19,6 +19,7 @@ import { findBestSnapAdvanced } from '../../core/geometry/snapping';
 import { buildAutoLayout } from '../../core/geometry/autoLayout';
 import {
   DEVICE_CATALOG,
+  buildPlacementDimensions,
   findDevicePlacement,
   resolveDevice,
   type ResolvedDevice,
@@ -55,6 +56,9 @@ import type {
 import { Home, PenTool } from 'lucide-react';
 
 Konva.dragButtons = [0];
+
+// Пустая линия: трассы ещё нет, но редактор монтажа должен открываться.
+const EMPTY_ROUTE: ManualRoute = { nodes: [], paths: [], anchors: [] };
 
 export const CADCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -115,7 +119,7 @@ export const CADCanvas: React.FC = () => {
     addToast,
     drawingStage,
     boundaryMode,
-    activeView,
+    activeStep,
     routeEditLineId,
     setRouteEditLine,
     moveLineRouteNode,
@@ -446,6 +450,25 @@ export const CADCanvas: React.FC = () => {
     rooms,
     freePartitions,
     deviceShared,
+    settings.defaultWallThicknessMm,
+  ]);
+
+  const placementDims = useMemo(() => {
+    if (activeTool !== 'place_device' || !devicePreview.resolved) return [];
+    return buildPlacementDimensions(
+      activeDeviceType,
+      cursorPosMm,
+      rooms,
+      freePartitions,
+      settings.defaultWallThicknessMm
+    );
+  }, [
+    activeTool,
+    devicePreview.resolved,
+    activeDeviceType,
+    cursorPosMm,
+    rooms,
+    freePartitions,
     settings.defaultWallThicknessMm,
   ]);
 
@@ -852,7 +875,7 @@ export const CADCanvas: React.FC = () => {
       observer.disconnect();
       window.removeEventListener('resize', updateSize);
     };
-  }, [activeView]);
+  }, [activeStep]);
 
   useEffect(() => {
     const stopPanning = () => { isMiddleDraggingRef.current = false; };
@@ -1424,6 +1447,7 @@ export const CADCanvas: React.FC = () => {
           isApartmentTool={activeTool === 'draw_apartment'}
           isOpeningTool={activeTool === 'draw_opening'}
           isPartitionTool={activeTool === 'draw_partition'}
+          placementDims={placementDims}
         />
         {routeEditLine && routeEditRoute && (
           <ManualRouteLayer
@@ -1491,18 +1515,25 @@ export const CADCanvas: React.FC = () => {
           />
           <div className="min-w-0">
             <div className="text-[11px] font-bold text-white truncate max-w-[260px]">
-              Ручная трасса: {routeEditLine.name} · {routeEditLine.manualRoute ? 'ручная' : 'авто'}
+              {routeEditRoute
+                ? `Ручная трасса: ${routeEditLine.name} · ${routeEditLine.manualRoute ? 'ручная' : 'авто'}`
+                : `Монтаж линии: ${routeEditLine.name} · приборов нет`}
             </div>
             <div className="text-[9px] text-slate-400">
-              Точек: {routeEditRoute ? routeEditRoute.nodes.length - (routeEditRoute.bendNodes?.length ?? 0) : 0} · Кабель: {((lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0) / 1000).toFixed(1)} м
-              {' · '}потолок {settings.ceilingHeightMm} мм · пол {settings.floorLevelMm} мм
+              {routeEditRoute
+                ? `Точек: ${routeEditRoute.nodes.length - (routeEditRoute.bendNodes?.length ?? 0)} · Кабель: ${((lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0) / 1000).toFixed(1)} м · потолок ${settings.ceilingHeightMm} мм · пол ${settings.floorLevelMm} мм`
+                : 'Добавьте приборы в списке «Порядок точек»: они подключатся кликами по плану, трасса построится сама.'}
             </div>
-            <div className="text-[9px] text-slate-400">
-              Перетаскивание — свободное в 2D, линия возвращается к соседям ступеньками под 90° без новых точек · наклонная — скольжение вдоль линии · клик по линии — вставить точку · Delete — удалить точку: участок до соседних точек перестроится под 90° · Esc — выйти
-            </div>
-            <div className="text-[9px] text-slate-500">
-              «Список» — порядок точек и приборов по ветвям: перетащите строку, и кабель пойдёт строго в этом порядке. Щиток и приборы закреплены, стык подвижен. Цветные маркеры — подвижные точки, серые — точки подключения. Изгибы под 90° точками не считаются.
-            </div>
+            {routeEditRoute && (
+              <>
+                <div className="text-[9px] text-slate-400">
+                  Перетаскивание — свободное в 2D, линия возвращается к соседям ступеньками под 90° без новых точек · наклонная — скольжение вдоль линии · клик по линии — вставить точку · Delete — удалить точку: участок до соседних точек перестроится под 90° · Esc — выйти
+                </div>
+                <div className="text-[9px] text-slate-500">
+                  «Список» — порядок точек и приборов по ветвям: перетащите строку, и кабель пойдёт строго в этом порядке. Щиток и приборы закреплены, стык подвижен. Цветные маркеры — подвижные точки, серые — точки подключения. Изгибы под 90° точками не считаются.
+                </div>
+              </>
+            )}
             {routePreviewError && (
               <div className="text-[9px] text-rose-400 font-semibold max-w-[520px]">
                 {routePreviewError}
@@ -1522,20 +1553,24 @@ export const CADCanvas: React.FC = () => {
           >
             Список
           </button>
-          <button
-            onClick={() => setManualDrawConfirm(true)}
-            className="shrink-0 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
-            title="Удалить текущую трассу и нарисовать её заново вручную"
-          >
-            Проложить вручную
-          </button>
-          <button
-            onClick={resetRoute}
-            disabled={!routeEditLine.manualRoute && !routeEditLine.waypoints?.length}
-            className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
-          >
-            Сбросить к авто
-          </button>
+          {routeEditRoute && (
+            <>
+              <button
+                onClick={() => setManualDrawConfirm(true)}
+                className="shrink-0 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
+                title="Удалить текущую трассу и нарисовать её заново вручную"
+              >
+                Проложить вручную
+              </button>
+              <button
+                onClick={resetRoute}
+                disabled={!routeEditLine.manualRoute && !routeEditLine.waypoints?.length}
+                className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
+              >
+                Сбросить к авто
+              </button>
+            </>
+          )}
           <button
             onClick={() => setRouteEditLine(null)}
             className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
@@ -1655,10 +1690,10 @@ export const CADCanvas: React.FC = () => {
         </div>
       )}
 
-      {routeEditLine && routeEditRoute && stopsPanelOpen && (
+      {routeEditLine && stopsPanelOpen && (
         <RouteStopsPopover
           line={routeEditLine}
-          route={routeEditRoute}
+          route={routeEditRoute ?? EMPTY_ROUTE}
           color={lineColorMap.get(routeEditLine.id) ?? '#38bdf8'}
           devices={devices}
           selectedNode={routeNodeSelectionIndex}
@@ -1672,7 +1707,10 @@ export const CADCanvas: React.FC = () => {
         />
       )}
 
-      {boundaryMode === 'auto' && rooms.length === 0 && activeTool !== 'draw_room' && (
+      {activeStep === 'plan' &&
+        boundaryMode === 'auto' &&
+        rooms.length === 0 &&
+        activeTool !== 'draw_room' && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
           <div className="bg-slate-900/90 border border-slate-700/80 p-8 rounded-2xl shadow-2xl backdrop-blur-md max-w-md text-center pointer-events-auto">
             <div className="w-14 h-14 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 mx-auto flex items-center justify-center mb-4">
@@ -1687,13 +1725,14 @@ export const CADCanvas: React.FC = () => {
               onClick={() => startRoomDrawing()}
               className="w-full py-3 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-white font-bold text-sm shadow-lg shadow-sky-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
             >
-              Начертить комнату
+              Начертить первую комнату
             </button>
           </div>
         </div>
       )}
 
-      {boundaryMode === 'manual' &&
+      {activeStep === 'plan' &&
+        boundaryMode === 'manual' &&
         !apartment &&
         activeTool !== 'draw_apartment' &&
         drawingStage === 'boundary' && (

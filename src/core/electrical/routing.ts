@@ -872,5 +872,5 @@ export function materializeRouteForLine(
 
 export function formatCableLengthMm(lengthMm: number): string {
   if (lengthMm <= 0) return '—';
-  return `${(lengthMm / 1000).toFixed(1)} м`;
+  return `${(lengthMm / 1000).toFixed(1).replace('.', ',')} м`;
 }

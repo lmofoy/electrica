@@ -237,8 +237,13 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
             Порядок точек
           </div>
           <div className="text-[9px] text-slate-400 leading-tight truncate">
-            {line.name} · {branches.length === 1 ? 'одна ветвь' : `ветвей: ${branches.length}`} ·{' '}
-            {totalStops} в списке · {(totalLengthMm / 1000).toFixed(1)} м
+            {line.name} ·{' '}
+            {branches.length === 0
+              ? 'приборов нет'
+              : branches.length === 1
+                ? 'одна ветвь'
+                : `ветвей: ${branches.length}`}{' '}
+            · {totalStops} в списке · {(totalLengthMm / 1000).toFixed(1)} м
           </div>
         </div>
         <button

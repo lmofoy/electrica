@@ -7,15 +7,13 @@ import {
   Home,
   Layers,
   Info,
-  PenTool,
+  Check,
   DoorOpen,
   Square,
   Split,
   Plug,
   CircuitBoard,
-  ExternalLink,
   Move,
-  Cable,
 } from 'lucide-react';
 import type { RoomType, RoomZone, Selection, Wall } from '../../types';
 import {
@@ -23,11 +21,9 @@ import {
   resolveDevice,
   type ResolvedDevice,
 } from '../../core/electrical/devices';
-import { buildPanelLayout } from '../../core/electrical/panelLayout';
-import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
-import { computeLineRoutes, formatCableLengthMm } from '../../core/electrical/routing';
 import {
+  buildPlanChecklist,
   collectRoomElements,
   formatRoomDeletionPrompt,
   getOpeningRoomIds,
@@ -286,24 +282,20 @@ const RoomInspector: React.FC<RoomInspectorProps> = ({
   );
 };
 
-export const Sidebar: React.FC = () => {
+export const Sidebar: React.FC<{ step: 'plan' | 'devices' }> = ({ step }) => {
   const {
     apartment,
     rooms,
     walls,
-    nodes,
     openings,
     freePartitions,
     devices,
     panel,
     selection,
-    highlightedLineId,
     settings,
     boundaryMode,
     setSelection,
     setActiveTool,
-    setDesignMode,
-    setActiveView,
     setHighlightedLine,
     assignDevicesToLine,
     unassignDevicesFromLines,
@@ -314,8 +306,6 @@ export const Sidebar: React.FC = () => {
     deletePartition,
     deleteDevice,
     deletePanel,
-    startApartmentDrawing,
-    startRoomDrawing,
     coveragePercent,
     isCoverageValid,
   } = useProjectStore();
@@ -396,25 +386,8 @@ export const Sidebar: React.FC = () => {
       ? autoFloors.reduce((sum, floor) => sum + floor.areaM2, 0)
       : rooms.reduce((sum, r) => sum + calculateNetAreaM2(r.vertices, r.holes ?? []), 0);
 
-  const panelLayout = useMemo(() => (panel ? buildPanelLayout(panel) : null), [panel]);
   const lineColors = useMemo(() => buildLineColorMap(panel), [panel]);
-  const lineRoutes = useMemo(
-    () =>
-      computeLineRoutes({
-        panel,
-        devices,
-        rooms,
-        partitions: freePartitions,
-        nodes,
-        walls,
-        settings,
-      }),
-    [panel, devices, rooms, freePartitions, nodes, walls, settings]
-  );
-  const unassignedDevices = useMemo(
-    () => collectUnassignedDevices(devices, panel),
-    [devices, panel]
-  );
+  const planChecklist = useMemo(() => buildPlanChecklist(rooms, openings), [rooms, openings]);
 
   const selectedDevice =
     selection?.kind === 'device'
@@ -425,7 +398,6 @@ export const Sidebar: React.FC = () => {
     : null;
 
   const startPanelPlacement = () => {
-    setDesignMode('electrical');
     setActiveTool('place_panel');
   };
 
@@ -505,13 +477,10 @@ export const Sidebar: React.FC = () => {
             </div>
           ) : (
             <div className="bg-slate-900/60 border border-dashed border-slate-700 rounded-xl p-3 text-center">
-              <p className="text-xs text-slate-400 mb-2">Расчётный контур появится после первой комнаты</p>
-              <button
-                onClick={() => startRoomDrawing()}
-                className="w-full py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold transition"
-              >
-                + Начертить комнату
-              </button>
+              <p className="text-xs text-slate-400">Расчётный контур появится после первой комнаты.</p>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Нарисуйте её кнопкой «Начертить первую комнату» на плане.
+              </p>
             </div>
           )
         ) : apartment ? (
@@ -531,13 +500,10 @@ export const Sidebar: React.FC = () => {
           </div>
         ) : (
           <div className="bg-slate-900/60 border border-dashed border-slate-700 rounded-xl p-3 text-center">
-            <p className="text-xs text-slate-400 mb-2">Контур квартиры не задан</p>
-            <button
-              onClick={startApartmentDrawing}
-              className="w-full py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold transition"
-            >
-              + Начертить контур
-            </button>
+            <p className="text-xs text-slate-400">Контур квартиры не задан.</p>
+            <p className="mt-1 text-[10px] text-slate-500">
+              Кнопка «Начертить контур квартиры» ждёт в центре плана.
+            </p>
           </div>
         )}
 
@@ -563,58 +529,35 @@ export const Sidebar: React.FC = () => {
           </div>
         )}
 
+        {step === 'devices' && (
         <div className="mt-3 pt-3 border-t border-slate-800">
-          {panel && panelLayout ? (
-            <div
-              onClick={() => setSelection({ kind: 'panel', id: panel.id })}
-              className={`p-3 rounded-xl border cursor-pointer transition ${
-                selection?.kind === 'panel'
-                  ? 'bg-slate-800 border-sky-500 shadow-lg shadow-sky-950/40'
-                  : 'bg-slate-900 border-sky-500/30 hover:bg-slate-800/60'
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <CircuitBoard size={15} className="text-sky-400 shrink-0" />
-                  <span className="text-xs font-semibold text-white truncate">
+          {panel ? (
+            <div className="p-2.5 rounded-xl border border-slate-800 bg-slate-950/40">
+              <div className="flex items-center gap-2">
+                <CircuitBoard size={14} className="text-sky-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] font-semibold text-white truncate">
                     {panel.name}
-                  </span>
+                  </div>
+                  <div className="text-[9px] text-slate-500">
+                    Щиток размещён на плане
+                  </div>
                 </div>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  onClick={startPanelPlacement}
+                  className="text-slate-500 hover:text-sky-300 p-1 rounded shrink-0"
+                  title="Переместить щиток на другую стену"
+                >
+                  <Move size={13} />
+                </button>
+                <button
+                  onClick={() => {
                     if (confirm('Удалить электрощиток и его схему?')) deletePanel();
                   }}
                   className="text-slate-500 hover:text-rose-400 p-1 rounded shrink-0"
                   title="Удалить щиток"
                 >
                   <Trash2 size={13} />
-                </button>
-              </div>
-              <div className="text-[10px] text-slate-400 font-mono mt-1">
-                {panel.lines.length} линий · {panelLayout.modulesTotal} мод. · корпус{' '}
-                {panelLayout.enclosureModules} · свободно {panelLayout.freeModules}
-              </div>
-              <div className="flex items-center gap-1.5 mt-2">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveView('panel');
-                  }}
-                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[11px] font-bold transition"
-                >
-                  <ExternalLink size={12} />
-                  Открыть схему
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    startPanelPlacement();
-                  }}
-                  className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition"
-                  title="Переместить щиток на другую стену"
-                >
-                  <Move size={12} />
                 </button>
               </div>
             </div>
@@ -628,6 +571,7 @@ export const Sidebar: React.FC = () => {
             </button>
           )}
         </div>
+        )}
       </div>
 
       {/* 2. Подчиненный уровень иерархии: Комнаты внутри квартиры */}
@@ -697,120 +641,6 @@ export const Sidebar: React.FC = () => {
           </div>
         )}
 
-        {panel && panel.lines.length > 0 && (
-          <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-2">
-            <div className="flex items-center justify-between px-1 mb-1.5">
-              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-sky-400">
-                <Cable size={12} />
-                Линии ({panel.lines.length})
-              </div>
-              {highlightedLineId && (
-                <button
-                  onClick={() => setHighlightedLine(null)}
-                  className="text-[9px] text-slate-400 hover:text-slate-200 underline underline-offset-2"
-                >
-                  снять подсветку
-                </button>
-              )}
-            </div>
-
-            <div className="space-y-1">
-              {panel.lines.map((line) => {
-                const color = lineColors.get(line.id) ?? '#38bdf8';
-                const active = line.id === highlightedLineId;
-                const lineDevices = devices.filter((device) =>
-                  line.deviceIds.includes(device.id)
-                );
-                const route = lineRoutes.get(line.id);
-
-                return (
-                  <div
-                    key={line.id}
-                    className={`rounded-lg border transition ${
-                      active ? '' : 'border-slate-800/80 bg-slate-950/50'
-                    }`}
-                    style={
-                      active
-                        ? {
-                            borderColor: color,
-                            backgroundColor: `${color}1f`,
-                            boxShadow: `0 0 0 1px ${color}55`,
-                          }
-                        : undefined
-                    }
-                  >
-                    <button
-                      onClick={() => setHighlightedLine(active ? null : line.id)}
-                      className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left"
-                      title="Подсветить линию и её приборы на плане"
-                    >
-                      <span
-                        className="w-2.5 h-2.5 rounded-full shrink-0"
-                        style={{
-                          backgroundColor: color,
-                          boxShadow: active ? `0 0 6px ${color}` : undefined,
-                        }}
-                      />
-                      <span className="flex-1 min-w-0 text-[11px] font-semibold text-slate-200 truncate">
-                        {line.name}
-                      </span>
-                      <span className="text-[9px] font-mono text-slate-500 shrink-0">
-                        {lineDevices.length} приб. · {Math.round(line.loadW)} Вт
-                        {route && route.cableLengthMm > 0
-                          ? ` · ${formatCableLengthMm(route.cableLengthMm)}`
-                          : ''}
-                      </span>
-                    </button>
-
-                    {active && (
-                      <div className="px-2 pb-1.5 space-y-0.5">
-                        {lineDevices.length === 0 ? (
-                          <div className="text-[10px] text-amber-400">
-                            На линии нет приборов.
-                          </div>
-                        ) : (
-                          lineDevices.map((device) => {
-                            const resolved = resolvedDevices.find(
-                              (candidate) => candidate.device.id === device.id
-                            );
-                            const roomId = resolved?.roomIds[0];
-                            const roomName = roomId
-                              ? rooms.find((room) => room.id === roomId)?.name
-                              : null;
-                            return (
-                              <div
-                                key={device.id}
-                                className="flex items-center gap-1.5 text-[10px] text-slate-400"
-                              >
-                                <span
-                                  className="w-1 h-1 rounded-full shrink-0"
-                                  style={{ backgroundColor: color }}
-                                />
-                                <span className="truncate">{device.name}</span>
-                                {roomName && (
-                                  <span className="text-slate-600 truncate">
-                                    · {roomName}
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {unassignedDevices.length > 0 && (
-              <div className="mt-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-300 leading-snug">
-                Вне линий: {unassignedDevices.length} приб. — они не попадут в трассы.
-              </div>
-            )}
-          </div>
-        )}
-
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-xs font-bold text-sky-400 uppercase tracking-wider">
             <Layers size={14} />
@@ -829,26 +659,43 @@ export const Sidebar: React.FC = () => {
               )}
         </div>
 
+        {step === 'plan' && (
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/60 px-2.5 py-2"
+            title="Разметка плана: комнаты, двери и окна"
+          >
+            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+              Разметка
+            </span>
+            {planChecklist.items.map((item) => (
+              <span
+                key={item.id}
+                className={`flex items-center gap-1 text-[10px] font-mono ${
+                  item.done ? 'text-emerald-300' : 'text-slate-500'
+                }`}
+              >
+                {item.label} <strong className="font-semibold">{item.count}</strong>
+                {item.done && <Check size={10} />}
+              </span>
+            ))}
+          </div>
+        )}
+
         {rooms.length === 0 ? (
           <div className="text-center py-8 text-slate-500 text-xs leading-relaxed">
             {boundaryMode === 'auto' ? (
               <>
                 Комнат пока нет.
                 <br />
-                Начните с первой комнаты — стены и контур квартиры построятся автоматически.
-                <button
-                  onClick={() => startRoomDrawing()}
-                  className="mt-3 mx-auto flex items-center justify-center gap-2 py-1.5 px-3 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-lg text-xs font-semibold transition"
-                >
-                  <PenTool size={13} />
-                  Начертить комнату
-                </button>
+                Нарисуйте первую комнату кнопкой на плане — стены и контур квартиры
+                построятся автоматически.
               </>
             ) : apartment ? (
               <>
                 Внутри квартиры пока нет комнат.
                 <br />
-                Нажмите <strong className="text-sky-400">«+ Комната»</strong> вверху и очертите зону.
+                Нажмите <strong className="text-sky-400">«Комната»</strong> слева и очертите
+                зону.
               </>
             ) : (
               'Сначала очертите контур квартиры.'
@@ -909,8 +756,24 @@ export const Sidebar: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between text-xs text-slate-400 pt-1 border-t border-slate-800/50 font-mono">
-                  <span>{roomTypeLabels[room.type] || 'Зона'}</span>
+                <div className="flex items-center justify-between gap-2 text-xs text-slate-400 pt-1 border-t border-slate-800/50 font-mono">
+                  <select
+                    value={room.type}
+                    onChange={(e) =>
+                      updateRoom(room.id, { type: e.target.value as RoomType })
+                    }
+                    onClick={(e) => e.stopPropagation()}
+                    className="min-w-0 max-w-[120px] cursor-pointer bg-transparent text-[10px] text-slate-400 hover:text-sky-300 focus:text-sky-300 focus:outline-none"
+                    title="Тип комнаты"
+                  >
+                    {(Object.entries(roomTypeLabels) as [RoomType, string][]).map(
+                      ([value, label]) => (
+                        <option key={value} value={value} className="bg-slate-900 text-slate-200">
+                          {label}
+                        </option>
+                      )
+                    )}
+                  </select>
                   <span className="font-bold text-sky-400">{area.toFixed(2)} м²</span>
                 </div>
 
