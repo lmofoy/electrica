@@ -4,24 +4,31 @@ import type {
   ElectricalPanel,
   LinePurpose,
   LineRouting,
+  PanelStep,
   RoomZone,
 } from '../../types';
-import { CABLE_AMPACITY_A, LINE_PRESETS, LINE_PURPOSES, makeRcd, makeBreaker, makeCable, BREAKER_RATINGS, CABLE_SECTIONS } from '../../core/electrical/norms';
+import {
+  CABLE_AMPACITY_A,
+  CABLE_SECTIONS,
+  LINE_PRESETS,
+  LINE_PURPOSES,
+  makeCable,
+} from '../../core/electrical/norms';
 import { lineCurrentA } from '../../core/electrical/panel';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { formatCableLengthMm, type LineRoute } from '../../core/electrical/routing';
 import {
   Plus,
   Trash2,
-  Wand2,
   AlertTriangle,
-  ChevronDown,
   Scissors,
   Merge,
   Wrench,
+  ArrowRight,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { LineCompositionDialog } from './LineCompositionDialog';
+import type { PanelCheckItem } from './usePanelDiagnostics';
 
 interface PanelLinesTableProps {
   panel: ElectricalPanel;
@@ -30,24 +37,69 @@ interface PanelLinesTableProps {
   defaultRouting: LineRouting;
   highlightedLineId: string | null;
   unassignedCount: number;
+  mode: 'composition' | 'cable';
+  lineChecks: Map<string, PanelCheckItem[]>;
   onHighlight: (id: string | null) => void;
   onCreateEmpty: () => void;
   onUpdate: (id: string, updates: Partial<CircuitLine>) => void;
   onDelete: (id: string) => void;
-  onGenerate: () => void;
   onAppend: () => void;
+  onOpenStep: (step: PanelStep, lineId?: string) => void;
 }
 
-function rcdValue(line: CircuitLine): string {
-  if (!line.rcd) return 'off';
-  return `${line.rcd.sensitivityMa}-${line.rcd.type}`;
-}
+const CHECK_TEXT: Record<PanelCheckItem['severity'], string> = {
+  error: 'text-rose-300',
+  warning: 'text-amber-300',
+  info: 'text-sky-300',
+};
 
-function applyRcdValue(line: CircuitLine, value: string): CircuitLine['rcd'] {
-  if (value === 'off') return null;
-  const [sensitivity, type] = value.split('-');
-  return makeRcd(Number(sensitivity), type as 'A' | 'AC', line.breaker.ratingA);
-}
+const stripLinePrefix = (message: string) => message.replace(/^«[^»]+»:\s*/, '');
+
+const LineChecks: React.FC<{ items: PanelCheckItem[] }> = ({ items }) => {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5">
+      {items.map((item) => (
+        <p
+          key={item.id}
+          className={`text-[9px] leading-snug ${CHECK_TEXT[item.severity]}`}
+          title={item.reference}
+        >
+          {stripLinePrefix(item.message)}
+        </p>
+      ))}
+    </div>
+  );
+};
+
+const EmptyState: React.FC<{ mode: 'composition' | 'cable'; onCreate: () => void }> = ({
+  mode,
+  onCreate,
+}) =>
+  mode === 'composition' ? (
+    <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-center">
+      <p className="text-xs text-slate-400 mb-1">Линий пока нет.</p>
+      <p className="text-[10px] text-slate-500 leading-relaxed">
+        Создайте линию и распределите по ней приборы. Кабель и защиту вы выберете
+        следующими шагами.
+      </p>
+      <button
+        onClick={onCreate}
+        className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
+      >
+        <Plus size={12} />
+        Создать линию
+      </button>
+    </div>
+  ) : (
+    <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-center">
+      <p className="text-xs text-slate-400 mb-1">Кабелей пока нет.</p>
+      <p className="text-[10px] text-slate-500 leading-relaxed">
+        Сначала соберите линии из приборов на шаге 1 — здесь появятся их кабели и
+        трассы.
+      </p>
+    </div>
+  );
 
 export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   panel,
@@ -56,22 +108,24 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   defaultRouting,
   highlightedLineId,
   unassignedCount,
+  mode,
+  lineChecks,
   onHighlight,
   onCreateEmpty,
   onUpdate,
   onDelete,
-  onGenerate,
   onAppend,
+  onOpenStep,
 }) => {
   const [dialog, setDialog] = useState<{ lineId: string; mode: 'edit' | 'split' } | null>(
     null
   );
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeIds, setMergeIds] = useState<Set<string>>(new Set());
-  const [generateMenuOpen, setGenerateMenuOpen] = useState(false);
   const mergePanelLines = useProjectStore((state) => state.mergePanelLines);
   const setRouteEditLine = useProjectStore((state) => state.setRouteEditLine);
   const lineColors = buildLineColorMap(panel);
+  const composition = mode === 'composition';
 
   const toggleMerge = (lineId: string) => {
     setMergeIds((previous) => {
@@ -94,90 +148,49 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2.5">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-sm font-bold text-white">Линии и аппараты защиты</div>
-          <div className="text-[10px] text-slate-400">
-            Номинал автомата ≤ ток кабеля · нагрузка ≤ номинал автомата
+          <div className="text-xs font-bold text-white">
+            {composition ? 'Состав линий' : 'Кабели и трассы'}
+          </div>
+          <div className="text-[9px] text-slate-500 leading-snug">
+            {composition
+              ? 'Какие приборы входят в каждую линию'
+              : 'Сечение, способ прокладки и физическая трасса по плану'}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {panel.lines.length >= 2 && (
-            <button
-              onClick={() => (mergeMode ? cancelMerge() : setMergeMode(true))}
-              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-semibold transition ${
-                mergeMode
-                  ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
-                  : 'bg-slate-800/60 hover:bg-slate-800 border-slate-700 text-slate-300'
-              }`}
-              title="Объединить несколько линий в одну"
-            >
-              <Merge size={12} />
-              Объединить
-            </button>
-          )}
-          {panel.lines.length > 0 && (
-          <div className="relative">
-            <button
-              onClick={() => setGenerateMenuOpen((open) => !open)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[11px] font-semibold transition"
-              title="Собрать линии из приборов на плане"
-            >
-              <Wand2 size={13} />
-              Из приборов
-              <ChevronDown size={12} />
-            </button>
-
-            {generateMenuOpen && (
-              <>
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={() => setGenerateMenuOpen(false)}
-                />
-                <div className="absolute right-0 top-full mt-1 z-20 w-56 rounded-xl border border-slate-700 bg-slate-900 shadow-2xl p-1">
-                  <button
-                    onClick={() => {
-                      setGenerateMenuOpen(false);
-                      onAppend();
-                    }}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 transition"
-                  >
-                    <span className="block text-[11px] font-semibold text-slate-200">
-                      Дособрать новые
-                    </span>
-                    <span className="block text-[9px] text-slate-500 leading-snug">
-                      {unassignedCount > 0
-                        ? `Приборы вне линий: ${unassignedCount}. Текущие линии не меняются.`
-                        : 'Все приборы уже распределены по линиям.'}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setGenerateMenuOpen(false);
-                      const ok = window.confirm(
-                        'Пересобрать все линии заново? Текущий состав, названия, ручные нагрузки, настройки УЗО и точки трасс будут заменены группировкой по комнатам.'
-                      );
-                      if (ok) onGenerate();
-                    }}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-rose-500/10 transition"
-                  >
-                    <span className="block text-[11px] font-semibold text-rose-300">
-                      Пересобрать всё…
-                    </span>
-                    <span className="block text-[9px] text-slate-500 leading-snug">
-                      Полная замена текущих линий по приборам на плане.
-                    </span>
-                  </button>
-                </div>
-              </>
+        {composition && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {panel.lines.length >= 2 && (
+              <button
+                onClick={() => (mergeMode ? cancelMerge() : setMergeMode(true))}
+                className={`flex items-center gap-1 px-2 py-1.5 rounded-lg border text-[10px] font-semibold transition ${
+                  mergeMode
+                    ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                    : 'bg-slate-800/60 hover:bg-slate-800 border-slate-700 text-slate-300'
+                }`}
+                title="Объединить несколько линий в одну"
+              >
+                <Merge size={12} />
+                Объединить
+              </button>
+            )}
+            {panel.lines.length > 0 && unassignedCount > 0 && (
+              <button
+                onClick={onAppend}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[10px] font-semibold transition"
+                title="Добавить в линии приборы, оставшиеся без линии. Текущие линии и их правки не меняются."
+              >
+                <Plus size={12} />
+                Дособрать ({unassignedCount})
+              </button>
             )}
           </div>
-          )}
-        </div>
+        )}
       </div>
 
-      {mergeMode && (
+      {composition && mergeMode && (
         <div className="flex items-center justify-between gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2 py-1.5">
           <span className="text-[10px] text-sky-200 leading-snug">
             Отметьте 2+ линии. Они станут одной: приборы, комнаты и нагрузка объединятся.
@@ -202,26 +215,23 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
       )}
 
       {panel.lines.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-4 text-center">
-          <p className="text-xs text-slate-400 mb-1">Линий пока нет.</p>
-          <p className="text-[10px] text-slate-500 leading-relaxed">
-            Нажмите «Создать линию»: имя, назначение, автомат, кабель и УЗО задаёте
-            сами, приборы добавляете в составе линии, трассу прокладываете на плане.
-          </p>
-        </div>
+        <EmptyState mode={mode} onCreate={onCreateEmpty} />
       ) : (
         <div className="space-y-1.5">
           {panel.lines.map((line) => {
             const current = lineCurrentA(line);
             const ampacity = CABLE_AMPACITY_A[line.cable.sectionMm2] ?? 0;
-            const breakerCableError = line.breaker.ratingA > ampacity;
-            const loadError = current > line.breaker.ratingA + 0.01;
-            const rcdMissing = LINE_PRESETS[line.purpose].needsRcd && !line.rcd;
             const roomId = line.roomIds[0] ?? '';
             const lineColor = lineColors.get(line.id) ?? '#38bdf8';
             const active = line.id === highlightedLineId;
             const route = routes.get(line.id);
             const routing = line.routing ?? defaultRouting;
+            const routeMissing =
+              line.trace === 'none' && !line.manualRoute && line.deviceIds.length > 0;
+            const checks = (lineChecks.get(line.id) ?? []).filter(
+              (check) => check.step === mode
+            );
+            const hasError = checks.some((check) => check.severity === 'error');
 
             return (
               <div
@@ -237,7 +247,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                   onHighlight(active ? null : line.id);
                 }}
                 className={`rounded-lg border px-2 py-1.5 transition ${
-                  breakerCableError || loadError
+                  hasError
                     ? 'bg-rose-500/5 border-rose-500/30'
                     : 'bg-slate-950/60 border-slate-800/80'
                 }`}
@@ -254,7 +264,7 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                 }
               >
                 <div className="flex items-center gap-1.5">
-                  {mergeMode && (
+                  {composition && mergeMode && (
                     <input
                       type="checkbox"
                       checked={mergeIds.has(line.id)}
@@ -281,301 +291,267 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                     onChange={(e) => onUpdate(line.id, { name: e.target.value })}
                     className="flex-1 min-w-0 bg-transparent text-[11px] font-semibold text-white focus:outline-none focus:border-b focus:border-sky-400"
                   />
-                  <span
-                    className={`shrink-0 font-mono text-[10px] ${
-                      route?.warning
-                        ? 'text-amber-400'
-                        : route && route.cableLengthMm > 0
-                          ? 'text-sky-300'
-                          : 'text-slate-500'
-                    }`}
-                    title={
-                      route
-                        ? `По плану ${(route.planLengthMm / 1000).toFixed(1)} м · вертикально ${(route.verticalMm / 1000).toFixed(1)} м · с запасом`
-                        : 'Трасса не рассчитана'
-                    }
-                  >
-                    {formatCableLengthMm(route?.cableLengthMm ?? 0)}
-                  </span>
-                  <button
-                    onClick={() => onDelete(line.id)}
-                    className="text-slate-500 hover:text-rose-400 p-0.5 rounded shrink-0"
-                    title="Удалить линию"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  {composition ? (
+                    <span
+                      className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                        line.deviceIds.length === 0
+                          ? 'border-amber-700/60 text-amber-300'
+                          : 'border-slate-700 text-slate-400'
+                      }`}
+                      title="Приборов в линии"
+                    >
+                      {line.deviceIds.length} приб.
+                    </span>
+                  ) : (
+                    <span
+                      className={`shrink-0 font-mono text-[10px] ${
+                        route?.warning || routeMissing
+                          ? 'text-amber-400'
+                          : route && route.cableLengthMm > 0
+                            ? 'text-sky-300'
+                            : 'text-slate-500'
+                      }`}
+                      title={
+                        routeMissing
+                          ? 'Трасса не проложена — проложите её в «Монтаже линии».'
+                          : route
+                            ? `По плану ${(route.planLengthMm / 1000).toFixed(1)} м · вертикально ${(route.verticalMm / 1000).toFixed(1)} м · с запасом`
+                            : 'Трасса не рассчитана'
+                      }
+                    >
+                      {routeMissing ? '0 м' : formatCableLengthMm(route?.cableLengthMm ?? 0)}
+                    </span>
+                  )}
+                  {composition && (
+                    <button
+                      onClick={() => onDelete(line.id)}
+                      className="text-slate-500 hover:text-rose-400 p-0.5 rounded shrink-0"
+                      title="Удалить линию"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                 </div>
 
-                <div className="mt-1 grid grid-cols-2 gap-1">
-                  <div className="min-w-0">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Назначение
-                    </span>
-                    <select
-                      value={line.purpose}
-                      onChange={(e) =>
-                        onUpdate(line.id, { purpose: e.target.value as LinePurpose })
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-                    >
-                      {LINE_PURPOSES.map((purpose) => (
-                        <option key={purpose} value={purpose}>
-                          {LINE_PRESETS[purpose].label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                {composition ? (
+                  <>
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      <div className="min-w-0">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                          Назначение
+                        </span>
+                        <select
+                          value={line.purpose}
+                          onChange={(e) =>
+                            onUpdate(line.id, { purpose: e.target.value as LinePurpose })
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+                        >
+                          {LINE_PURPOSES.map((purpose) => (
+                            <option key={purpose} value={purpose}>
+                              {LINE_PRESETS[purpose].label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
-                  <div className="min-w-0">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Комната
-                    </span>
-                    <select
-                      value={roomId}
-                      onChange={(e) =>
-                        onUpdate(line.id, {
-                          roomIds: e.target.value ? [e.target.value] : [],
-                        })
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-                    >
-                      <option value="">Без комнаты</option>
-                      {rooms.map((room) => (
-                        <option key={room.id} value={room.id}>
-                          {room.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                      <div className="min-w-0">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                          Комната
+                        </span>
+                        <select
+                          value={roomId}
+                          onChange={(e) =>
+                            onUpdate(line.id, {
+                              roomIds: e.target.value ? [e.target.value] : [],
+                            })
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+                        >
+                          <option value="">Без комнаты</option>
+                          {rooms.map((room) => (
+                            <option key={room.id} value={room.id}>
+                              {room.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
 
-                  <div className="min-w-0">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Нагрузка
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={0}
-                        max={20000}
-                        step={100}
-                        value={line.loadW}
-                        onChange={(e) =>
-                          onUpdate(line.id, {
-                            loadW: Math.max(0, Number(e.target.value) || 0),
-                          })
-                        }
-                        className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white font-mono focus:outline-none focus:border-sky-500"
-                      />
-                      <span className="text-[8px] text-slate-500">Вт</span>
+                      <div className="min-w-0">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                          Нагрузка
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={0}
+                            max={20000}
+                            step={100}
+                            value={line.loadW}
+                            onChange={(e) =>
+                              onUpdate(line.id, {
+                                loadW: Math.max(0, Number(e.target.value) || 0),
+                              })
+                            }
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white font-mono focus:outline-none focus:border-sky-500"
+                          />
+                          <span className="text-[8px] text-slate-500">Вт</span>
+                        </div>
+                      </div>
+
+                      <div className="min-w-0">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                          Ток
+                        </span>
+                        <div className="rounded bg-slate-900/60 border border-slate-800 px-1.5 py-1 font-mono text-[10px] text-slate-300">
+                          {current.toFixed(1)} А
+                        </div>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="min-w-0">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Трасса
-                    </span>
-                    <select
-                      value={routing}
-                      onChange={(e) =>
-                        onUpdate(line.id, { routing: e.target.value as LineRouting })
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-                      title="Способ прокладки линии"
-                    >
-                      <option value="ceiling">Потолок</option>
-                      <option value="floor">Пол</option>
-                    </select>
-                  </div>
+                    <LineChecks items={checks} />
 
-                  <div className="min-w-0">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Автомат
-                    </span>
-                    <select
-                      value={line.breaker.ratingA}
-                      onChange={(e) =>
-                        onUpdate(line.id, {
-                          breaker: makeBreaker(
-                            Number(e.target.value),
-                            line.breaker.curve
-                          ),
-                        })
-                      }
-                      className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
-                        breakerCableError
-                          ? 'border-rose-700/70 text-rose-300'
-                          : 'border-slate-700 text-slate-200'
-                      }`}
-                      title="Номинал автомата — не выше пропускной способности кабеля"
-                    >
-                      {BREAKER_RATINGS.map((rating) => (
-                        <option key={rating} value={rating}>
-                          {rating} А · {line.breaker.curve}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="min-w-0">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      Кабель
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <select
-                        value={line.cable.sectionMm2}
-                        onChange={(e) =>
-                          onUpdate(line.id, {
-                            cable: makeCable(
-                              Number(e.target.value),
-                              line.cable.cores === 5 ? 5 : 3
-                            ),
-                          })
-                        }
-                        className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
-                          breakerCableError
-                            ? 'border-rose-700/70 text-rose-300'
-                            : 'border-slate-700 text-slate-200'
-                        }`}
-                        title="Сечение жилы кабеля линии"
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <button
+                        onClick={() => setDialog({ lineId: line.id, mode: 'edit' })}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[9px] text-slate-400 transition"
+                        title="Отметить приборы, которые входят в линию"
                       >
-                        {CABLE_SECTIONS.map((section) => (
-                          <option key={section} value={section}>
-                            {section} мм²
-                          </option>
-                        ))}
-                      </select>
-                      <span className="text-[8px] text-slate-500 shrink-0">
-                        до {ampacity} А
+                        Приборы ({line.deviceIds.length})
+                      </button>
+                      <button
+                        onClick={() => setDialog({ lineId: line.id, mode: 'split' })}
+                        disabled={line.deviceIds.length < 2}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 text-[9px] text-slate-400 transition"
+                        title="Разделить линию на две"
+                      >
+                        <Scissors size={10} />
+                        Разделить
+                      </button>
+                      <button
+                        onClick={() => onOpenStep('cable', line.id)}
+                        className="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[9px] text-slate-400 transition"
+                        title="Перейти к выбору кабеля и прокладке трассы"
+                      >
+                        Кабель
+                        <ArrowRight size={10} />
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-1 grid grid-cols-2 gap-1">
+                      <div className="min-w-0">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                          Кабель
+                        </span>
+                        <select
+                          value={line.cable.sectionMm2}
+                          onChange={(e) =>
+                            onUpdate(line.id, {
+                              cable: makeCable(
+                                Number(e.target.value),
+                                line.cable.cores === 5 ? 5 : 3
+                              ),
+                            })
+                          }
+                          className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
+                            hasError
+                              ? 'border-rose-700/70 text-rose-300'
+                              : 'border-slate-700 text-slate-200'
+                          }`}
+                          title="Сечение жилы кабеля линии"
+                        >
+                          {CABLE_SECTIONS.map((section) => (
+                            <option key={section} value={section}>
+                              {section} мм²
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="min-w-0">
+                        <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
+                          Прокладка
+                        </span>
+                        <select
+                          value={routing}
+                          onChange={(e) =>
+                            onUpdate(line.id, { routing: e.target.value as LineRouting })
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+                          title="Способ прокладки линии"
+                        >
+                          <option value="ceiling">Потолок</option>
+                          <option value="floor">Пол</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="mt-1 flex items-center gap-1.5 text-[9px] font-mono text-slate-500">
+                      <span>I {current.toFixed(1)} А</span>
+                      <span>· кабель до {ampacity} А</span>
+                      {route?.warning && (
+                        <span className="text-amber-400 truncate" title={route.warning}>
+                          · трасса с разрывом
+                        </span>
+                      )}
+                      {(routeMissing || hasError) && (
+                        <AlertTriangle size={10} className="text-amber-400 shrink-0" />
+                      )}
+                    </div>
+
+                    <LineChecks items={checks} />
+
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <button
+                        onClick={() => {
+                          onHighlight(line.id);
+                          setRouteEditLine(line.id);
+                        }}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 text-[9px] text-slate-400 transition"
+                        title="Приборы, порядок подключения и трасса линии — на плане"
+                      >
+                        <Wrench size={10} />
+                        Монтаж линии
+                      </button>
+                      {line.deviceIds.length === 0 && (
+                        <button
+                          onClick={() => onOpenStep('devices', line.id)}
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-700/60 text-amber-300 text-[9px] transition hover:bg-amber-500/10"
+                          title="Сначала добавьте приборы в линию"
+                        >
+                          Сначала приборы
+                          <ArrowRight size={10} />
+                        </button>
+                      )}
+                      <span className="ml-auto text-[9px] text-slate-500 font-mono">
+                        {line.deviceIds.length} приб.
                       </span>
                     </div>
-                  </div>
-
-                  <div className="min-w-0 col-span-2">
-                    <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                      УЗО
-                    </span>
-                    <select
-                      value={rcdValue(line)}
-                      onChange={(e) =>
-                        onUpdate(line.id, { rcd: applyRcdValue(line, e.target.value) })
-                      }
-                      className={`w-full bg-slate-900 border rounded px-1.5 py-1 text-[10px] focus:outline-none focus:border-sky-500 ${
-                        line.purpose === 'lighting' && !line.rcd
-                          ? 'border-slate-700 text-slate-400'
-                          : line.rcd
-                            ? 'border-emerald-700/60 text-emerald-300'
-                            : 'border-amber-700/60 text-amber-300'
-                      }`}
-                    >
-                      <option value="off">Без УЗО</option>
-                      <option value="30-A">30 мА · A</option>
-                      <option value="30-AC">30 мА · AC</option>
-                      <option value="100-A">100 мА · A</option>
-                      <option value="300-A">300 мА · A</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="mt-1 flex items-center gap-1.5 text-[9px] font-mono text-slate-500">
-                  <span className={loadError ? 'text-rose-400' : ''}>
-                    I {current.toFixed(1)} А
-                  </span>
-                  {line.deviceIds.length > 0 && (
-                    <span>· приборов {line.deviceIds.length}</span>
-                  )}
-                  {route?.warning && (
-                    <span className="text-amber-400 truncate" title={route.warning}>
-                      · трасса с разрывом
-                    </span>
-                  )}
-                  {(breakerCableError || loadError) && (
-                    <AlertTriangle size={10} className="text-rose-400 shrink-0" />
-                  )}
-                </div>
-
-                {(loadError || breakerCableError || line.deviceIds.length === 0 || rcdMissing) && (
-                  <div className="mt-1 space-y-0.5">
-                    {loadError && (
-                      <p className="text-[9px] leading-snug text-rose-300">
-                        Ток {current.toFixed(1)} А выше автомата {line.breaker.ratingA} А:
-                        поднимите автомат и кабель или снизьте нагрузку.
-                      </p>
-                    )}
-                    {breakerCableError && (
-                      <p className="text-[9px] leading-snug text-rose-300">
-                        Автомат {line.breaker.ratingA} А выше допуска кабеля{' '}
-                        {line.cable.sectionMm2} мм² ({ampacity} А): уменьшите автомат или
-                        возьмите кабель толще.
-                      </p>
-                    )}
-                    {line.deviceIds.length === 0 && (
-                      <p className="text-[9px] leading-snug text-amber-300">
-                        В линии нет приборов: откройте «Монтаж линии» и добавьте их кликами по плану.
-                      </p>
-                    )}
-                    {rcdMissing && (
-                      <p className="text-[9px] leading-snug text-amber-300">
-                        Для этого назначения по нормам нужно УЗО 30 мА.
-                      </p>
-                    )}
-                  </div>
+                  </>
                 )}
-
-                <div className="mt-1 flex flex-wrap items-center gap-1">
-                  <button
-                    onClick={() => {
-                      onHighlight(line.id);
-                      setRouteEditLine(line.id);
-                    }}
-                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 text-[9px] text-slate-400 transition"
-                    title="Приборы, порядок подключения и трасса линии — на плане: приборы добавляются кликами, точки двигаются, порядок меняется в «Списке»"
-                  >
-                    <Wrench size={10} />
-                    Монтаж линии
-                  </button>
-                  <button
-                    onClick={() => setDialog({ lineId: line.id, mode: 'split' })}
-                    disabled={line.deviceIds.length < 2}
-                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 text-[9px] text-slate-400 transition"
-                    title="Разделить линию на две"
-                  >
-                    <Scissors size={10} />
-                    Разделить
-                  </button>
-                </div>
               </div>
             );
           })}
         </div>
       )}
 
-      <div className="pt-2 border-t border-slate-800">
+      {composition && panel.lines.length > 0 && (
         <button
           onClick={onCreateEmpty}
           className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[11px] font-bold transition"
-          title="Создать пустую линию: приборы, защиту и трассу добавите сами"
+          title="Создать пустую линию: приборы добавите в её составе"
         >
           <Plus size={13} />
           Создать линию
         </button>
-        <p className="mt-1 text-[9px] text-slate-500 leading-snug text-center">
-          Имя, назначение, автомат, кабель и УЗО — в строке линии. Приборы, порядок
-          подключения и трасса — кнопкой «Монтаж линии».
-        </p>
-      </div>
+      )}
 
       <p className="text-[9px] text-slate-500 leading-snug">
-        Трасса на плане: сплошная — по потолку, пунктир — по полу. Длина кабеля включает
-        вертикальные спуски, запас из настроек и 1,5 м на разделку в щитке. Порядок
-        подключения приборов — цепочкой от щитка. «Монтаж линии» открывает редактор: приборы
-        добавляются кликами по плану, вершина
-        двигается свободно, соседние точки остаются на месте, а линия возвращается к ним
-        ступеньками под 90°, не создавая новых точек; наклонная вершина скользит вдоль
-        своей линии. Точка вставляется кликом по линии, а Delete удаляет точку и
-        перестраивает только участок между её соседними точками. Кнопка «Список» открывает
-        плавающий порядок точек и приборов: перетащите строку — кабель пойдёт строго в
-        этом порядке, перестроится только эта ветвь. «Сбросить к авто» возвращает
-        автоматическую трассу. Щиток и приборы закреплены, стык участков подвижен.
+        {composition
+          ? 'Прибор входит только в одну линию. «Приборы» отмечает состав, «Разделить» переносит часть приборов в новую линию. Кабель и трасса — на шаге 2.'
+          : 'Новая линия создаётся без трассы: кабель 0 м, пока трасса не проложена. «Монтаж линии» открывает редактор на плане: приборы добавляются кликами, вершины двигаются, порядок точек меняется в списке.'}
       </p>
 
       {dialog && (

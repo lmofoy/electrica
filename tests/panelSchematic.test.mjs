@@ -231,6 +231,19 @@ try {
     assert.equal(finding.severity, 'error');
   });
 
+  await test('validation: load above cable ampacity is a cable overload error', () => {
+    const target = line('a', 'sockets', {
+      loadW: 5000,
+      cable: makeCable(2.5),
+      breaker: makeBreaker(16, 'C'),
+    });
+    const findings = validatePanel(panel({ lines: [target] }));
+    const finding = find(findings, 'cable-load-a');
+    assert.ok(finding, 'cable-load finding expected');
+    assert.equal(finding.severity, 'error');
+    assert.match(finding.message, /допуск кабеля/);
+  });
+
   await test('validation: sockets may not use a 1.5 mm² cable', () => {
     const target = line('a', 'sockets', {
       cable: makeCable(1.5),

@@ -238,12 +238,14 @@ export interface ElectricalDevice {
 }
 
 // Шаги работы над проектом: один вход на функцию, план всегда на экране.
-export type ProjectStep = 'plan' | 'devices' | 'lines' | 'check' | 'docs';
+export type ProjectStep = 'plan' | 'lines' | 'docs';
 
-// Вкладки правой панели шага «Линии».
-export type LinesTab = 'lines' | 'panel';
+// Шаги правой панели «Трассировка»: состав линий → кабель и трасса → защита.
+export type PanelStep = 'devices' | 'cable' | 'protection';
 
 export type PanelStrategy = 'budget' | 'optimal' | 'maximum' | 'custom';
+
+export type PanelAssemblyMode = 'auto' | 'manual'; // выбранный путь сборки линий
 
 export type PanelMounting = 'flush' | 'surface'; // встроенный / накладной
 
@@ -326,6 +328,9 @@ export interface CircuitLine {
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
   routing?: LineRouting; // способ прокладки; не задан — берётся defaultRouting проекта
+  // 'none' — трассу строят только вручную: автотрасса не считается, пока её не проложат.
+  // Не задан или 'auto' — прежнее поведение (автотрасса, ручная заменяет её).
+  trace?: 'auto' | 'none';
   manualRoute?: ManualRoute; // ручная трасса; при наличии заменяет автоматическую
   waypoints?: Point2D[]; // устаревшие контрольные точки; сохранены только до этапа 2
 }
@@ -357,4 +362,6 @@ export interface ElectricalPanel {
   strategy: PanelStrategy;
   lines: CircuitLine[];
   dinOrder?: string[]; // ручной порядок аппаратов на DIN-рейках (id из PanelLayoutItem)
+  assembly?: PanelAssemblyMode; // последний выбранный путь сборки: авто или вручную
+  linesDraft?: boolean; // линии собраны автоматически и ещё не подтверждены
 }

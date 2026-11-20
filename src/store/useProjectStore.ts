@@ -37,7 +37,7 @@ import type {
   PanelStrategy,
   PanelSupply,
   ProjectStep,
-  LinesTab,
+  PanelStep,
 } from '../types';
 import {
   calculateRoomsOverlapAreaM2,
@@ -135,12 +135,14 @@ interface ProjectState {
   rooms: RoomZone[];
   selection: Selection | null;
 
-  // Шаг проекта и вкладка правой панели линий
+  // Шаг проекта и шаг правой панели трассировки
   activeStep: ProjectStep;
-  linesTab: LinesTab;
+  panelStep: PanelStep;
   highlightedLineId: string | null;
   // Линия, в которую назначаются приборы кликами на плане (UI-режим)
   lineAssignLineId: string | null;
+  // Состав щитка на входе в режим назначения: Esc откатывает сессию целиком
+  lineAssignStartPanel: ElectricalPanel | null;
   // Линия, у которой редактируется ручная трасса на плане (UI-режим)
   routeEditLineId: string | null;
 
@@ -224,7 +226,7 @@ interface ProjectState {
 
   // Щиток
   setActiveStep: (step: ProjectStep) => void;
-  setLinesTab: (tab: LinesTab) => void;
+  setPanelStep: (step: PanelStep) => void;
   setHighlightedLine: (id: string | null) => void;
   placePanel: (anchor: PanelWallAnchor) => void;
   deletePanel: () => void;
@@ -233,6 +235,7 @@ interface ProjectState {
   setPanelStrategy: (strategy: PanelStrategy) => void;
   generatePanelLines: () => void;
   appendUnassignedDevices: () => void;
+  confirmPanelDraft: () => void;
   createManualPanelLine: () => string | undefined;
   updatePanelLine: (id: string, updates: Partial<CircuitLine>) => void;
   deletePanelLine: (id: string) => void;
@@ -240,6 +243,7 @@ interface ProjectState {
   movePanelDinItem: (itemId: string, targetIndex: number) => void;
   resetPanelDinOrder: () => void;
   setLineAssignLine: (id: string | null) => void;
+  cancelLineAssignment: () => void;
   assignDevicesToLine: (lineId: string, deviceIds: string[]) => void;
   unassignDevicesFromLines: (deviceIds: string[]) => void;
   createPanelLineFromDevices: (
@@ -404,9 +408,10 @@ export const useProjectStore = create<ProjectState>()(
       selection: null,
 
       activeStep: 'plan',
-      linesTab: 'lines',
+      panelStep: 'devices',
       highlightedLineId: null,
       lineAssignLineId: null,
+      lineAssignStartPanel: null,
       routeEditLineId: null,
 
       settings: DEFAULT_SETTINGS,
@@ -471,14 +476,26 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       setActiveTool: (tool) => {
-        set({
+        // Режим холста следует за инструментом: планировка — проёмы и стены,
+        // электрика — приборы и щиток. «Выбор» и «Рука» не меняют режим.
+        const toolMode =
+          tool === 'place_device' || tool === 'place_panel'
+            ? ('electrical' as const)
+            : tool === 'draw_room' ||
+                tool === 'draw_apartment' ||
+                tool === 'draw_opening' ||
+                tool === 'draw_partition'
+              ? ('architecture' as const)
+              : null;
+        set((state) => ({
           activeTool: tool,
+          designMode: toolMode ?? state.designMode,
           lineAssignLineId: null,
           routeEditLineId: null,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
-        });
+        }));
       },
 
       setDrawingStage: (stage) => {
@@ -529,6 +546,7 @@ export const useProjectStore = create<ProjectState>()(
           activeDeviceType: type,
           deviceShared:
             DEVICE_CATALOG[type].mounting === 'wall' ? state.deviceShared : false,
+          designMode: 'electrical',
           lineAssignLineId: null,
           routeEditLineId: null,
           activeTool: 'place_device',
@@ -1496,7 +1514,7 @@ export const useProjectStore = create<ProjectState>()(
         });
       },
 
-      setLinesTab: (tab) => set({ linesTab: tab }),
+      setPanelStep: (step) => set({ panelStep: step }),
 
       setHighlightedLine: (id) => {
         if (id === null) {
@@ -1580,12 +1598,15 @@ export const useProjectStore = create<ProjectState>()(
           state.rooms,
           state.freePartitions,
           state.settings.defaultRouting
-        );
+        ).map((line) => ({ ...line, trace: 'auto' as const }));
         const withStrategy = normalizeLineAssignments(
           applyStrategy({ ...state.panel, lines }, state.panel.strategy)
         );
         set({
-          panel: withStrategy,
+          panel:
+            lines.length > 0
+              ? { ...withStrategy, assembly: 'auto', linesDraft: true }
+              : withStrategy,
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,
@@ -1629,6 +1650,15 @@ export const useProjectStore = create<ProjectState>()(
         );
       },
 
+      confirmPanelDraft: () => {
+        const state = get();
+        if (!state.panel?.linesDraft) return;
+        const panel = { ...state.panel };
+        delete panel.linesDraft;
+        set({ panel });
+        state.addToast('Черновик подтверждён.', 'success');
+      },
+
       createManualPanelLine: () => {
         const state = get();
         if (!state.panel) return undefined;
@@ -1645,9 +1675,14 @@ export const useProjectStore = create<ProjectState>()(
           deviceIds: [],
           roomIds: [],
           colorIndex: nextColorIndex(state.panel),
+          trace: 'none' as const,
         };
         set({
-          panel: { ...state.panel, lines: [...state.panel.lines, line] },
+          panel: {
+            ...state.panel,
+            lines: [...state.panel.lines, line],
+            assembly: 'manual',
+          },
           highlightedLineId: line.id,
         });
         return line.id;
@@ -1659,13 +1694,25 @@ export const useProjectStore = create<ProjectState>()(
         const lines = state.panel.lines.map((line) => {
           if (line.id !== id) return line;
           const merged = { ...line, ...updates, id: line.id };
-          // Смена назначения задаёт пресет; нагрузка и защита правятся вручную.
+          // Смена назначения задаёт пресет; нагрузка и кабель правятся в линии.
           if (updates.purpose !== undefined) {
             return applyPresetToLine(merged);
           }
           return merged;
         });
-        set({ panel: { ...state.panel, lines } });
+        const manualProtection =
+          updates.breaker !== undefined || updates.rcd !== undefined;
+        const strategy =
+          manualProtection && state.panel.strategy !== 'custom'
+            ? ('custom' as const)
+            : state.panel.strategy;
+        set({ panel: { ...state.panel, lines, strategy } });
+        if (strategy !== state.panel.strategy) {
+          state.addToast(
+            'Автомат и УЗО исправлены вручную — стратегия переключена на «Своя защита».',
+            'info'
+          );
+        }
       },
 
       deletePanelLine: (id) => {
@@ -1700,13 +1747,17 @@ export const useProjectStore = create<ProjectState>()(
             `${line.id}-rcd`,
           ])
         );
+        const cleared = { ...state.panel, lines: [], strategy: 'custom' as const };
+        delete cleared.assembly;
+        delete cleared.linesDraft;
         set({
           panel: withDinOrder(
-            { ...state.panel, lines: [], strategy: 'custom' },
+            cleared,
             state.panel.dinOrder?.filter((itemId) => !lineItemIds.has(itemId))
           ),
           highlightedLineId: null,
           lineAssignLineId: null,
+          lineAssignStartPanel: null,
           routeEditLineId: null,
         });
         state.addToast('Схема очищена. Добавляйте линии вручную.', 'info');
@@ -1744,22 +1795,38 @@ export const useProjectStore = create<ProjectState>()(
       setLineAssignLine: (id) => {
         const state = get();
         if (id && !state.panel?.lines.some((line) => line.id === id)) {
-          set({ lineAssignLineId: null });
+          set({ lineAssignLineId: null, lineAssignStartPanel: null });
           return;
         }
         set({
           lineAssignLineId: id,
+          lineAssignStartPanel: id ? state.panel : null,
           ...(id ? {
             activeTool: 'select' as const,
             designMode: 'electrical' as const,
             selection: null,
             highlightedLineId: id,
-            routeEditLineId: null,
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeSnap: DEFAULT_SNAP,
           } : {}),
         });
+      },
+
+      cancelLineAssignment: () => {
+        const state = get();
+        if (!state.lineAssignLineId) return;
+        const snapshot = state.lineAssignStartPanel;
+        set({
+          lineAssignLineId: null,
+          lineAssignStartPanel: null,
+          ...(snapshot && state.panel
+            ? { panel: snapshot, highlightedLineId: null }
+            : {}),
+        });
+        if (snapshot && state.panel) {
+          state.addToast('Изменения состава отменены.', 'info');
+        }
       },
 
       assignDevicesToLine: (lineId, deviceIds) => {
@@ -1796,7 +1863,7 @@ export const useProjectStore = create<ProjectState>()(
         const result = createLineFromDevices(
           state.panel,
           deviceIds,
-          { purpose, routing: state.settings.defaultRouting },
+          { purpose, routing: state.settings.defaultRouting, trace: 'none' },
           {
             devices: state.devices,
             rooms: state.rooms,
@@ -2075,18 +2142,30 @@ export const useProjectStore = create<ProjectState>()(
         const state = get();
         if (!state.panel) return;
         const line = state.panel.lines.find((candidate) => candidate.id === lineId);
-        if (!line?.manualRoute && !line?.waypoints?.length) return;
+        if (!line) return;
+        const hasManual = Boolean(line.manualRoute || line.waypoints?.length);
+        if (!hasManual && line.trace !== 'none') return;
         set({
           panel: {
             ...state.panel,
             lines: state.panel.lines.map((candidate) =>
               candidate.id === lineId
-                ? { ...candidate, manualRoute: undefined, waypoints: undefined }
+                ? {
+                    ...candidate,
+                    manualRoute: undefined,
+                    waypoints: undefined,
+                    trace: 'auto',
+                  }
                 : candidate
             ),
           },
         });
-        state.addToast('Ручная трасса сброшена к автоматической.', 'info');
+        state.addToast(
+          hasManual
+            ? 'Ручная трасса сброшена — линия снова трассируется автоматически.'
+            : 'Линия переведена в автоматический режим: трасса считается автоматически.',
+          'info'
+        );
       },
 
       resetProject: () => {
@@ -2101,7 +2180,7 @@ export const useProjectStore = create<ProjectState>()(
           rooms: [],
           selection: null,
           activeStep: 'plan',
-          linesTab: 'lines',
+          panelStep: 'devices',
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,
@@ -2168,7 +2247,7 @@ export const useProjectStore = create<ProjectState>()(
             panel,
             selection: null,
             activeStep: 'plan',
-            linesTab: 'lines',
+            panelStep: 'devices',
             highlightedLineId: null,
             lineAssignLineId: null,
             routeEditLineId: null,
@@ -2226,7 +2305,7 @@ export const useProjectStore = create<ProjectState>()(
           panel,
           selection: null,
           activeStep: 'plan',
-          linesTab: 'lines',
+          panelStep: 'devices',
           highlightedLineId: null,
           lineAssignLineId: null,
           routeEditLineId: null,

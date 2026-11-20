@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronUp,
   Droplets,
@@ -9,6 +10,7 @@ import {
   ListOrdered,
   Lock,
   MapPin,
+  PenLine,
   Plug,
   Plus,
   RotateCcw,
@@ -36,11 +38,15 @@ interface RouteStopsPopoverProps {
   devices: ElectricalDevice[];
   selectedNode: number | null;
   bounds: { width: number; height: number };
+  cableLengthMm: number;
+  error: string | null;
+  assignActive: boolean;
   onSelectNode: (index: number | null) => void;
   onReorder: (branchIndex: number, fromIndex: number, toIndex: number) => void;
   onRemoveNode: (nodeIndex: number) => void;
   onReset: () => void;
   onAddDevices: () => void;
+  onBeginManualDraw: () => void;
   onClose: () => void;
 }
 
@@ -112,11 +118,15 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
   devices,
   selectedNode,
   bounds,
+  cableLengthMm,
+  error,
+  assignActive,
   onSelectNode,
   onReorder,
   onRemoveNode,
   onReset,
   onAddDevices,
+  onBeginManualDraw,
   onClose,
 }) => {
   const branches = useMemo(() => manualRouteBranches(route), [route]);
@@ -124,6 +134,28 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
     () => new Map(devices.map((device) => [device.id, device] as const)),
     [devices]
   );
+  // Прибор может быть в линии, но ещё не на трассе: список показывает и его,
+  // отдельной группой, чтобы состав линии всегда был виден целиком.
+  const connectedDeviceIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const branch of branches) {
+      for (const stop of branch.stops) {
+        if (stop.kind === 'device' && stop.deviceId) ids.add(stop.deviceId);
+      }
+    }
+    return ids;
+  }, [branches]);
+  const unconnectedDevices = useMemo(
+    () =>
+      line.deviceIds
+        .filter((id) => !connectedDeviceIds.has(id))
+        .map((id) => deviceById.get(id))
+        .filter((device): device is ElectricalDevice => Boolean(device)),
+    [line.deviceIds, connectedDeviceIds, deviceById]
+  );
+  const connectedCount = line.deviceIds.filter((id) =>
+    connectedDeviceIds.has(id)
+  ).length;
   const panelDragRef = useRef<{
     clientX: number;
     clientY: number;
@@ -153,9 +185,9 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
   // не нужен, панель не выходит за пределы экрана при изменении размеров окна.
   const safePosition = clamp(position);
 
-  const totalStops = branches.reduce((sum, branch) => sum + branch.stops.length, 0);
-  const totalLengthMm = branches.reduce((sum, branch) => sum + branch.lengthMm, 0);
-  const canReset = Boolean(line.manualRoute || line.waypoints?.length);
+  const canReset = Boolean(
+    line.manualRoute || line.waypoints?.length || line.trace === 'none'
+  );
 
   const move = (branchIndex: number, index: number, delta: number) => {
     const stops = branches[branchIndex]?.stops ?? [];
@@ -234,16 +266,14 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[11px] font-bold text-white leading-tight truncate">
-            Порядок точек
+            Список точек
           </div>
           <div className="text-[9px] text-slate-400 leading-tight truncate">
-            {line.name} ·{' '}
-            {branches.length === 0
-              ? 'приборов нет'
-              : branches.length === 1
-                ? 'одна ветвь'
-                : `ветвей: ${branches.length}`}{' '}
-            · {totalStops} в списке · {(totalLengthMm / 1000).toFixed(1)} м
+            {line.name} · приборов {line.deviceIds.length}
+            {line.deviceIds.length > 0 && ` (на трассе ${connectedCount})`} ·{' '}
+            {cableLengthMm > 0
+              ? `кабель ${(cableLengthMm / 1000).toFixed(1)} м`
+              : 'трасса не проложена'}
           </div>
         </div>
         <button
@@ -257,8 +287,8 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
         <button
           onClick={onClose}
           className="shrink-0 p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition"
-          title="Скрыть список (кнопка «Список» вверху вернёт его)"
-          aria-label="Скрыть список"
+          title="Выйти из монтажа линии"
+          aria-label="Выйти из монтажа линии"
         >
           <X size={14} />
         </button>
@@ -268,8 +298,10 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
         <>
           <div className="route-stops-scroll flex-1 overflow-y-auto px-2 py-2 space-y-2.5">
             {branches.length === 0 && (
-              <p className="text-[10px] text-slate-400 px-1 py-3 text-center">
-                Трасса не построена: добавьте приборы в линию.
+              <p className="text-[10px] text-slate-400 px-1 py-3 text-center leading-snug">
+                {line.deviceIds.length === 0
+                  ? 'В линии пока нет приборов — добавьте их кнопкой «Приборы».'
+                  : 'Трасса не проложена — приборы линии перечислены ниже. Проведите кабель вручную или нажмите «Сбросить к авто».'}
               </p>
             )}
 
@@ -477,33 +509,110 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
                 </section>
               );
             })}
+
+            {unconnectedDevices.length > 0 && (
+              <section data-route-unconnected={unconnectedDevices.length}>
+                <div className="flex items-center gap-1.5 px-1 mb-1">
+                  <span
+                    className="flex items-center justify-center w-4 h-4 rounded shrink-0"
+                    style={{ backgroundColor: '#f59e0b26', color: '#fbbf24' }}
+                  >
+                    <AlertTriangle size={9} />
+                  </span>
+                  <span className="text-[10px] font-bold text-amber-200 truncate">
+                    Не на трассе
+                  </span>
+                  <span className="ml-auto shrink-0 text-[9px] font-mono text-slate-500">
+                    {unconnectedDevices.length} приб.
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {unconnectedDevices.map((device) => {
+                    const catalog = DEVICE_CATALOG[device.type];
+                    const Icon = deviceIcon(device.type);
+                    return (
+                      <div
+                        key={device.id}
+                        data-route-unconnected-device={device.id}
+                        className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-1.5 py-1"
+                        title="Прибор в линии, но кабель к нему ещё не проложен: «Сбросить к авто» или «Проложить вручную» добавят его в трассу"
+                      >
+                        <span className="flex items-center justify-center w-5 h-5 rounded-md shrink-0 text-[9px] font-bold text-amber-300/80 bg-amber-500/10">
+                          ·
+                        </span>
+                        <span
+                          className="flex items-center justify-center w-5 h-5 rounded-md shrink-0"
+                          style={{ backgroundColor: '#f59e0b14', color: '#fbbf24' }}
+                        >
+                          <Icon size={12} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[10.5px] font-semibold text-amber-100/90 truncate leading-tight">
+                            {device.name}
+                          </span>
+                          <span className="block text-[9px] text-slate-500 truncate leading-tight">
+                            {catalog.label}
+                            {device.powerWatts > 0 ? ` · ${device.powerWatts} Вт` : ''} · в
+                            линии, нет в трассе
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
           </div>
 
           <div className="px-2.5 py-2 border-t border-slate-800 space-y-1.5 bg-slate-950/40">
-            <div className="flex items-center gap-1.5">
+            {error && (
+              <p className="text-[9px] text-rose-400 font-semibold leading-snug">{error}</p>
+            )}
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 onClick={onAddDevices}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 text-[10px] font-semibold transition"
-                title="Добавлять приборы этой линии кликами на плане"
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-semibold transition ${
+                  assignActive
+                    ? 'bg-emerald-500 border-emerald-400 text-slate-950 shadow-[0_0_12px_-2px_rgba(16,185,129,0.7)]'
+                    : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/40 text-emerald-300'
+                }`}
+                title={
+                  assignActive
+                    ? 'Кликайте приборы на плане — они сразу появляются в списке. Повторное нажатие или Enter — закончить.'
+                    : 'Добавлять приборы этой линии кликами на плане'
+                }
               >
                 <Plus size={11} />
-                Приборы
+                {assignActive ? 'Добавление…' : 'Приборы'}
+              </button>
+              <button
+                onClick={onBeginManualDraw}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
+                title="Провести трассу по плану вручную"
+              >
+                <PenLine size={11} />
+                Проложить вручную
               </button>
               <button
                 onClick={onReset}
                 disabled={!canReset}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition"
-                title="Вернуть автоматическую трассу и порядок по ближайшему прибору"
+                title="Построить автоматическую трассу и порядок по ближайшему прибору"
               >
                 <RotateCcw size={11} />
                 Сбросить к авто
               </button>
-              <span className="ml-auto text-[9px] font-mono text-slate-500">Ctrl+Z</span>
+              <button
+                onClick={onClose}
+                className="ml-auto px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
+              >
+                Готово
+              </button>
             </div>
             <p className="text-[9px] text-slate-500 leading-snug">
-              Перетащите строку — кабель пойдёт строго в этом порядке, перестроится только
-              эта ветвь. Приборы и щиток на плане не двигаются. Стык — место ветвления,
-              не распределительная коробка.
+              {assignActive
+                ? 'Клик по прибору на плане — добавить или убрать его из линии, список обновляется сразу. Enter — закончить, Esc — отменить изменения состава. Трасса к новым приборам появится после «Сбросить к авто» или ручной прокладки.'
+                : 'Перетащите строку — кабель пойдёт строго в этом порядке, перестроится только эта ветвь. Клик по линии — вставить точку, Delete — удалить, Esc — выйти. Приборы и щиток на плане не двигаются. Стык — место ветвления, не распределительная коробка.'}
             </p>
           </div>
         </>

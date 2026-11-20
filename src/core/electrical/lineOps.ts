@@ -34,6 +34,7 @@ export interface LineCreateOptions {
   routing?: LineRouting;
   template?: CircuitLine | null; // откуда скопировать защиту (деление)
   applyStrategy?: boolean; // новые линии из «Дособрать новые»
+  trace?: CircuitLine['trace']; // по умолчанию 'none' — трассу прокладывают вручную
 }
 
 export interface LineCreateResult {
@@ -312,6 +313,10 @@ export function createLineFromDevices(
         colorIndex: nextColorIndex(panel),
         loadW: preset.loadW,
         routing: options.routing ?? options.template.routing,
+        // Состав другой — старая ручная трасса к нему не относится.
+        manualRoute: undefined,
+        waypoints: undefined,
+        trace: options.trace ?? options.template.trace ?? 'none',
       }
     : {
         id: nextLineId(panel),
@@ -327,6 +332,7 @@ export function createLineFromDevices(
           ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, preset.breakerRatingA)
           : null,
         routing: options.routing,
+        trace: options.trace ?? 'none',
       };
 
   const idSet = new Set(ids);
@@ -370,6 +376,8 @@ export function splitLine(
       purpose,
       template: purpose === source.purpose ? source : null,
       routing: source.routing,
+      // Дочерняя линия повторяет режим трассы исходной, но не её геометрию.
+      trace: source.trace === 'none' ? 'none' : 'auto',
     },
     ctx
   );
@@ -457,7 +465,7 @@ export function appendUnassignedDevices(
     const result = createLineFromDevices(
       { ...panel, lines },
       deviceIds,
-      { purpose: group.purpose, routing, applyStrategy: true },
+      { purpose: group.purpose, routing, applyStrategy: true, trace: 'auto' },
       ctx
     );
     lines = result.panel.lines;
@@ -472,6 +480,7 @@ export interface LineCompositionWarning {
   id: string;
   severity: 'error' | 'warning' | 'info';
   message: string;
+  lineId?: string;
 }
 
 function isLightingDevice(device: ElectricalDevice): boolean {
@@ -503,6 +512,7 @@ export function collectLineCompositionWarnings(
         id: `mixed-purpose-${line.id}`,
         severity: 'warning',
         message: `«${line.name}»: в одной линии смешаны освещение и розетки. Рекомендуется разделить их делением линии.`,
+        lineId: line.id,
       });
     }
 
@@ -517,6 +527,7 @@ export function collectLineCompositionWarnings(
           id: `wet-device-rcd-${line.id}`,
           severity: 'error',
           message: `«${line.name}»: влагозащищённых розеток ${wetCount}, но нет УЗО 30 мА типа A (СП 256.1325800.2016; ПУЭ-7 п. 7.1.79).`,
+          lineId: line.id,
         });
       }
     }

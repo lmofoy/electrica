@@ -1,288 +1,23 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { calculateNetAreaM2 } from '../../core/geometry/math';
 import { computeAutoFloors } from '../../core/geometry/autoLayout';
+import { Trash2, Home, Layers, Info, Check } from 'lucide-react';
+import type { RoomType } from '../../types';
+import { DevicePassport } from '../devices/DevicePassport';
 import {
-  Trash2,
-  Home,
-  Layers,
-  Info,
-  Check,
-  DoorOpen,
-  Square,
-  Split,
-  Plug,
-  CircuitBoard,
-  Move,
-} from 'lucide-react';
-import type { RoomType, RoomZone, Selection, Wall } from '../../types';
-import {
-  DEVICE_CATALOG,
   resolveDevice,
   type ResolvedDevice,
 } from '../../core/electrical/devices';
-import { buildLineColorMap } from '../../core/electrical/lineColors';
 import {
   buildPlanChecklist,
   collectRoomElements,
   formatRoomDeletionPrompt,
   getOpeningRoomIds,
-  type RoomElements,
 } from '../../core/model/roomElements';
+import { RoomInspector } from './RoomInspector';
 
-type RoomTab = 'doors' | 'windows' | 'partitions' | 'devices';
-
-interface RoomInspectorProps {
-  elements: RoomElements;
-  selection: Selection | null;
-  walls: Wall[];
-  rooms: RoomZone[];
-  onSelect: (selection: Selection) => void;
-  onDeleteOpening: (id: string) => void;
-  onDeletePartition: (id: string) => void;
-  onDeleteDevice: (id: string) => void;
-}
-
-const RoomInspector: React.FC<RoomInspectorProps> = ({
-  elements,
-  selection,
-  walls,
-  rooms,
-  onSelect,
-  onDeleteOpening,
-  onDeletePartition,
-  onDeleteDevice,
-}) => {
-  const [tab, setTab] = useState<RoomTab>('doors');
-
-  const tabs: { id: RoomTab; label: string; count: number; icon: React.ReactNode }[] = [
-    { id: 'doors', label: 'Двери', count: elements.doors.length, icon: <DoorOpen size={11} /> },
-    { id: 'windows', label: 'Окна', count: elements.windows.length, icon: <Square size={11} /> },
-    {
-      id: 'partitions',
-      label: 'Перегородки',
-      count: elements.partitions.length,
-      icon: <Split size={11} />,
-    },
-    { id: 'devices', label: 'Электрика', count: elements.devices.length, icon: <Plug size={11} /> },
-  ];
-
-  const isSelected = (kind: Selection['kind'], id: string) =>
-    selection?.kind === kind && selection.id === id;
-
-  const rowClass = (selected: boolean) =>
-    `flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg border transition cursor-pointer ${
-      selected
-        ? 'bg-sky-500/10 border-sky-500/50'
-        : 'bg-slate-950/60 border-slate-800/80 hover:bg-slate-800/50'
-    }`;
-
-  const renderEmpty = (text: string) => (
-    <p className="text-[11px] text-slate-500 py-2 text-center leading-snug">{text}</p>
-  );
-
-  return (
-    <div
-      className="mt-3 pt-3 border-t border-slate-700/60 space-y-2"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-          Состав комнаты
-        </span>
-        <span className="text-[10px] text-slate-500">клик — выделить, Del — удалить</span>
-      </div>
-
-      <div className="grid grid-cols-4 gap-1">
-        {tabs.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setTab(item.id)}
-            className={`flex flex-col items-center gap-0.5 py-1.5 rounded-lg border text-[9px] font-semibold transition ${
-              tab === item.id
-                ? 'bg-sky-500/15 border-sky-500/60 text-sky-300'
-                : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-            title={item.label}
-          >
-            <span className="flex items-center gap-1">
-              {item.icon}
-              <span>{item.count}</span>
-            </span>
-            <span className="leading-none">{item.label}</span>
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-1">
-        {tab === 'doors' &&
-          (elements.doors.length === 0
-            ? renderEmpty('В комнате нет дверей. Нарисуйте проём в режиме «Архитектура».')
-            : elements.doors.map((door) => {
-                const wallRooms = getOpeningRoomIds(door, walls, rooms);
-                const sharedWall = wallRooms.length > 1;
-                return (
-                  <div
-                    key={door.id}
-                    className={rowClass(isSelected('opening', door.id))}
-                    onClick={() => onSelect({ kind: 'opening', id: door.id })}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <DoorOpen size={12} className="text-sky-400 shrink-0" />
-                        <span className="text-xs text-slate-200 truncate">Дверь</span>
-                        {sharedWall && (
-                          <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">
-                            общая
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        {door.widthMm} мм · h {door.heightMm} мм
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteOpening(door.id);
-                      }}
-                      className="text-slate-500 hover:text-rose-400 p-1 rounded shrink-0"
-                      title="Удалить дверь"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                );
-              }))}
-
-        {tab === 'windows' &&
-          (elements.windows.length === 0
-            ? renderEmpty('В комнате нет окон.')
-            : elements.windows.map((windowItem) => {
-                const wallRooms = getOpeningRoomIds(windowItem, walls, rooms);
-                const sharedWall = wallRooms.length > 1;
-                return (
-                  <div
-                    key={windowItem.id}
-                    className={rowClass(isSelected('opening', windowItem.id))}
-                    onClick={() => onSelect({ kind: 'opening', id: windowItem.id })}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <Square size={12} className="text-emerald-400 shrink-0" />
-                        <span className="text-xs text-slate-200 truncate">Окно</span>
-                        {sharedWall && (
-                          <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">
-                            общая
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        {windowItem.widthMm}×{windowItem.heightMm} мм · от пола{' '}
-                        {windowItem.elevationMm} мм
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteOpening(windowItem.id);
-                      }}
-                      className="text-slate-500 hover:text-rose-400 p-1 rounded shrink-0"
-                      title="Удалить окно"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                );
-              }))}
-
-        {tab === 'partitions' &&
-          (elements.partitions.length === 0
-            ? renderEmpty('В комнате нет перегородок.')
-            : elements.partitions.map((partition) => {
-                const lengthMm = Math.round(
-                  Math.hypot(
-                    partition.p2.x - partition.p1.x,
-                    partition.p2.y - partition.p1.y
-                  )
-                );
-                return (
-                  <div
-                    key={partition.id}
-                    className={rowClass(isSelected('partition', partition.id))}
-                    onClick={() => onSelect({ kind: 'partition', id: partition.id })}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <Split size={12} className="text-orange-400 shrink-0" />
-                        <span className="text-xs text-slate-200 truncate">Перегородка</span>
-                      </div>
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        {lengthMm} мм · {partition.thicknessMm} мм
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeletePartition(partition.id);
-                      }}
-                      className="text-slate-500 hover:text-rose-400 p-1 rounded shrink-0"
-                      title="Удалить перегородку"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                );
-              }))}
-
-        {tab === 'devices' &&
-          (elements.devices.length === 0
-            ? renderEmpty(
-                'В комнате нет приборов. Переключитесь в режим «Электрика» и поставьте розетки.'
-              )
-            : elements.devices.map((resolved) => (
-                <div
-                  key={resolved.device.id}
-                  className={rowClass(isSelected('device', resolved.device.id))}
-                  onClick={() => onSelect({ kind: 'device', id: resolved.device.id })}
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <Plug size={12} className="text-sky-400 shrink-0" />
-                      <span className="text-xs text-slate-200 truncate">
-                        {resolved.device.name}
-                      </span>
-                      {resolved.isShared && (
-                        <span className="text-[9px] px-1 rounded bg-amber-500/20 text-amber-300">
-                          2 комн.
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-slate-500 font-mono">
-                      H {resolved.device.heightFromFloorMm} мм
-                      {resolved.device.powerWatts > 0
-                        ? ` · ${resolved.device.powerWatts} Вт`
-                        : ''}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteDevice(resolved.device.id);
-                    }}
-                    className="text-slate-500 hover:text-rose-400 p-1 rounded shrink-0"
-                    title="Удалить прибор"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              )))}
-      </div>
-    </div>
-  );
-};
-
-export const Sidebar: React.FC<{ step: 'plan' | 'devices' }> = ({ step }) => {
+export const Sidebar: React.FC = () => {
   const {
     apartment,
     rooms,
@@ -290,22 +25,16 @@ export const Sidebar: React.FC<{ step: 'plan' | 'devices' }> = ({ step }) => {
     openings,
     freePartitions,
     devices,
-    panel,
     selection,
     settings,
     boundaryMode,
     setSelection,
-    setActiveTool,
-    setHighlightedLine,
-    assignDevicesToLine,
-    unassignDevicesFromLines,
     updateRoom,
     deleteRoom,
     deleteApartment,
     deleteOpening,
     deletePartition,
     deleteDevice,
-    deletePanel,
     coveragePercent,
     isCoverageValid,
   } = useProjectStore();
@@ -386,20 +115,7 @@ export const Sidebar: React.FC<{ step: 'plan' | 'devices' }> = ({ step }) => {
       ? autoFloors.reduce((sum, floor) => sum + floor.areaM2, 0)
       : rooms.reduce((sum, r) => sum + calculateNetAreaM2(r.vertices, r.holes ?? []), 0);
 
-  const lineColors = useMemo(() => buildLineColorMap(panel), [panel]);
   const planChecklist = useMemo(() => buildPlanChecklist(rooms, openings), [rooms, openings]);
-
-  const selectedDevice =
-    selection?.kind === 'device'
-      ? devices.find((device) => device.id === selection.id) ?? null
-      : null;
-  const selectedDeviceLine = selectedDevice
-    ? panel?.lines.find((line) => line.deviceIds.includes(selectedDevice.id)) ?? null
-    : null;
-
-  const startPanelPlacement = () => {
-    setActiveTool('place_panel');
-  };
 
   const roomTypeLabels: Record<RoomType, string> = {
     living: 'Гостиная',
@@ -529,116 +245,16 @@ export const Sidebar: React.FC<{ step: 'plan' | 'devices' }> = ({ step }) => {
           </div>
         )}
 
-        {step === 'devices' && (
-        <div className="mt-3 pt-3 border-t border-slate-800">
-          {panel ? (
-            <div className="p-2.5 rounded-xl border border-slate-800 bg-slate-950/40">
-              <div className="flex items-center gap-2">
-                <CircuitBoard size={14} className="text-sky-400 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[11px] font-semibold text-white truncate">
-                    {panel.name}
-                  </div>
-                  <div className="text-[9px] text-slate-500">
-                    Щиток размещён на плане
-                  </div>
-                </div>
-                <button
-                  onClick={startPanelPlacement}
-                  className="text-slate-500 hover:text-sky-300 p-1 rounded shrink-0"
-                  title="Переместить щиток на другую стену"
-                >
-                  <Move size={13} />
-                </button>
-                <button
-                  onClick={() => {
-                    if (confirm('Удалить электрощиток и его схему?')) deletePanel();
-                  }}
-                  className="text-slate-500 hover:text-rose-400 p-1 rounded shrink-0"
-                  title="Удалить щиток"
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              onClick={startPanelPlacement}
-              className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 rounded-lg text-xs font-semibold transition"
-            >
-              <CircuitBoard size={13} />
-              + Электрощиток на стену
-            </button>
-          )}
-        </div>
-        )}
       </div>
 
       {/* 2. Подчиненный уровень иерархии: Комнаты внутри квартиры */}
       <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
-        {selectedDevice && (
-          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2.5 space-y-2">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
-                  <Plug size={12} className="text-sky-400 shrink-0" />
-                  <span className="truncate">{selectedDevice.name}</span>
-                </div>
-                <div className="text-[10px] text-slate-500 mt-0.5">
-                  {DEVICE_CATALOG[selectedDevice.type].label}
-                  {selectedDevice.powerWatts > 0
-                    ? ` · ${selectedDevice.powerWatts} Вт`
-                    : ''}
-                </div>
-              </div>
-              {selectedDeviceLine && (
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
-                  style={{
-                    backgroundColor: lineColors.get(selectedDeviceLine.id) ?? '#38bdf8',
-                  }}
-                />
-              )}
-            </div>
-
-            {panel ? (
-              <label className="block">
-                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-                  Линия прибора
-                </span>
-                <select
-                  value={selectedDeviceLine?.id ?? ''}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    if (!value) {
-                      unassignDevicesFromLines([selectedDevice.id]);
-                      setHighlightedLine(null);
-                      return;
-                    }
-                    assignDevicesToLine(value, [selectedDevice.id]);
-                    setHighlightedLine(value);
-                  }}
-                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
-                >
-                  <option value="">Без линии</option>
-                  {panel.lines.map((line) => (
-                    <option key={line.id} value={line.id}>
-                      {line.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <p className="text-[10px] text-amber-300 leading-snug">
-                Щиток не размещён — назначить линию нельзя.
-              </p>
-            )}
-
-            <p className="text-[9px] text-slate-500 leading-snug">
-              Прибор входит только в одну линию. Смена линии автоматически
-              пересчитывает нагрузку и защиту.
-            </p>
-          </div>
+        {selection?.kind === 'device' && (
+          <DevicePassport
+            key={selection.id}
+            deviceId={selection.id}
+            onClose={() => setSelection(null)}
+          />
         )}
 
         <div className="flex items-center justify-between">
@@ -659,27 +275,25 @@ export const Sidebar: React.FC<{ step: 'plan' | 'devices' }> = ({ step }) => {
               )}
         </div>
 
-        {step === 'plan' && (
-          <div
-            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/60 px-2.5 py-2"
-            title="Разметка плана: комнаты, двери и окна"
-          >
-            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
-              Разметка
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-slate-800 bg-slate-950/60 px-2.5 py-2"
+          title="Разметка плана: комнаты, двери и окна"
+        >
+          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+            Разметка
+          </span>
+          {planChecklist.items.map((item) => (
+            <span
+              key={item.id}
+              className={`flex items-center gap-1 text-[10px] font-mono ${
+                item.done ? 'text-emerald-300' : 'text-slate-500'
+              }`}
+            >
+              {item.label} <strong className="font-semibold">{item.count}</strong>
+              {item.done && <Check size={10} />}
             </span>
-            {planChecklist.items.map((item) => (
-              <span
-                key={item.id}
-                className={`flex items-center gap-1 text-[10px] font-mono ${
-                  item.done ? 'text-emerald-300' : 'text-slate-500'
-                }`}
-              >
-                {item.label} <strong className="font-semibold">{item.count}</strong>
-                {item.done && <Check size={10} />}
-              </span>
-            ))}
-          </div>
-        )}
+          ))}
+        </div>
 
         {rooms.length === 0 ? (
           <div className="text-center py-8 text-slate-500 text-xs leading-relaxed">

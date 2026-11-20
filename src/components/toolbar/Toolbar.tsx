@@ -26,9 +26,7 @@ interface ToolbarProps {
 
 const STEPS: { id: ProjectStep; label: string }[] = [
   { id: 'plan', label: 'План' },
-  { id: 'devices', label: 'Приборы' },
-  { id: 'lines', label: 'Линии' },
-  { id: 'check', label: 'Проверка' },
+  { id: 'lines', label: 'Трассировка' },
   { id: 'docs', label: 'Документы' },
 ];
 
@@ -52,17 +50,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
   const stepSubtitle = (() => {
     switch (activeStep) {
       case 'plan':
-        return 'План · комнаты, двери, окна, перегородки';
-      case 'devices':
         if (activeTool === 'place_device') {
-          return `Приборы · ${DEVICE_CATALOG[activeDeviceType].label}`;
+          return `План · прибор: ${DEVICE_CATALOG[activeDeviceType].label}`;
         }
-        if (activeTool === 'place_panel') return 'Приборы · размещение щитка';
-        return 'Приборы · выберите из каталога';
+        if (activeTool === 'place_panel') return 'План · размещение щитка';
+        if (activeTool === 'select') return 'План · комнаты, проёмы и электрика';
+        return 'План · разметка и электрика';
       case 'lines':
-        return 'Линии и щиток';
-      case 'check':
-        return 'Проверка по нормам';
+        return 'Трассировка · линии, кабели и защита';
       case 'docs':
         return 'Документы · листы A3';
     }

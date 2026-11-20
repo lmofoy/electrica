@@ -108,6 +108,13 @@ export function sanitizePanel(
   };
   if (dinOrder) result.dinOrder = dinOrder;
   else delete result.dinOrder;
+  if (panel.assembly === 'auto' || panel.assembly === 'manual') {
+    result.assembly = panel.assembly;
+  } else {
+    delete result.assembly;
+  }
+  if (panel.linesDraft === true && lines.length > 0) result.linesDraft = true;
+  else delete result.linesDraft;
   return result;
 }
 
@@ -191,6 +198,7 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
         line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
       manualRoute: sanitizeManualRoute(line.manualRoute),
       waypoints: sanitizeWaypoints(line.waypoints),
+      trace: line.trace === 'none' ? 'none' : line.trace === 'auto' ? 'auto' : undefined,
     }));
 }
 

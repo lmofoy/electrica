@@ -6,7 +6,6 @@ import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsModal } from './components/sidebar/SettingsModal';
 import { ToastProvider } from './components/ToastProvider';
 import { PanelScreen } from './components/panel/PanelScreen';
-import { CheckPanel } from './components/check/CheckPanel';
 import { DocsPanel } from './components/docs/DocsPanel';
 import { StatusBar } from './components/status/StatusBar';
 import { useProjectStore } from './store/useProjectStore';
@@ -18,12 +17,9 @@ export const App: React.FC = () => {
   const inspector = (() => {
     switch (activeStep) {
       case 'plan':
-      case 'devices':
-        return <Sidebar step={activeStep} />;
+        return <Sidebar />;
       case 'lines':
         return <PanelScreen />;
-      case 'check':
-        return <CheckPanel />;
       case 'docs':
         return <DocsPanel />;
     }

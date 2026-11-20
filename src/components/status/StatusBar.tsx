@@ -5,17 +5,14 @@ import { AlertTriangle, ShieldCheck } from 'lucide-react';
 import type { ProjectStep } from '../../types';
 
 const STEP_HINTS: Record<ProjectStep, string> = {
-  plan: 'План: комнаты, двери, окна, перегородки',
-  devices: 'Приборы: выберите прибор слева и кликните по стене',
-  lines: 'Линии: состав, трассы и щиток',
-  check: 'Проверка: нормы, линии, трассы, щиток',
+  plan: 'План: комнаты, проёмы, перегородки и электрика',
+  lines: 'Трассировка: линии, трассы, кабели и защита',
   docs: 'Документы: листы A3 по проекту',
 };
 
 export const StatusBar: React.FC = () => {
-  const { activeStep, rooms, devices, freePartitions, setActiveStep } =
-    useProjectStore();
-  const { errors, warnings } = usePanelDiagnostics();
+  const { activeStep, rooms, devices, freePartitions } = useProjectStore();
+  const { errors, warnings, checks } = usePanelDiagnostics();
 
   const roomIdsWithDevices = new Set<string>();
   const partitionIdsWithDevices = new Set<string>();
@@ -45,7 +42,20 @@ export const StatusBar: React.FC = () => {
         )}
         <span className="text-slate-700">|</span>
         <button
-          onClick={() => setActiveStep('check')}
+          onClick={() => {
+            const state = useProjectStore.getState();
+            const firstProblem =
+              checks.find((check) => check.severity === 'error') ?? checks[0];
+            state.setPanelStep(firstProblem?.step ?? 'devices');
+            state.setActiveStep('lines');
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() =>
+                document
+                  .getElementById('panel-checks')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              )
+            );
+          }}
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded transition hover:bg-slate-800 ${
             errors > 0
               ? 'text-rose-300'
@@ -53,7 +63,7 @@ export const StatusBar: React.FC = () => {
                 ? 'text-amber-300'
                 : 'text-emerald-300'
           }`}
-          title="Открыть проверку проекта"
+          title="Показать замечания и ошибки в панели «Трассировка»"
         >
           {errors > 0 || warnings > 0 ? (
             <AlertTriangle size={11} />

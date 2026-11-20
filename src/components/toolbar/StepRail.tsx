@@ -1,4 +1,5 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   MousePointer,
   Hand,
@@ -13,8 +14,9 @@ import {
   X,
   CircuitBoard,
   Cable,
-  ShieldCheck,
   ClipboardList,
+  ListChecks,
+  ShieldCheck,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import {
@@ -35,7 +37,7 @@ import {
   DeviceSectionIcon,
   DeviceTypeIcon,
 } from './DeviceCatalogMenu';
-import type { DeviceType, RoomType } from '../../types';
+import type { DeviceType, PanelStep, RoomType } from '../../types';
 
 const ROOM_TYPES: { type: RoomType; label: string }[] = [
   { type: 'living', label: 'Гостиная' },
@@ -57,10 +59,93 @@ const toolClass = (active: boolean, accent = false) =>
         : 'text-slate-400 border-transparent hover:text-white hover:bg-slate-800'
   }`;
 
+function computePopoverPlacement(anchorEl: HTMLElement, width: number, height: number) {
+  const rect = anchorEl.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(8, rect.right + 6),
+    Math.max(8, window.innerWidth - width - 8)
+  );
+  const top = Math.max(8, Math.min(rect.top, window.innerHeight - height - 8));
+  return { left, top };
+}
+
+interface OpeningPickerMenuProps {
+  anchorEl: HTMLElement;
+  onPick: (kind: 'door' | 'window' | 'partition') => void;
+  onClose: () => void;
+}
+
+const OpeningPickerMenu: React.FC<OpeningPickerMenuProps> = ({
+  anchorEl,
+  onPick,
+  onClose,
+}) => {
+  const [placement, setPlacement] = useState(() =>
+    computePopoverPlacement(anchorEl, 176, 158)
+  );
+
+  const updatePlacement = useCallback(() => {
+    setPlacement(computePopoverPlacement(anchorEl, 176, 158));
+  }, [anchorEl]);
+
+  useEffect(() => {
+    window.addEventListener('resize', updatePlacement);
+    window.addEventListener('scroll', updatePlacement, true);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('resize', updatePlacement);
+      window.removeEventListener('scroll', updatePlacement, true);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [updatePlacement, onClose]);
+
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[75]" onClick={onClose} />
+      <div
+        className="fixed z-[80] w-44 overflow-hidden rounded-xl border border-slate-700 bg-slate-950 p-1 text-slate-200 shadow-2xl shadow-black/70"
+        style={{ left: placement.left, top: placement.top }}
+        role="menu"
+        aria-label="Проёмы и перегородки"
+      >
+        <button
+          type="button"
+          onClick={() => onPick('door')}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+        >
+          <DoorOpen size={13} className="text-sky-400" />
+          Дверь
+        </button>
+        <button
+          type="button"
+          onClick={() => onPick('window')}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+        >
+          <Square size={13} className="text-sky-400" />
+          Окно
+        </button>
+        <div className="my-1 border-t border-slate-800" />
+        <button
+          type="button"
+          onClick={() => onPick('partition')}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+        >
+          <Split size={13} className="text-emerald-400" />
+          Перегородка
+        </button>
+      </div>
+    </>,
+    document.body
+  );
+};
+
 export const StepRail: React.FC = () => {
   const {
     activeStep,
-    linesTab,
+    panelStep,
     activeTool,
     activeRoomType,
     activeOpeningType,
@@ -75,7 +160,8 @@ export const StepRail: React.FC = () => {
     setActiveOpeningType,
     setActiveDeviceType,
     setDeviceShared,
-    setLinesTab,
+    setPanelStep,
+    setActiveStep,
     startApartmentDrawing,
     startRoomDrawing,
     setDrawingStage,
@@ -93,6 +179,22 @@ export const StepRail: React.FC = () => {
     section: DeviceCatalogSectionId;
     anchorEl: HTMLElement;
   } | null>(null);
+  const [openingsMenu, setOpeningsMenu] = useState<{
+    anchorEl: HTMLElement;
+  } | null>(null);
+  const openingsAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  const openPanelStep = (step: PanelStep) => {
+    setActiveStep('lines');
+    setPanelStep(step);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() =>
+        document
+          .getElementById(`panel-step-${step}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      )
+    );
+  };
 
   const updateDevicePreferences = (
     update: (current: DeviceUiPreferences) => DeviceUiPreferences
@@ -139,17 +241,40 @@ export const StepRail: React.FC = () => {
   };
 
   const activeSectionId =
-    activeStep === 'devices' && activeTool === 'place_device'
-      ? DEVICE_CATALOG[activeDeviceType].section
-      : null;
+    activeTool === 'place_device' ? DEVICE_CATALOG[activeDeviceType].section : null;
   const activeDevicePath =
-    activeStep === 'devices' && activeTool === 'place_device'
-      ? deviceCatalogPath(activeDeviceType)
-      : null;
+    activeTool === 'place_device' ? deviceCatalogPath(activeDeviceType) : null;
 
-  const showPlanTools = activeStep === 'plan';
-  const showCommonTools =
-    activeStep === 'plan' || activeStep === 'devices' || activeStep === 'lines';
+  const showCommonTools = activeStep === 'plan' || activeStep === 'lines';
+
+  const pickOpening = (kind: 'door' | 'window' | 'partition') => {
+    if (kind === 'partition') {
+      setActiveTool('draw_partition');
+    } else {
+      setActiveOpeningType(kind);
+      setActiveTool('draw_opening');
+    }
+    setOpeningsMenu(null);
+  };
+
+  const toggleOpeningsMenu = () => {
+    const anchorEl = openingsAnchorRef.current;
+    if (!anchorEl) return;
+    setOpeningsMenu((current) => (current ? null : { anchorEl }));
+  };
+
+  const openingToolActive =
+    activeTool === 'draw_opening' || activeTool === 'draw_partition';
+  const openingLabel =
+    activeTool === 'draw_partition'
+      ? 'Перегородка'
+      : activeTool === 'draw_opening'
+        ? activeOpeningType === 'window'
+          ? 'Окно'
+          : 'Дверь'
+        : 'Проёмы';
+  const OpeningIcon =
+    activeTool === 'draw_partition' ? Split : activeTool === 'draw_opening' && activeOpeningType === 'window' ? Square : DoorOpen;
 
   return (
     <>
@@ -175,7 +300,7 @@ export const StepRail: React.FC = () => {
           </div>
         )}
 
-        {showPlanTools && (
+        {activeStep === 'plan' && (
           <>
             <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 px-1">
               Планировка
@@ -221,42 +346,42 @@ export const StepRail: React.FC = () => {
                     <PenTool size={14} />
                     Комната
                   </button>
-                  <button
-                    onClick={() => {
-                      setActiveOpeningType('door');
-                      setActiveTool('draw_opening');
-                    }}
-                    className={toolClass(
-                      activeTool === 'draw_opening' && activeOpeningType === 'door',
-                      true
-                    )}
-                    title="Добавить дверь"
+
+                  <div
+                    ref={openingsAnchorRef}
+                    className={`flex items-stretch rounded-lg border transition ${
+                      openingToolActive
+                        ? 'border-sky-400 bg-sky-500 text-white shadow'
+                        : 'border-transparent text-sky-300 bg-sky-500/10 hover:bg-sky-500/20'
+                    }`}
                   >
-                    <DoorOpen size={14} />
-                    Дверь
-                  </button>
-                  <button
-                    onClick={() => {
-                      setActiveOpeningType('window');
-                      setActiveTool('draw_opening');
-                    }}
-                    className={toolClass(
-                      activeTool === 'draw_opening' && activeOpeningType === 'window',
-                      true
-                    )}
-                    title="Добавить окно"
-                  >
-                    <Square size={14} />
-                    Окно
-                  </button>
-                  <button
-                    onClick={() => setActiveTool('draw_partition')}
-                    className={toolClass(activeTool === 'draw_partition', true)}
-                    title="Внутренняя перегородка"
-                  >
-                    <Split size={14} />
-                    Перегородка
-                  </button>
+                    <button
+                      type="button"
+                      onClick={toggleOpeningsMenu}
+                      className={`flex flex-1 min-w-0 items-center gap-1.5 rounded-l-lg px-2 py-1.5 text-[11px] font-medium text-left ${
+                        openingToolActive ? 'text-white' : 'text-sky-300'
+                      }`}
+                      title="Двери, окна и перегородки — выпадающий список"
+                      aria-haspopup="menu"
+                      aria-expanded={openingsMenu !== null}
+                    >
+                      <OpeningIcon size={14} />
+                      <span className="truncate">{openingLabel}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={toggleOpeningsMenu}
+                      className={`rounded-r-lg border-l px-1 transition ${
+                        openingToolActive
+                          ? 'border-white/20 hover:bg-white/10'
+                          : 'border-sky-500/20 hover:bg-sky-500/20'
+                      }`}
+                      title="Выбрать: дверь, окно или перегородка"
+                      aria-label="Проёмы и перегородки"
+                    >
+                      <span className="text-[9px]">▾</span>
+                    </button>
+                  </div>
                   {boundaryMode === 'manual' && (
                     <button
                       onClick={() => {
@@ -302,10 +427,10 @@ export const StepRail: React.FC = () => {
           </>
         )}
 
-        {activeStep === 'devices' && (
+        {activeStep === 'plan' && (
           <>
             <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 px-1">
-              Каталог
+              Электрика
             </div>
             <div className="flex flex-col gap-0.5">
               {DEVICE_CATALOG_TREE.map(({ section, count }) => {
@@ -416,7 +541,7 @@ export const StepRail: React.FC = () => {
               </button>
               <p className="px-1 pt-1 text-[9px] leading-snug text-slate-500">
                 {panel
-                  ? 'На плане · состав щитка — на шаге «Линии»'
+                  ? 'На плане · состав щитка — на шаге «Трассировка»'
                   : 'Поставьте щиток на стену'}
               </p>
             </div>
@@ -426,40 +551,31 @@ export const StepRail: React.FC = () => {
         {activeStep === 'lines' && (
           <>
             <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 px-1">
-              Щиток и линии
+              Трассировка
             </div>
             <button
-              onClick={() => setLinesTab('lines')}
-              className={toolClass(linesTab === 'lines')}
+              onClick={() => openPanelStep('devices')}
+              className={toolClass(panelStep === 'devices')}
+            >
+              <ListChecks size={14} />
+              Приборы
+            </button>
+            <button
+              onClick={() => openPanelStep('cable')}
+              className={toolClass(panelStep === 'cable')}
             >
               <Cable size={14} />
-              Линии
+              Кабель
             </button>
             <button
-              onClick={() => setLinesTab('panel')}
-              className={toolClass(linesTab === 'panel')}
+              onClick={() => openPanelStep('protection')}
+              className={toolClass(panelStep === 'protection')}
             >
-              <CircuitBoard size={14} />
-              Щиток
+              <ShieldCheck size={14} />
+              Защита
             </button>
             <p className="px-1 text-[9px] leading-snug text-slate-500">
-              Состав линий и щитка — сбоку. Трассы открываются из строки линии.
-            </p>
-          </>
-        )}
-
-        {activeStep === 'check' && (
-          <>
-            <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 px-1">
-              Проверка
-            </div>
-            <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-sky-500/10 border border-sky-500/30 text-sky-200 text-[11px] font-semibold">
-              <ShieldCheck size={14} />
-              Замечания
-            </div>
-            <p className="px-1 text-[9px] leading-snug text-slate-500">
-              Нормы, линии, трассы и щиток — одним списком. Нажмите «Показать», чтобы найти объект
-              на плане.
+              Состав, кабели и защита — сбоку. Шаги 1–3 раскрываются в панели.
             </p>
           </>
         )}
@@ -479,6 +595,14 @@ export const StepRail: React.FC = () => {
           </>
         )}
       </aside>
+
+      {openingsMenu && (
+        <OpeningPickerMenu
+          anchorEl={openingsMenu.anchorEl}
+          onPick={pickOpening}
+          onClose={() => setOpeningsMenu(null)}
+        />
+      )}
 
       {catalogMenu && (
         <DeviceCatalogMenu

@@ -229,6 +229,15 @@ export function validatePanel(
         lineId: line.id,
       });
     }
+    if (current > ampacity + 0.01) {
+      push({
+        id: `cable-load-${line.id}`,
+        severity: 'error',
+        message: `«${line.name}»: ток нагрузки ${current.toFixed(1)} А превышает допуск кабеля ${line.cable.sectionMm2} мм² (${ampacity} А).`,
+        reference: REF.ampacity,
+        lineId: line.id,
+      });
+    }
     if (line.breaker.ratingA > ampacity) {
       push({
         id: `breaker-cable-${line.id}`,

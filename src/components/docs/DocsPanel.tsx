@@ -35,6 +35,7 @@ export const DocsPanel: React.FC = () => {
     freePartitions,
     settings,
     setActiveStep,
+    setActiveTool,
   } = useProjectStore();
   const { panel, schematic, calculation, specification, autoLayout, routes } =
     usePanelDiagnostics();
@@ -113,11 +114,14 @@ export const DocsPanel: React.FC = () => {
                 Чертежи появятся, когда вы разместите щиток на плане и соберёте линии.
               </p>
               <button
-                onClick={() => setActiveStep('devices')}
+                onClick={() => {
+                  setActiveStep('plan');
+                  setActiveTool('place_panel');
+                }}
                 className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-semibold transition"
               >
                 <CircuitBoard size={13} />
-                Перейти к приборам
+                Разместить щиток на плане
                 <ArrowRight size={13} />
               </button>
             </div>

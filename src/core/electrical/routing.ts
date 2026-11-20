@@ -671,6 +671,21 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
       continue;
     }
 
+    // Ручной режим: автотрассу не строим, пока пользователь не проложит её сам.
+    if (line.trace === 'none' && !line.manualRoute) {
+      routes.set(line.id, {
+        lineId: line.id,
+        mode,
+        cableLengthMm: 0,
+        planLengthMm: 0,
+        verticalMm: 0,
+        deviceCount: lineDevices.length,
+        paths: [],
+        warning: null,
+      });
+      continue;
+    }
+
     // Ручная трасса приоритетнее автотрассировки и устаревших waypoints.
     if (line.manualRoute) {
       const manual = sanitizeManualRoute(line.manualRoute);
@@ -839,6 +854,8 @@ export function materializeRouteForLine(
     const existing = sanitizeManualRoute(line.manualRoute);
     if (existing) return existing;
   }
+  // В ручном режиме автотрассы нет — материализовывать нечего.
+  if (line.trace === 'none') return null;
 
   const route = computeLineRoutes(input).get(lineId);
   if (!route || route.paths.length === 0) return null;

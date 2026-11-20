@@ -53,7 +53,7 @@ import type {
   ManualRoute,
   Point2D,
 } from '../../types';
-import { Home, PenTool } from 'lucide-react';
+import { Home, PenTool, CircuitBoard } from 'lucide-react';
 
 Konva.dragButtons = [0];
 
@@ -99,8 +99,11 @@ export const CADCanvas: React.FC = () => {
     setStagePos,
     setCursorPosMm,
     setSelection,
+    setActiveTool,
     setHighlightedLine,
     setLineAssignLine,
+    cancelLineAssignment,
+    lineAssignStartPanel,
     assignDevicesToLine,
     unassignDevicesFromLines,
     setActiveSnap,
@@ -171,12 +174,6 @@ export const CADCanvas: React.FC = () => {
     lineId: string;
     index: number;
   } | null>(null);
-  // Список порядка открыт по умолчанию. Состояние привязано к своей линии:
-  // при смене линии список снова открыт, без сброса через эффект.
-  const [stopsPanel, setStopsPanel] = useState<{
-    lineId: string | null;
-    open: boolean;
-  }>({ lineId: null, open: true });
   // Черновик ручной трассировки живёт только в компоненте: в проект и историю
   // он попадает одним действием на «Готово».
   const [manualDraw, setManualDraw] = useState<{
@@ -187,9 +184,15 @@ export const CADCanvas: React.FC = () => {
     hover: ManualDrawHover | null;
   } | null>(null);
   const [manualDrawConfirm, setManualDrawConfirm] = useState(false);
+  // Перенос прибора чужой линии: мини-карточка у места клика, не модальное окно.
+  const [transferPrompt, setTransferPrompt] = useState<{
+    deviceId: string;
+    fromLineId: string;
+    toLineId: string;
+    left: number;
+    top: number;
+  } | null>(null);
   const routeEditing = activeTool === 'select' && designMode === 'electrical';
-  const stopsPanelOpen =
-    stopsPanel.lineId === routeEditLineId ? stopsPanel.open : true;
 
   // Превью и выделение живут вместе со своей линией и панелью: после смены
   // линии или отмены действия они просто перестают учитываться без сброса
@@ -245,6 +248,17 @@ export const CADCanvas: React.FC = () => {
     () => panel?.lines.find((line) => line.id === lineAssignLineId) ?? null,
     [panel, lineAssignLineId]
   );
+  const activeTransferPrompt =
+    transferPrompt && assignLine && transferPrompt.toLineId === assignLine.id
+      ? transferPrompt
+      : null;
+  const assignStartCount = assignLine
+    ? lineAssignStartPanel?.lines.find((line) => line.id === assignLine.id)
+        ?.deviceIds.length
+    : undefined;
+  const assignDelta = assignLine && assignStartCount !== undefined
+    ? assignLine.deviceIds.length - assignStartCount
+    : 0;
 
   const routeEditLine = useMemo(
     () => routeEditing ? panel?.lines.find((line) => line.id === routeEditLineId) ?? null : null,
@@ -390,26 +404,84 @@ export const CADCanvas: React.FC = () => {
     [routeEditLine, removeLineRouteNode]
   );
 
+  // Редактор трассы остаётся открытым: приборы добавляются кликами по плану,
+  // а «Список точек» сразу показывает их состав. Повторное нажатие выключает режим.
   const addDevicesFromRoute = useCallback(() => {
     if (!routeEditLine) return;
+    if (lineAssignLineId === routeEditLine.id) {
+      setLineAssignLine(null);
+      addToast('Добавление приборов завершено.', 'success');
+      return;
+    }
     routeDragBaseRef.current = null;
     setRoutePreview(null);
     setRouteNodeSelection(null);
-    setRouteEditLine(null);
+    setTransferPrompt(null);
     setLineAssignLine(routeEditLine.id);
-  }, [routeEditLine, setRouteEditLine, setLineAssignLine]);
+  }, [
+    routeEditLine,
+    lineAssignLineId,
+    setLineAssignLine,
+    setRoutePreview,
+    setRouteNodeSelection,
+    addToast,
+  ]);
+
+  const closeRouteEditor = useCallback(() => {
+    if (routeEditLine && lineAssignLineId === routeEditLine.id) {
+      setTransferPrompt(null);
+      setLineAssignLine(null);
+    }
+    setRouteEditLine(null);
+  }, [routeEditLine, lineAssignLineId, setLineAssignLine, setRouteEditLine]);
 
   const toggleDeviceAssignment = useCallback(
     (deviceId: string) => {
       if (!assignLine) return;
       if (assignLine.deviceIds.includes(deviceId)) {
         unassignDevicesFromLines([deviceId]);
-      } else {
-        assignDevicesToLine(assignLine.id, [deviceId]);
+        return;
       }
+      const owner = deviceLineMap.get(deviceId);
+      if (owner && owner.id !== assignLine.id) {
+        const pointer = stageRef.current?.getPointerPosition();
+        setTransferPrompt({
+          deviceId,
+          fromLineId: owner.id,
+          toLineId: assignLine.id,
+          left: Math.min(Math.max(pointer?.x ?? dimensions.width / 2, 160), dimensions.width - 160),
+          top: Math.min(Math.max((pointer?.y ?? 96) + 14, 48), dimensions.height - 140),
+        });
+        return;
+      }
+      assignDevicesToLine(assignLine.id, [deviceId]);
     },
-    [assignLine, assignDevicesToLine, unassignDevicesFromLines]
+    [
+      assignLine,
+      assignDevicesToLine,
+      unassignDevicesFromLines,
+      deviceLineMap,
+      dimensions.width,
+      dimensions.height,
+    ]
   );
+
+  const confirmDeviceTransfer = useCallback(() => {
+    if (!transferPrompt) return;
+    const fromLine = panel?.lines.find((line) => line.id === transferPrompt.fromLineId);
+    const toLine = panel?.lines.find((line) => line.id === transferPrompt.toLineId);
+    const device = devices.find((candidate) => candidate.id === transferPrompt.deviceId);
+    if (!toLine) {
+      setTransferPrompt(null);
+      return;
+    }
+    assignDevicesToLine(toLine.id, [transferPrompt.deviceId]);
+    addToast(
+      `«${device?.name ?? 'Прибор'}» перенесён из «${fromLine?.name ?? 'линии'}» в «${toLine.name}».`,
+      'success'
+    );
+    setTransferPrompt(null);
+  }, [transferPrompt, panel, devices, assignDevicesToLine, addToast]);
 
   const devicePreview = useMemo<{ resolved: ResolvedDevice | null; error: string | null }>(() => {
     if (activeTool !== 'place_device') return { resolved: null, error: null };
@@ -1199,12 +1271,20 @@ export const CADCanvas: React.FC = () => {
       }
 
       if (e.key === 'Escape') {
+        if (transferPrompt) {
+          setTransferPrompt(null);
+          return;
+        }
         if (routeEditLineId) {
+          if (lineAssignLineId === routeEditLineId) {
+            cancelLineAssignment();
+            return;
+          }
           setRouteEditLine(null);
           return;
         }
         if (lineAssignLineId) {
-          setLineAssignLine(null);
+          cancelLineAssignment();
           return;
         }
         if (dynamicInput.isOpen || dynamicInput.lockedLength !== null) {
@@ -1283,6 +1363,14 @@ export const CADCanvas: React.FC = () => {
         return;
       }
 
+      if (e.key === 'Enter' && assignLine && !isDrawing) {
+        e.preventDefault();
+        setTransferPrompt(null);
+        setLineAssignLine(null);
+        addToast('Состав линии сохранён.', 'success');
+        return;
+      }
+
       if (
         e.key === 'Enter' &&
         isDrawing &&
@@ -1312,6 +1400,10 @@ export const CADCanvas: React.FC = () => {
     selection,
     lineAssignLineId,
     setLineAssignLine,
+    cancelLineAssignment,
+    assignLine,
+    transferPrompt,
+    addToast,
     routeEditLineId,
     setRouteEditLine,
     routeNodeSelectionIndex,
@@ -1403,7 +1495,7 @@ export const CADCanvas: React.FC = () => {
         />
 
         <SelectionLayer
-          listening={activeTool === 'select' && !routeEditLine}
+          listening={activeTool === 'select' && (!routeEditLine || Boolean(assignLine))}
           selection={selection}
           openings={openings}
           partitions={freePartitions}
@@ -1480,7 +1572,7 @@ export const CADCanvas: React.FC = () => {
         )}
       </Stage>
 
-      {assignLine && (
+      {assignLine && !routeEditLine && (
         <div className="absolute top-9 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
           style={{ borderColor: lineColorMap.get(assignLine.id) ?? '#38bdf8' }}
         >
@@ -1491,13 +1583,27 @@ export const CADCanvas: React.FC = () => {
           <div className="min-w-0">
             <div className="text-[11px] font-bold text-white truncate max-w-[220px]">
               Назначение: {assignLine.name}
+              {assignDelta !== 0 && (
+                <span
+                  className={`ml-1.5 font-mono ${
+                    assignDelta > 0 ? 'text-emerald-300' : 'text-rose-300'
+                  }`}
+                >
+                  {assignDelta > 0 ? `+${assignDelta}` : assignDelta}
+                </span>
+              )}
             </div>
             <div className="text-[9px] text-slate-400">
-              приборов в линии: {assignLine.deviceIds.length} · клик — добавить/убрать · Esc — выйти
+              приборов в линии: {assignLine.deviceIds.length} · клик —
+              добавить/убрать · Enter — готово · Esc — отменить всё
             </div>
           </div>
           <button
-            onClick={() => setLineAssignLine(null)}
+            onClick={() => {
+              setTransferPrompt(null);
+              setLineAssignLine(null);
+              addToast('Состав линии сохранён.', 'success');
+            }}
             className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
           >
             Готово
@@ -1505,78 +1611,40 @@ export const CADCanvas: React.FC = () => {
         </div>
       )}
 
-      {routeEditLine && !activeManualDraw && (
-        <div className="absolute top-9 left-9 right-3 z-30 flex flex-wrap items-center gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
-          style={{ borderColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
+      {assignLine && activeTransferPrompt && (
+        <div
+          className="absolute z-40 w-64 -translate-x-1/2 rounded-xl border bg-slate-900/98 shadow-2xl backdrop-blur-md p-3 space-y-2"
+          style={{
+            left: activeTransferPrompt.left,
+            top: activeTransferPrompt.top,
+            borderColor: lineColorMap.get(assignLine.id) ?? '#38bdf8',
+          }}
         >
-          <span
-            className="w-2.5 h-2.5 rounded-full shrink-0"
-            style={{ backgroundColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
-          />
-          <div className="min-w-0">
-            <div className="text-[11px] font-bold text-white truncate max-w-[260px]">
-              {routeEditRoute
-                ? `Ручная трасса: ${routeEditLine.name} · ${routeEditLine.manualRoute ? 'ручная' : 'авто'}`
-                : `Монтаж линии: ${routeEditLine.name} · приборов нет`}
-            </div>
-            <div className="text-[9px] text-slate-400">
-              {routeEditRoute
-                ? `Точек: ${routeEditRoute.nodes.length - (routeEditRoute.bendNodes?.length ?? 0)} · Кабель: ${((lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0) / 1000).toFixed(1)} м · потолок ${settings.ceilingHeightMm} мм · пол ${settings.floorLevelMm} мм`
-                : 'Добавьте приборы в списке «Порядок точек»: они подключатся кликами по плану, трасса построится сама.'}
-            </div>
-            {routeEditRoute && (
-              <>
-                <div className="text-[9px] text-slate-400">
-                  Перетаскивание — свободное в 2D, линия возвращается к соседям ступеньками под 90° без новых точек · наклонная — скольжение вдоль линии · клик по линии — вставить точку · Delete — удалить точку: участок до соседних точек перестроится под 90° · Esc — выйти
-                </div>
-                <div className="text-[9px] text-slate-500">
-                  «Список» — порядок точек и приборов по ветвям: перетащите строку, и кабель пойдёт строго в этом порядке. Щиток и приборы закреплены, стык подвижен. Цветные маркеры — подвижные точки, серые — точки подключения. Изгибы под 90° точками не считаются.
-                </div>
-              </>
-            )}
-            {routePreviewError && (
-              <div className="text-[9px] text-rose-400 font-semibold max-w-[520px]">
-                {routePreviewError}
-              </div>
-            )}
+          <div className="text-[11px] text-slate-200 leading-snug">
+            «{devices.find((d) => d.id === activeTransferPrompt.deviceId)?.name ?? 'Прибор'}» уже в линии «
+            {panel?.lines.find((line) => line.id === activeTransferPrompt.fromLineId)?.name ?? 'другой'}».
+            Перенести в «{assignLine.name}»?
           </div>
-          <button
-            onClick={() =>
-              setStopsPanel({ lineId: routeEditLineId, open: !stopsPanelOpen })
-            }
-            className={`shrink-0 px-2 py-1 rounded-lg border text-[10px] font-bold transition ${
-              stopsPanelOpen
-                ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
-                : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-            }`}
-            title="Список порядка: точки и приборы по ветвям, перетаскивание меняет порядок подключения"
-          >
-            Список
-          </button>
-          {routeEditRoute && (
-            <>
-              <button
-                onClick={() => setManualDrawConfirm(true)}
-                className="shrink-0 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
-                title="Удалить текущую трассу и нарисовать её заново вручную"
-              >
-                Проложить вручную
-              </button>
-              <button
-                onClick={resetRoute}
-                disabled={!routeEditLine.manualRoute && !routeEditLine.waypoints?.length}
-                className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
-              >
-                Сбросить к авто
-              </button>
-            </>
+          {panel?.lines.find((line) => line.id === activeTransferPrompt.fromLineId)
+            ?.manualRoute && (
+            <div className="text-[9px] text-amber-300 leading-snug">
+              У старой линии ручная трасса — она будет пересчитана без этого прибора.
+            </div>
           )}
-          <button
-            onClick={() => setRouteEditLine(null)}
-            className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
-          >
-            Готово
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={confirmDeviceTransfer}
+              className="flex-1 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
+            >
+              Перенести
+            </button>
+            <button
+              onClick={() => setTransferPrompt(null)}
+              className="flex-1 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-bold transition"
+            >
+              Оставить
+            </button>
+          </div>
         </div>
       )}
 
@@ -1690,7 +1758,7 @@ export const CADCanvas: React.FC = () => {
         </div>
       )}
 
-      {routeEditLine && stopsPanelOpen && (
+      {routeEditLine && !activeManualDraw && (
         <RouteStopsPopover
           line={routeEditLine}
           route={routeEditRoute ?? EMPTY_ROUTE}
@@ -1698,12 +1766,18 @@ export const CADCanvas: React.FC = () => {
           devices={devices}
           selectedNode={routeNodeSelectionIndex}
           bounds={dimensions}
+          cableLengthMm={lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0}
+          error={routePreviewError}
+          assignActive={Boolean(assignLine && assignLine.id === routeEditLine.id)}
           onSelectNode={selectRouteNode}
           onReorder={reorderRouteStops}
           onRemoveNode={removeRouteNode}
           onReset={resetRoute}
           onAddDevices={addDevicesFromRoute}
-          onClose={() => setStopsPanel({ lineId: routeEditLineId, open: false })}
+          onBeginManualDraw={() =>
+            routeEditRoute ? setManualDrawConfirm(true) : beginManualDraw()
+          }
+          onClose={closeRouteEditor}
         />
       )}
 
@@ -1750,6 +1824,46 @@ export const CADCanvas: React.FC = () => {
                 className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm shadow-lg shadow-amber-950/40 transition flex items-center justify-center gap-2 cursor-pointer"
               >
                 ⚡ Начертить контур квартиры
+              </button>
+            </div>
+          </div>
+        )}
+
+      {activeStep === 'plan' && designMode === 'electrical' && rooms.length === 0 && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+          <div className="pointer-events-auto w-[340px] rounded-xl border border-slate-700/80 bg-slate-900/95 backdrop-blur-md px-4 py-3 text-center shadow-2xl">
+            <p className="text-sm font-bold text-white mb-1">Сначала разметьте план</p>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Приборы и щиток ставятся на стены комнат. Нарисуйте комнату инструментом
+              «Комната» слева.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {activeStep === 'plan' &&
+        designMode === 'electrical' &&
+        rooms.length > 0 &&
+        !panel &&
+        activeTool !== 'place_panel' && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+            <div className="pointer-events-auto flex items-center gap-3 rounded-xl border border-sky-500/40 bg-slate-900/95 backdrop-blur-md px-4 py-2.5 shadow-2xl">
+              <div className="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
+                <CircuitBoard size={18} />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-sky-200">
+                  Поставьте щиток — укажите стену
+                </div>
+                <div className="text-[10px] text-slate-400 leading-snug">
+                  Щиток — начало всех линий.
+                </div>
+              </div>
+              <button
+                onClick={() => setActiveTool('place_panel')}
+                className="shrink-0 py-1.5 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-white font-semibold text-xs transition cursor-pointer"
+              >
+                Выбрать стену
               </button>
             </div>
           </div>

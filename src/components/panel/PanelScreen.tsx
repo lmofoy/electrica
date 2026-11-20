@@ -1,13 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { formatCableLengthMm } from '../../core/electrical/routing';
 import { PanelScheme } from './PanelScheme';
-import { PanelSheet } from './PanelSheet';
-import { PanelCalculation } from './PanelCalculation';
-import { PanelSpecification } from './PanelSpecification';
-import { PanelDinSheet } from './PanelDinSheet';
 import { PanelSupplyForm } from './PanelSupplyForm';
 import { PanelLinesTable } from './PanelLinesTable';
+import { PanelProtectionTable } from './PanelProtectionTable';
+import { PanelChecks } from './PanelChecks';
 import { usePanelDiagnostics } from './usePanelDiagnostics';
 import {
   Wallet,
@@ -15,21 +13,17 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Trash2,
-  AlertTriangle,
   CheckCircle2,
-  Info,
-  XCircle,
   CircuitBoard,
-  DraftingCompass,
-  Calculator,
-  ClipboardList,
-  LayoutPanelTop,
   Cable,
   ArrowRight,
   Plus,
   Wand2,
+  ChevronDown,
+  ListChecks,
+  FileText,
 } from 'lucide-react';
-import type { LinesTab, PanelStrategy } from '../../types';
+import type { PanelStep, PanelStrategy } from '../../types';
 
 const STRATEGIES: {
   id: PanelStrategy;
@@ -67,12 +61,6 @@ const STRATEGIES: {
   },
 ];
 
-const WARNING_STYLE = {
-  error: { icon: <XCircle size={13} />, className: 'text-rose-300 bg-rose-500/10 border-rose-500/30' },
-  warning: { icon: <AlertTriangle size={13} />, className: 'text-amber-300 bg-amber-500/10 border-amber-500/30' },
-  info: { icon: <Info size={13} />, className: 'text-sky-300 bg-sky-500/10 border-sky-500/30' },
-} as const;
-
 const strategyTone = (strategy: PanelStrategy): string => {
   const map: Record<PanelStrategy, string> = {
     budget: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300',
@@ -83,18 +71,103 @@ const strategyTone = (strategy: PanelStrategy): string => {
   return map[strategy];
 };
 
-const TABS: { id: LinesTab; label: string; icon: React.ReactNode }[] = [
-  { id: 'lines', label: 'Линии', icon: <Cable size={12} /> },
-  { id: 'panel', label: 'Щиток', icon: <CircuitBoard size={12} /> },
-];
+interface Pill {
+  label: string;
+  className: string;
+}
+
+const pillTone = (errors: number, warnings: number, okLabel = 'ОК'): Pill => {
+  if (errors > 0) {
+    return {
+      label: `${errors} ош.`,
+      className: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+    };
+  }
+  if (warnings > 0) {
+    return {
+      label: `${warnings} зам.`,
+      className: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+    };
+  }
+  return {
+    label: okLabel,
+    className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  };
+};
+
+interface PanelStepCardProps {
+  id: PanelStep;
+  number: number;
+  title: string;
+  subtitle: string;
+  icon: React.ReactNode;
+  meta: string;
+  pill: Pill;
+  open: boolean;
+  onOpen: () => void;
+}
+
+const PanelStepCard: React.FC<React.PropsWithChildren<PanelStepCardProps>> = ({
+  id,
+  number,
+  title,
+  subtitle,
+  icon,
+  meta,
+  pill,
+  open,
+  onOpen,
+  children,
+}) => (
+  <section
+    id={`panel-step-${id}`}
+    className="rounded-xl border border-slate-800 bg-slate-950/40 scroll-mt-2 overflow-hidden"
+  >
+    <button
+      onClick={onOpen}
+      className="w-full flex items-center gap-2 p-2.5 text-left transition hover:bg-slate-900/60"
+    >
+      <span
+        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+          open ? 'bg-sky-500 text-white' : 'bg-slate-800 text-slate-400'
+        }`}
+      >
+        {number}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1 text-xs font-bold text-white">
+          {icon}
+          {title}
+        </span>
+        <span className="block truncate text-[9px] text-slate-500">{subtitle}</span>
+      </span>
+      <span className="shrink-0 font-mono text-[9px] text-slate-400">{meta}</span>
+      <span
+        className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] ${pill.className}`}
+      >
+        {pill.label}
+      </span>
+      <ChevronDown
+        size={13}
+        className={`shrink-0 text-slate-500 transition ${open ? 'rotate-180' : ''}`}
+      />
+    </button>
+    {open && (
+      <div className="space-y-2 border-t border-slate-800/60 px-2.5 pb-2.5 pt-2">
+        {children}
+      </div>
+    )}
+  </section>
+);
 
 export const PanelScreen: React.FC = () => {
   const {
     rooms,
     settings,
-    linesTab,
-    setLinesTab,
+    panelStep,
+    setPanelStep,
     setActiveStep,
+    setActiveTool,
     highlightedLineId,
     setHighlightedLine,
     updatePanel,
@@ -102,6 +175,7 @@ export const PanelScreen: React.FC = () => {
     setPanelStrategy,
     generatePanelLines,
     appendUnassignedDevices,
+    confirmPanelDraft,
     createManualPanelLine,
     updatePanelLine,
     deletePanelLine,
@@ -117,28 +191,45 @@ export const PanelScreen: React.FC = () => {
     routes,
     totalCableMm,
     unassignedDevices,
-    schematic,
-    calculation,
-    specification,
-    checks,
+    lineChecks,
+    checksByStep,
     errors,
     warnings,
   } = usePanelDiagnostics();
 
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [calculationOpen, setCalculationOpen] = useState(false);
-  const [specificationOpen, setSpecificationOpen] = useState(false);
-  const [dinOpen, setDinOpen] = useState(false);
+  const [supplyOpen, setSupplyOpen] = useState(false);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      if (linesTab === 'panel') setLinesTab('lines');
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [linesTab, setLinesTab]);
+  const scrollToChecks = () => {
+    requestAnimationFrame(() => {
+      document
+        .getElementById('panel-checks')
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  const openStep = (step: PanelStep, lineId?: string) => {
+    if (lineId) setHighlightedLine(lineId);
+    setPanelStep(step);
+    requestAnimationFrame(() => {
+      document
+        .getElementById(`panel-step-${step}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  const pickStrategy = (strategy: PanelStrategy) => {
+    if (strategy !== 'custom' && panel && panel.lines.length > 0) {
+      const label = STRATEGIES.find((item) => item.id === strategy)?.label ?? '';
+      if (
+        !confirm(
+          `Стратегия «${label}» заново подберёт автоматы, УЗО и кабели всех линий. Ручные настройки защиты будут заменены. Продолжить?`
+        )
+      ) {
+        return;
+      }
+    }
+    setPanelStrategy(strategy);
+  };
 
   if (!panel || !layout) {
     return (
@@ -146,17 +237,20 @@ export const PanelScreen: React.FC = () => {
         <div className="p-4 space-y-3">
           <div className="flex items-center gap-2">
             <CircuitBoard size={16} className="text-sky-400" />
-            <h2 className="text-sm font-bold text-white">Линии и щиток</h2>
+            <h2 className="text-sm font-bold text-white">Трассировка и щиток</h2>
           </div>
           <p className="text-[11px] text-slate-400 leading-snug">
-            Сначала разместите электрощиток на плане — на шаге «Приборы».
-            После этого здесь появится список линий и схема щитка.
+            Сначала разместите электрощиток на плане — на шаге «План».
+            После этого здесь появятся состав линий, кабели и защита.
           </p>
           <button
-            onClick={() => setActiveStep('devices')}
+            onClick={() => {
+              setActiveStep('plan');
+              setActiveTool('place_panel');
+            }}
             className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-semibold transition"
           >
-            Перейти к приборам
+            Разместить щиток на плане
             <ArrowRight size={13} />
           </button>
         </div>
@@ -164,11 +258,40 @@ export const PanelScreen: React.FC = () => {
     );
   }
 
+  const routeMissingCount = panel.lines.filter(
+    (line) => line.trace === 'none' && !line.manualRoute && line.deviceIds.length > 0
+  ).length;
+  const strategyLabel =
+    STRATEGIES.find((item) => item.id === panel.strategy)?.label ?? 'Своя защита';
+
+  const stepMeta: Record<PanelStep, string> = {
+    devices:
+      unassignedDevices.length > 0
+        ? `${panel.lines.length} л. · ${unassignedDevices.length} вне`
+        : `${panel.lines.length} л.`,
+    cable:
+      routeMissingCount > 0
+        ? `${routeMissingCount} без трассы`
+        : formatCableLengthMm(totalCableMm),
+    protection: strategyLabel,
+  };
+
+  const stepPill: Record<PanelStep, Pill> = {
+    devices: pillTone(checksByStep.devices.errors, checksByStep.devices.warnings),
+    cable: pillTone(checksByStep.cable.errors, checksByStep.cable.warnings),
+    protection: pillTone(
+      checksByStep.protection.errors,
+      checksByStep.protection.warnings
+    ),
+  };
+
+  const stepOpen = (step: PanelStep) => panelStep === step;
+
   return (
     <>
       <aside className="w-full md:w-[420px] xl:w-[500px] shrink-0 h-[50%] md:h-full overflow-y-auto bg-slate-900 border-l border-slate-800 text-slate-200 select-none">
-        <div className="p-3 space-y-3">
-          {/* Шапка: название, вкладки, сводка */}
+        <div className="p-3 space-y-2.5">
+          {/* Шапка: название, корпус, сводка */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
             <div className="flex items-center gap-2">
               <CircuitBoard size={16} className="text-sky-400 shrink-0" />
@@ -185,31 +308,26 @@ export const PanelScreen: React.FC = () => {
               {panel.supply.phases === 3 ? '3 фазы 380/220 В' : '1 фаза 230 В'}
             </div>
 
-            <div
-              className="mt-2 grid grid-cols-2 gap-0.5 rounded-lg border border-slate-800 bg-slate-950/70 p-0.5"
-              role="tablist"
-              aria-label="Линии и щиток"
+            <button
+              onClick={() => setSupplyOpen((open) => !open)}
+              className="mt-1.5 flex w-full items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[10px] font-semibold text-slate-300 transition hover:border-slate-700"
             >
-              {TABS.map((tab) => {
-                const active = linesTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => setLinesTab(tab.id)}
-                    className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition ${
-                      active
-                        ? 'bg-sky-500 text-white shadow'
-                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                    }`}
-                  >
-                    {tab.icon}
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
+              <SlidersHorizontal size={11} className="text-sky-400" />
+              Корпус и ввод
+              <ChevronDown
+                size={12}
+                className={`ml-auto text-slate-500 transition ${supplyOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+            {supplyOpen && (
+              <div className="mt-2">
+                <PanelSupplyForm
+                  panel={panel}
+                  onSupply={updatePanelSupply}
+                  onPanel={updatePanel}
+                />
+              </div>
+            )}
 
             <div className="mt-2 grid grid-cols-4 gap-1.5">
               <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-1.5 py-1 text-center">
@@ -234,8 +352,8 @@ export const PanelScreen: React.FC = () => {
                 </div>
               </div>
               <button
-                onClick={() => setActiveStep('check')}
-                title="Открыть полную проверку проекта"
+                onClick={scrollToChecks}
+                title="Показать замечания и ошибки внизу панели"
                 className={`rounded-lg border px-1.5 py-1 text-center transition hover:brightness-110 ${
                   errors > 0
                     ? 'border-rose-500/40 bg-rose-500/10'
@@ -260,264 +378,293 @@ export const PanelScreen: React.FC = () => {
             </div>
           </div>
 
-          {linesTab === 'lines' ? (
-            <>
-              {/* Сборка линий: ручная или автоматический черновик */}
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="text-xs font-bold text-white">Сборка линий</div>
-                  {panel.lines.length > 0 && (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => appendUnassignedDevices()}
-                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
-                        title="Добавить в существующие линии приборы, которые ещё вне линий"
-                      >
-                        <ShieldCheck size={11} />
-                        Из приборов
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (confirm('Очистить схему и собрать щиток с нуля?')) clearPanelLines();
-                        }}
-                        className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition"
-                        title="Удалить все линии и начать с пустого щитка"
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {panel.lines.length === 0 ? (
-                  <div className="space-y-1.5">
-                    <button
-                      onClick={() => createManualPanelLine()}
-                      className="w-full text-left rounded-lg border border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/20 px-2.5 py-2 transition"
-                    >
-                      <span className="flex items-center gap-1.5 text-[11px] font-bold text-sky-200">
-                        <Plus size={13} />
-                        Создать линию вручную
-                      </span>
-                      <span className="block mt-0.5 text-[9px] text-slate-400 leading-snug">
-                        Пустая линия: сами добавите приборы, выберете автомат, кабель и УЗО,
-                        проложите трассу.
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => generatePanelLines()}
-                      className="w-full text-left rounded-lg border border-slate-700 bg-slate-900/60 hover:border-slate-500 px-2.5 py-2 transition"
-                    >
-                      <span className="flex items-center gap-1.5 text-[11px] font-bold text-slate-300">
-                        <Wand2 size={13} />
-                        Собрать автоматически
-                      </span>
-                      <span className="block mt-0.5 text-[9px] text-slate-500 leading-snug">
-                        Черновик по комнатам: розетки, свет, влажные зоны. Всё можно
-                        поправить вручную.
-                      </span>
-                    </button>
+          <PanelStepCard
+            id="devices"
+            number={1}
+            title="Приборы по линиям"
+            subtitle="Кто в какой линии"
+            icon={<ListChecks size={13} />}
+            meta={stepMeta.devices}
+            pill={stepPill.devices}
+            open={stepOpen('devices')}
+            onOpen={() => setPanelStep('devices')}
+          >
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <div>
+                  <div className="text-[11px] font-bold text-white">Сборка линий</div>
+                  <div className="text-[9px] text-slate-500">
+                    {panel.assembly === 'manual'
+                      ? 'Режим: вручную'
+                      : panel.assembly === 'auto'
+                        ? 'Режим: авто-черновик'
+                        : 'Выберите путь — оба доступны всегда'}
                   </div>
-                ) : (
+                </div>
+                {panel.lines.length > 0 && (
                   <button
-                    onClick={() => createManualPanelLine()}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[10px] font-semibold text-slate-300 transition"
+                    onClick={() => {
+                      if (confirm('Очистить схему и собрать щиток с нуля?')) clearPanelLines();
+                    }}
+                    className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition shrink-0"
+                    title="Удалить все линии и начать с пустого щитка"
                   >
-                    <Plus size={12} />
-                    Создать линию вручную
+                    <Trash2 size={11} />
                   </button>
                 )}
-              </section>
+              </div>
 
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <div className="text-xs font-bold text-white">Защита щитка</div>
-                <p className="text-[9px] text-slate-500 leading-snug mt-0.5 mb-2">
-                  Стратегия подбора УЗО. Автоматы, кабели и УЗО каждой линии всегда можно
-                  поправить в таблице ниже.
-                </p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {STRATEGIES.map((strategy) => {
-                    const active = panel.strategy === strategy.id;
-                    return (
-                      <button
-                        key={strategy.id}
-                        onClick={() => setPanelStrategy(strategy.id)}
-                        title={strategy.description}
-                        className={`text-left rounded-lg border px-2 py-1.5 transition ${
-                          active
-                            ? strategyTone(strategy.id)
-                            : 'border-slate-800 bg-slate-950/50 text-slate-300 hover:border-slate-600'
-                        }`}
-                      >
-                        <span className="flex items-center gap-1 text-[10px] font-bold">
-                          {strategy.icon}
-                          {strategy.label}
-                        </span>
-                      </button>
-                    );
-                  })}
+              {panel.linesDraft && (
+                <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-amber-200">
+                    <Wand2 size={11} />
+                    Черновик — проверьте состав
+                  </div>
+                  <p className="text-[9px] text-amber-300/80 leading-snug mt-0.5">
+                    Собрано автоматически по комнатам: проверьте приборы. Кабель — на
+                    шаге 2, автоматы и УЗО — на шаге 3.
+                  </p>
+                  <div className="flex gap-1.5 mt-1.5">
+                    <button
+                      onClick={() => confirmPanelDraft()}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold transition"
+                    >
+                      <CheckCircle2 size={11} />
+                      Подтвердить
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (
+                          confirm(
+                            'Пересобрать все линии заново? Текущий состав и правки будут заменены.'
+                          )
+                        ) {
+                          generatePanelLines();
+                        }
+                      }}
+                      className="px-2 py-1 rounded-md border border-amber-500/40 hover:bg-amber-500/15 text-amber-200 text-[10px] font-semibold transition"
+                    >
+                      Пересобрать
+                    </button>
+                  </div>
                 </div>
-              </section>
+              )}
 
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <PanelLinesTable
-                  panel={panel}
-                  rooms={rooms}
-                  routes={routes}
-                  defaultRouting={settings.defaultRouting}
-                  highlightedLineId={highlightedLineId}
-                  unassignedCount={unassignedDevices.length}
-                  onHighlight={setHighlightedLine}
-                  onCreateEmpty={() => createManualPanelLine()}
-                  onUpdate={updatePanelLine}
-                  onDelete={deletePanelLine}
-                  onGenerate={generatePanelLines}
-                  onAppend={appendUnassignedDevices}
-                />
-              </section>
-            </>
-          ) : (
-            <>
-              {/* Листы и схема щитка */}
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    onClick={() => setSheetOpen(true)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
-                    title="Открыть лист A3 с принципиальной схемой щита"
-                  >
-                    <DraftingCompass size={12} />
-                    Чертёж A3
-                  </button>
-                  <button
-                    onClick={() => setCalculationOpen(true)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
-                    title="Открыть расчётную таблицу нагрузок на листе A3"
-                  >
-                    <Calculator size={12} />
-                    Расчёт
-                  </button>
-                  <button
-                    onClick={() => setSpecificationOpen(true)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
-                    title="Спецификация оборудования и ведомость материалов на листе A3"
-                  >
-                    <ClipboardList size={12} />
-                    Спецификация
-                  </button>
-                  <button
-                    onClick={() => setDinOpen(true)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/40 text-sky-300 hover:bg-sky-500/25 text-[10px] font-bold transition"
-                    title="DIN-лист: расположение аппаратов в корпусе щита"
-                  >
-                    <LayoutPanelTop size={12} />
-                    Компоновка
-                  </button>
-                </div>
-              </section>
-
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <PanelSupplyForm
-                  panel={panel}
-                  onSupply={updatePanelSupply}
-                  onPanel={updatePanel}
-                />
-              </section>
-
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <PanelScheme
-                  panel={panel}
-                  layout={layout}
-                  highlightedLineId={highlightedLineId}
-                  onHighlight={setHighlightedLine}
-                  onMoveItem={movePanelDinItem}
-                  onResetOrder={resetPanelDinOrder}
-                />
-              </section>
-
-              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-2.5">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs font-bold text-white">Проверка по нормам</div>
-                  <button
-                    onClick={() => setActiveStep('check')}
-                    className="text-[9px] text-sky-400 hover:text-sky-300 underline underline-offset-2"
-                  >
-                    все проверки
-                  </button>
-                </div>
-
-                {checks.length === 0 ? (
-                  <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-300">
-                    <CheckCircle2 size={14} />
-                    <span className="text-[10px] font-semibold">
-                      Ошибок не найдено. Схема соответствует выбранным правилам.
+              <div className="space-y-1.5">
+                <button
+                  onClick={() => createManualPanelLine()}
+                  className={`w-full text-left rounded-lg border px-2.5 py-2 transition ${
+                    panel.lines.length === 0
+                      ? 'border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/20'
+                      : 'border-slate-700 bg-slate-900/60 hover:border-sky-500/60'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 text-[11px] font-bold text-sky-200">
+                    <Plus size={13} />
+                    {panel.lines.length === 0
+                      ? 'Создать линию вручную'
+                      : 'Новая линия вручную'}
+                  </span>
+                  {panel.lines.length === 0 && (
+                    <span className="block mt-0.5 text-[9px] text-slate-400 leading-snug">
+                      Пустая линия: сами отметите приборы в её составе. Кабель и защита —
+                      следующие шаги.
                     </span>
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    {checks.slice(0, 6).map((check) => {
-                      const style = WARNING_STYLE[check.severity];
-                      return (
-                        <div
-                          key={check.id}
-                          className={`flex items-start gap-1.5 rounded-lg border p-1.5 ${style.className}`}
-                        >
-                          <span className="mt-0.5 shrink-0">{style.icon}</span>
-                          <span className="text-[9px] leading-snug">
-                            {check.message}
-                            {check.reference && (
-                              <span className="block mt-0.5 text-[8px] opacity-60">
-                                {check.reference}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      );
-                    })}
-                    {checks.length > 6 && (
-                      <div className="text-[9px] text-slate-500 px-1">
-                        и ещё {checks.length - 6} — на шаге «Проверка»
-                      </div>
-                    )}
-                  </div>
-                )}
-              </section>
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    if (
+                      panel.lines.length > 0 &&
+                      !confirm(
+                        'Пересобрать все линии заново? Текущий состав, названия, правки и трассы будут заменены, трассы построятся автоматически.'
+                      )
+                    ) {
+                      return;
+                    }
+                    generatePanelLines();
+                  }}
+                  className={`w-full text-left rounded-lg border px-2.5 py-2 transition ${
+                    panel.lines.length === 0
+                      ? 'border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/20'
+                      : 'border-slate-700 bg-slate-900/60 hover:border-amber-500/60'
+                  }`}
+                >
+                  <span
+                    className={`flex items-center gap-1.5 text-[11px] font-bold ${
+                      panel.lines.length === 0 ? 'text-sky-200' : 'text-slate-300'
+                    }`}
+                  >
+                    <Wand2 size={13} />
+                    {panel.lines.length === 0
+                      ? 'Собрать автоматически'
+                      : 'Пересобрать автоматически'}
+                  </span>
+                  {panel.lines.length === 0 && (
+                    <span className="block mt-0.5 text-[9px] text-slate-400 leading-snug">
+                      Черновик по комнатам: розетки, свет, влажные зоны. Трассы
+                      построятся автоматически — их можно перепроложить вручную.
+                    </span>
+                  )}
+                </button>
+              </div>
+            </section>
 
-              <button
-                onClick={() => {
-                  if (confirm(`Удалить щиток «${panel.name}» и его схему?`)) deletePanel();
-                }}
-                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-slate-800 bg-slate-950/40 hover:border-rose-500/50 hover:text-rose-400 text-slate-500 text-[10px] font-semibold transition"
-              >
-                <Trash2 size={12} />
-                Удалить щиток
-              </button>
-            </>
-          )}
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <PanelLinesTable
+                panel={panel}
+                rooms={rooms}
+                routes={routes}
+                defaultRouting={settings.defaultRouting}
+                highlightedLineId={highlightedLineId}
+                unassignedCount={unassignedDevices.length}
+                mode="composition"
+                lineChecks={lineChecks}
+                onHighlight={setHighlightedLine}
+                onCreateEmpty={() => createManualPanelLine()}
+                onUpdate={updatePanelLine}
+                onDelete={deletePanelLine}
+                onAppend={appendUnassignedDevices}
+                onOpenStep={openStep}
+              />
+            </section>
+          </PanelStepCard>
+
+          <PanelStepCard
+            id="cable"
+            number={2}
+            title="Кабель и трасса"
+            subtitle="Сечение и физическая прокладка"
+            icon={<Cable size={13} />}
+            meta={stepMeta.cable}
+            pill={stepPill.cable}
+            open={stepOpen('cable')}
+            onOpen={() => setPanelStep('cable')}
+          >
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <PanelLinesTable
+                panel={panel}
+                rooms={rooms}
+                routes={routes}
+                defaultRouting={settings.defaultRouting}
+                highlightedLineId={highlightedLineId}
+                unassignedCount={unassignedDevices.length}
+                mode="cable"
+                lineChecks={lineChecks}
+                onHighlight={setHighlightedLine}
+                onCreateEmpty={() => createManualPanelLine()}
+                onUpdate={updatePanelLine}
+                onDelete={deletePanelLine}
+                onAppend={appendUnassignedDevices}
+                onOpenStep={openStep}
+              />
+            </section>
+          </PanelStepCard>
+
+          <PanelStepCard
+            id="protection"
+            number={3}
+            title="Защита"
+            subtitle="Автоматы, УЗО и схема щитка"
+            icon={<ShieldCheck size={13} />}
+            meta={stepMeta.protection}
+            pill={stepPill.protection}
+            open={stepOpen('protection')}
+            onOpen={() => setPanelStep('protection')}
+          >
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <div className="text-[11px] font-bold text-white">Стратегия защиты</div>
+              <p className="text-[9px] text-slate-500 leading-snug mt-0.5 mb-2">
+                Стратегия подбирает автоматы, УЗО и кабели всех линий. Ручная правка
+                автомата или УЗО переключает на «Своя защита» и больше не
+                перезаписывается.
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {STRATEGIES.map((strategy) => {
+                  const active = panel.strategy === strategy.id;
+                  return (
+                    <button
+                      key={strategy.id}
+                      onClick={() => pickStrategy(strategy.id)}
+                      title={strategy.description}
+                      className={`text-left rounded-lg border px-2 py-1.5 transition ${
+                        active
+                          ? strategyTone(strategy.id)
+                          : 'border-slate-800 bg-slate-950/50 text-slate-300 hover:border-slate-600'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1 text-[10px] font-bold">
+                        {strategy.icon}
+                        {strategy.label}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <div className="text-[11px] font-bold text-white">Аппараты защиты линий</div>
+              <p className="text-[9px] text-slate-500 leading-snug mt-0.5 mb-2">
+                Ток линии ≤ автомат ≤ допуск кабеля. Для розеточных и влажных линий —
+                УЗО не более 30 мА. Кабель меняется на шаге 2.
+              </p>
+              <PanelProtectionTable
+                panel={panel}
+                highlightedLineId={highlightedLineId}
+                lineChecks={lineChecks}
+                onHighlight={setHighlightedLine}
+                onUpdate={updatePanelLine}
+                onOpenCable={(lineId) => openStep('cable', lineId)}
+              />
+            </section>
+
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <PanelScheme
+                panel={panel}
+                layout={layout}
+                highlightedLineId={highlightedLineId}
+                onHighlight={setHighlightedLine}
+                onMoveItem={movePanelDinItem}
+                onResetOrder={resetPanelDinOrder}
+              />
+            </section>
+
+            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+              <div className="flex items-center gap-2">
+                <FileText size={13} className="text-sky-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] font-bold text-white">
+                    Чертежи и спецификация
+                  </div>
+                  <div className="text-[9px] text-slate-500">
+                    Листы A3 и печать — в шаге «Документы»
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveStep('docs')}
+                  className="flex items-center gap-1 rounded-lg border border-sky-500/40 bg-sky-500/15 px-2 py-1 text-[10px] font-bold text-sky-300 transition hover:bg-sky-500/25"
+                >
+                  Открыть
+                  <ArrowRight size={11} />
+                </button>
+              </div>
+            </section>
+          </PanelStepCard>
+
+          <PanelChecks />
+
+          <button
+            onClick={() => {
+              if (confirm(`Удалить щиток «${panel.name}» и его схему?`)) deletePanel();
+            }}
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-slate-800 bg-slate-950/40 hover:border-rose-500/50 hover:text-rose-400 text-slate-500 text-[10px] font-semibold transition"
+          >
+            <Trash2 size={12} />
+            Удалить щиток
+          </button>
         </div>
       </aside>
-
-      {sheetOpen && schematic && (
-        <PanelSheet schematic={schematic} onClose={() => setSheetOpen(false)} />
-      )}
-
-      {calculationOpen && calculation && (
-        <PanelCalculation
-          calculation={calculation}
-          onClose={() => setCalculationOpen(false)}
-        />
-      )}
-
-      {specificationOpen && specification && (
-        <PanelSpecification
-          specification={specification}
-          onClose={() => setSpecificationOpen(false)}
-        />
-      )}
-
-      {dinOpen && (
-        <PanelDinSheet panel={panel} rooms={rooms} onClose={() => setDinOpen(false)} />
-      )}
     </>
   );
 };

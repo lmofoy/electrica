@@ -437,7 +437,7 @@ try {
     assert.equal(state().panel, null);
     assert.deepEqual(historySize(), [0, 0]);
   });
-  await test('store: route edit is UI-only, exclusive with assignment, cleared on deletion/reset', () => {
+  await test('store: route edit is UI-only, assignment keeps it open, cleared on deletion/reset', () => {
     loadFresh();
     state().setLineAssignLine(LINE_ID);
     state().setRouteEditLine(LINE_ID);
@@ -455,7 +455,12 @@ try {
     assert.equal(state().routeEditLineId, null, 'redo does not restore UI');
     state().setRouteEditLine(LINE_ID);
     state().setLineAssignLine(LINE_ID);
-    assert.equal(state().routeEditLineId, null);
+    assert.equal(
+      state().routeEditLineId,
+      LINE_ID,
+      'assignment keeps the route editor open'
+    );
+    assert.equal(state().lineAssignLineId, LINE_ID);
     state().setRouteEditLine('missing-line');
     assert.equal(state().routeEditLineId, null);
     state().setRouteEditLine(LINE_ID);

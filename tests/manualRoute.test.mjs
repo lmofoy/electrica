@@ -1018,8 +1018,31 @@ try {
     );
   });
 
-  await test('routing: invalid manual route is reported and falls back', () => {
+  await test('routing: trace none without a manual route leaves the line untraced', () => {
     const { input } = rectangleFixture();
+    const manualMode = clone(input);
+    manualMode.panel.lines[0].trace = 'none';
+    const result = computeLineRoutes(manualMode).get(LINE_ID);
+    assert.ok(result);
+    assert.equal(result.cableLengthMm, 0);
+    assert.equal(result.planLengthMm, 0);
+    assert.equal(result.verticalMm, 0);
+    assert.deepEqual(result.paths, []);
+    assert.equal(result.warning, null);
+    assert.equal(result.deviceCount, 1);
+  });
+
+  await test('routing: trace none still respects a saved manual route', () => {
+    const { input } = rectangleFixture();
+    const both = withManual(input, manualFromAuto(input));
+    both.panel.lines[0].trace = 'none';
+    const result = computeLineRoutes(both).get(LINE_ID);
+    assert.ok(result);
+    assert.equal(result.planLengthMm, manualRouteLength(both.panel.lines[0].manualRoute));
+    assert.ok(result.cableLengthMm > 0);
+  });
+
+  await test('routing: invalid manual route is reported and falls back', () => {    const { input } = rectangleFixture();
     const broken = clone(input);
     broken.panel.lines[0].manualRoute = { nodes: [{ x: 0, y: 0 }], paths: [[0, 7]], anchors: [] };
     const result = computeLineRoutes(broken).get(LINE_ID);

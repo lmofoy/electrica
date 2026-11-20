@@ -8,12 +8,15 @@ import { buildPanelSpecification } from '../../core/electrical/specification';
 import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
 import { collectLineCompositionWarnings } from '../../core/electrical/lineOps';
 import { computeLineRoutes } from '../../core/electrical/routing';
+import type { NormativeFinding } from '../../core/electrical/panelValidation';
+import type { PanelStep } from '../../types';
 
 export type CheckGroup = 'norms' | 'lines' | 'routes' | 'panel';
 
 export interface PanelCheckItem {
   id: string;
   group: CheckGroup;
+  step: PanelStep;
   severity: 'error' | 'warning' | 'info';
   message: string;
   reference?: string;
@@ -22,13 +25,35 @@ export interface PanelCheckItem {
 
 export const CHECK_GROUP_LABELS: Record<CheckGroup, string> = {
   norms: 'Нормы',
-  lines: 'Линии',
+  lines: 'Состав линий',
   routes: 'Трассы',
   panel: 'Щиток',
 };
 
-// Единый расчёт проверок щитка: вкладка «Щиток» и шаг «Проверка»
-// показывают одни и те же данные.
+const CABLE_FINDING_PREFIXES = [
+  'cable-section-',
+  'min-section-',
+  'cable-load-',
+  'voltage-drop-',
+];
+
+// Нормативные находки по кабелю показываем на шаге «Кабель и трасса»,
+// остальные (автоматы, УЗО, селективность) — на шаге «Защита».
+export function findingStep(id: string): PanelStep {
+  return CABLE_FINDING_PREFIXES.some((prefix) => id.startsWith(prefix))
+    ? 'cable'
+    : 'protection';
+}
+
+export function findingsForStep(
+  findings: NormativeFinding[] | undefined,
+  step: PanelStep
+): NormativeFinding[] {
+  if (!findings) return [];
+  return findings.filter((finding) => findingStep(finding.id) === step);
+}
+
+// Единый расчёт проверок щитка: все шаги «Трассировки» показывают одни и те же данные.
 export function usePanelDiagnostics() {
   const {
     panel,
@@ -119,37 +144,78 @@ export function usePanelDiagnostics() {
       .slice(0, 3)
       .map((device) => device.name)
       .join(', ');
-    const routingWarnings = [
-      ...new Set(
-        [...routes.values()]
-          .map((route) => route.warning)
-          .filter((warning): warning is string => warning !== null)
-      ),
-    ].map((message, index) => ({
-      id: `route-warning-${index}`,
-      group: 'routes' as const,
-      severity: 'info' as const,
-      message,
-    }));
+
+    const routingWarnings: PanelCheckItem[] = [];
+    const seenWarnings = new Set<string>();
+    for (const [lineId, route] of routes) {
+      if (!route.warning || seenWarnings.has(route.warning)) continue;
+      seenWarnings.add(route.warning);
+      routingWarnings.push({
+        id: `route-warning-${lineId}`,
+        group: 'routes',
+        step: 'cable',
+        severity: 'info',
+        message: route.warning,
+        lineId,
+      });
+    }
+
+    const missingTrace: PanelCheckItem[] = panel.lines
+      .filter(
+        (line) =>
+          line.trace === 'none' && !line.manualRoute && line.deviceIds.length > 0
+      )
+      .map((line) => ({
+        id: `route-missing-${line.id}`,
+        group: 'routes',
+        step: 'cable',
+        severity: 'warning',
+        message: `«${line.name}»: трасса не проложена — кабель не учтён в длинах и ведомости.`,
+        lineId: line.id,
+      }));
+
+    const emptyLines: PanelCheckItem[] = panel.lines
+      .filter((line) => line.deviceIds.length === 0)
+      .map((line) => ({
+        id: `line-empty-${line.id}`,
+        group: 'lines',
+        step: 'devices',
+        severity: 'warning',
+        message: `«${line.name}»: в линии нет приборов — добавьте их в составе.`,
+        lineId: line.id,
+      }));
 
     return [
       ...layout.warnings.map((warning) => ({
         ...warning,
         group: 'panel' as const,
+        step: 'protection' as const,
       })),
       ...(schematic?.findings ?? []).map((finding) => ({
-        ...finding,
-        group: 'lines' as const,
+        id: finding.id,
+        group: 'norms' as const,
+        step: findingStep(finding.id),
+        severity: finding.severity,
+        message: finding.message,
+        reference: finding.reference,
+        lineId: finding.lineId,
       })),
       ...compositionWarnings.map((warning) => ({
-        ...warning,
+        id: warning.id,
         group: 'lines' as const,
+        step: (warning.id.startsWith('wet-device-rcd-')
+          ? 'protection'
+          : 'devices') as PanelStep,
+        severity: warning.severity,
+        message: warning.message,
+        lineId: warning.lineId,
       })),
       ...(unassignedDevices.length
         ? [
             {
               id: 'unassigned-devices',
               group: 'lines' as const,
+              step: 'devices' as const,
               severity: 'warning' as const,
               message: `Вне линий: ${unassignedDevices.length} приб. (${sampleNames}${
                 unassignedDevices.length > 3 ? '…' : ''
@@ -157,12 +223,47 @@ export function usePanelDiagnostics() {
             },
           ]
         : []),
+      ...emptyLines,
+      ...missingTrace,
       ...routingWarnings,
     ];
-  }, [panel, layout, schematic, compositionWarnings, unassignedDevices, routes]);
+  }, [
+    panel,
+    layout,
+    schematic,
+    compositionWarnings,
+    unassignedDevices,
+    routes,
+  ]);
 
   const errors = checks.filter((check) => check.severity === 'error').length;
   const warnings = checks.filter((check) => check.severity === 'warning').length;
+
+  const lineChecks = useMemo(() => {
+    const map = new Map<string, PanelCheckItem[]>();
+    for (const check of checks) {
+      if (!check.lineId) continue;
+      const list = map.get(check.lineId) ?? [];
+      list.push(check);
+      map.set(check.lineId, list);
+    }
+    return map;
+  }, [checks]);
+
+  const checksByStep = useMemo(() => {
+    const result: Record<PanelStep, { errors: number; warnings: number; total: number }> = {
+      devices: { errors: 0, warnings: 0, total: 0 },
+      cable: { errors: 0, warnings: 0, total: 0 },
+      protection: { errors: 0, warnings: 0, total: 0 },
+    };
+    for (const check of checks) {
+      const bucket = result[check.step];
+      bucket.total += 1;
+      if (check.severity === 'error') bucket.errors += 1;
+      else if (check.severity === 'warning') bucket.warnings += 1;
+    }
+    return result;
+  }, [checks]);
 
   return {
     panel,
@@ -175,7 +276,9 @@ export function usePanelDiagnostics() {
     schematic,
     calculation,
     specification,
+    lineChecks,
     checks,
+    checksByStep,
     errors,
     warnings,
   };
