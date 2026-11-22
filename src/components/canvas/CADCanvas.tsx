@@ -12,6 +12,7 @@ import { DraftingLayer } from './DraftingLayer';
 import { ManualRouteLayer } from './ManualRouteLayer';
 import { ManualDrawLayer, type ManualDrawHover } from './ManualDrawLayer';
 import { RouteStopsPopover } from './RouteStopsPopover';
+import { LineCompositionCard } from './LineCompositionCard';
 import { CadFloatingInput } from './CadFloatingInput';
 import { Rulers } from './Rulers';
 import { snapToGrid, distance, polarToPoint, angleDeg, snapAngle } from '../../core/geometry/math';
@@ -103,7 +104,6 @@ export const CADCanvas: React.FC = () => {
     setHighlightedLine,
     setLineAssignLine,
     cancelLineAssignment,
-    lineAssignStartPanel,
     assignDevicesToLine,
     unassignDevicesFromLines,
     setActiveSnap,
@@ -252,13 +252,6 @@ export const CADCanvas: React.FC = () => {
     transferPrompt && assignLine && transferPrompt.toLineId === assignLine.id
       ? transferPrompt
       : null;
-  const assignStartCount = assignLine
-    ? lineAssignStartPanel?.lines.find((line) => line.id === assignLine.id)
-        ?.deviceIds.length
-    : undefined;
-  const assignDelta = assignLine && assignStartCount !== undefined
-    ? assignLine.deviceIds.length - assignStartCount
-    : 0;
 
   const routeEditLine = useMemo(
     () => routeEditing ? panel?.lines.find((line) => line.id === routeEditLineId) ?? null : null,
@@ -404,36 +397,9 @@ export const CADCanvas: React.FC = () => {
     [routeEditLine, removeLineRouteNode]
   );
 
-  // Редактор трассы остаётся открытым: приборы добавляются кликами по плану,
-  // а «Список точек» сразу показывает их состав. Повторное нажатие выключает режим.
-  const addDevicesFromRoute = useCallback(() => {
-    if (!routeEditLine) return;
-    if (lineAssignLineId === routeEditLine.id) {
-      setLineAssignLine(null);
-      addToast('Добавление приборов завершено.', 'success');
-      return;
-    }
-    routeDragBaseRef.current = null;
-    setRoutePreview(null);
-    setRouteNodeSelection(null);
-    setTransferPrompt(null);
-    setLineAssignLine(routeEditLine.id);
-  }, [
-    routeEditLine,
-    lineAssignLineId,
-    setLineAssignLine,
-    setRoutePreview,
-    setRouteNodeSelection,
-    addToast,
-  ]);
-
   const closeRouteEditor = useCallback(() => {
-    if (routeEditLine && lineAssignLineId === routeEditLine.id) {
-      setTransferPrompt(null);
-      setLineAssignLine(null);
-    }
     setRouteEditLine(null);
-  }, [routeEditLine, lineAssignLineId, setLineAssignLine, setRouteEditLine]);
+  }, [setRouteEditLine]);
 
   const toggleDeviceAssignment = useCallback(
     (deviceId: string) => {
@@ -1276,10 +1242,6 @@ export const CADCanvas: React.FC = () => {
           return;
         }
         if (routeEditLineId) {
-          if (lineAssignLineId === routeEditLineId) {
-            cancelLineAssignment();
-            return;
-          }
           setRouteEditLine(null);
           return;
         }
@@ -1572,43 +1534,20 @@ export const CADCanvas: React.FC = () => {
         )}
       </Stage>
 
-      {assignLine && !routeEditLine && (
-        <div className="absolute top-9 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
-          style={{ borderColor: lineColorMap.get(assignLine.id) ?? '#38bdf8' }}
-        >
-          <span
-            className="w-2.5 h-2.5 rounded-full shrink-0"
-            style={{ backgroundColor: lineColorMap.get(assignLine.id) ?? '#38bdf8' }}
-          />
-          <div className="min-w-0">
-            <div className="text-[11px] font-bold text-white truncate max-w-[220px]">
-              Назначение: {assignLine.name}
-              {assignDelta !== 0 && (
-                <span
-                  className={`ml-1.5 font-mono ${
-                    assignDelta > 0 ? 'text-emerald-300' : 'text-rose-300'
-                  }`}
-                >
-                  {assignDelta > 0 ? `+${assignDelta}` : assignDelta}
-                </span>
-              )}
-            </div>
-            <div className="text-[9px] text-slate-400">
-              приборов в линии: {assignLine.deviceIds.length} · клик —
-              добавить/убрать · Enter — готово · Esc — отменить всё
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              setTransferPrompt(null);
-              setLineAssignLine(null);
-              addToast('Состав линии сохранён.', 'success');
-            }}
-            className="shrink-0 px-2.5 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-[10px] font-bold transition"
-          >
-            Готово
-          </button>
-        </div>
+      {assignLine && panel && !routeEditLine && !activeManualDraw && (
+        <LineCompositionCard
+          line={assignLine}
+          panel={panel}
+          devices={devices}
+          rooms={rooms}
+          partitions={freePartitions}
+          bounds={dimensions}
+          onClose={() => {
+            setTransferPrompt(null);
+            setLineAssignLine(null);
+            addToast('Состав линии сохранён.', 'success');
+          }}
+        />
       )}
 
       {assignLine && activeTransferPrompt && (
@@ -1768,12 +1707,10 @@ export const CADCanvas: React.FC = () => {
           bounds={dimensions}
           cableLengthMm={lineRoutes.get(routeEditLine.id)?.cableLengthMm ?? 0}
           error={routePreviewError}
-          assignActive={Boolean(assignLine && assignLine.id === routeEditLine.id)}
           onSelectNode={selectRouteNode}
           onReorder={reorderRouteStops}
           onRemoveNode={removeRouteNode}
           onReset={resetRoute}
-          onAddDevices={addDevicesFromRoute}
           onBeginManualDraw={() =>
             routeEditRoute ? setManualDrawConfirm(true) : beginManualDraw()
           }

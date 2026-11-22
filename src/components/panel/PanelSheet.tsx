@@ -151,7 +151,7 @@ const GroupRow: React.FC<{ item: SheetGroup; pitch: number }> = ({ item, pitch }
         fontSize={1.8}
         fill={MUTED}
       >
-        {group.index}
+        {group.code}
       </text>
       <text
         x={item.labelX}

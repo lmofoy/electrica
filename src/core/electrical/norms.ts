@@ -290,6 +290,29 @@ export function cableForBreaker(ratingA: number): number {
   return 16;
 }
 
+// Наибольший номинал из ряда, который допускает кабель данного сечения.
+export function maxBreakerForSection(sectionMm2: number): number {
+  const ampacity = CABLE_AMPACITY_A[sectionMm2] ?? 0;
+  let max = 0;
+  for (const rating of BREAKER_RATINGS) {
+    if (rating <= ampacity) max = rating;
+  }
+  return max;
+}
+
+// Автомат по кабелю: не ниже расчётного тока, но не выше допуска сечения.
+// Если нагрузка не помещается в кабель, возвращается предельный номинал —
+// ошибку покажет нормативная проверка и отправит к шагу кабеля.
+export function breakerForSection(
+  currentA: number,
+  sectionMm2: number,
+  preferredA = 0
+): number {
+  const wanted = Math.max(preferredA, breakerForCurrent(currentA, 63));
+  const limit = maxBreakerForSection(sectionMm2);
+  return limit > 0 ? Math.min(wanted, limit) : wanted;
+}
+
 export function makeCable(sectionMm2: number, cores: 3 | 5 = 3): CableSpec {
   return { sectionMm2, cores };
 }
@@ -328,20 +351,46 @@ export function calculateInput(
 
 export const POWER_PRESETS_W = [5000, 7000, 10000, 15000];
 
+// Начальная раскладка линии: сечение выбирается по нагрузке, автомат
+// вписывается в его допуск. Для уже существующих линий используйте
+// applyPresetProtection — там кабель пользователя не меняется.
 export function applyPresetToLine(line: CircuitLine): CircuitLine {
   const preset = LINE_PRESETS[line.purpose];
   const currentA = lineDesignCurrentA(line);
-  const breakerRatingA = Math.max(
+  const wantedBreakerA = Math.max(
     preset.breakerRatingA,
     breakerForCurrent(currentA, 63)
   );
   const cableSectionMm2 = Math.max(
     preset.cableSectionMm2,
-    cableForBreaker(breakerRatingA)
+    cableForBreaker(wantedBreakerA)
+  );
+  const breakerRatingA = breakerForSection(
+    currentA,
+    cableSectionMm2,
+    preset.breakerRatingA
   );
   return {
     ...line,
     cable: makeCable(cableSectionMm2),
+    breaker: makeBreaker(breakerRatingA, preset.curve),
+    rcd: preset.needsRcd
+      ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, breakerRatingA)
+      : null,
+  };
+}
+
+// Пресет назначения без права менять кабель: сечение остаётся выбранным
+// пользователем, автомат и УЗО подгоняются под его допуск.
+export function applyPresetProtection(line: CircuitLine): CircuitLine {
+  const preset = LINE_PRESETS[line.purpose];
+  const breakerRatingA = breakerForSection(
+    lineDesignCurrentA(line),
+    line.cable.sectionMm2,
+    preset.breakerRatingA
+  );
+  return {
+    ...line,
     breaker: makeBreaker(breakerRatingA, preset.curve),
     rcd: preset.needsRcd
       ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, breakerRatingA)

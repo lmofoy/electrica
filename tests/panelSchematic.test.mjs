@@ -73,9 +73,11 @@ try {
     sanitizePanel,
   } = await server.ssrLoadModule('/src/core/electrical/panel.ts');
   const {
+    breakerForSection,
     makeBreaker,
     makeCable,
     makeRcd,
+    maxBreakerForSection,
   } = await server.ssrLoadModule('/src/core/electrical/norms.ts');
   const {
     validateProjectSnapshot,
@@ -242,6 +244,26 @@ try {
     assert.ok(finding, 'cable-load finding expected');
     assert.equal(finding.severity, 'error');
     assert.match(finding.message, /допуск кабеля/);
+  });
+
+  await test('inversion: the breaker is limited by the cable ampacity', () => {
+    assert.equal(maxBreakerForSection(1.5), 10);
+    assert.equal(maxBreakerForSection(2.5), 20);
+    assert.equal(maxBreakerForSection(4), 25);
+    assert.equal(breakerForSection(12, 1.5), 10, 'load above the cable cap');
+    assert.equal(breakerForSection(26, 2.5), 20, 'no rating fits above the cable');
+    assert.equal(breakerForSection(8, 2.5, 16), 16, 'preset floor within the cable');
+  });
+
+  await test('strategies: keep the chosen cable and fit the breaker to it', () => {
+    const target = line('a', 'sockets', { cable: makeCable(6), loadW: 2000 });
+    const optimal = applyStrategy(panel({ lines: [target] }), 'optimal');
+    assert.equal(optimal.lines[0].cable.sectionMm2, 6);
+    assert.equal(optimal.lines[0].breaker.ratingA, 16);
+
+    const maximum = applyStrategy(panel({ lines: [target] }), 'maximum');
+    assert.equal(maximum.lines[0].cable.sectionMm2, 6);
+    assert.ok(maximum.lines[0].breaker.ratingA <= maxBreakerForSection(6));
   });
 
   await test('validation: sockets may not use a 1.5 mm² cable', () => {

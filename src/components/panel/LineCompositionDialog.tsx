@@ -5,11 +5,10 @@ import { DEVICE_CATALOG } from '../../core/electrical/devices';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { deviceRoomId } from '../../core/electrical/lineOps';
 import { LINE_PRESETS, LINE_PURPOSES } from '../../core/electrical/norms';
-import { Check, Scissors, X } from 'lucide-react';
+import { Scissors, X } from 'lucide-react';
 
 interface LineCompositionDialogProps {
   lineId: string;
-  mode: 'edit' | 'split';
   onClose: () => void;
 }
 
@@ -19,22 +18,14 @@ interface DeviceGroup {
   devices: ElectricalDevice[];
 }
 
-function sameSet(a: Set<string>, b: string[]): boolean {
-  return a.size === b.length && b.every((id) => a.has(id));
-}
-
 export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
   lineId,
-  mode,
   onClose,
 }) => {
   const panel = useProjectStore((state) => state.panel);
   const devices = useProjectStore((state) => state.devices);
   const rooms = useProjectStore((state) => state.rooms);
   const partitions = useProjectStore((state) => state.freePartitions);
-  const setPanelLineComposition = useProjectStore(
-    (state) => state.setPanelLineComposition
-  );
   const splitPanelLine = useProjectStore((state) => state.splitPanelLine);
 
   const line = panel?.lines.find((candidate) => candidate.id === lineId) ?? null;
@@ -55,28 +46,15 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
   }, [onClose]);
 
   const lineColors = useMemo(() => buildLineColorMap(panel), [panel]);
-  const deviceLine = useMemo(() => {
-    const map = new Map<string, { id: string; name: string }>();
-    panel?.lines.forEach((candidate) => {
-      candidate.deviceIds.forEach((id) => {
-        if (!map.has(id)) map.set(id, candidate);
-      });
-    });
-    return map;
-  }, [panel]);
 
-  const pool = useMemo(() => {
-    if (mode === 'split') {
-      return devices.filter((device) => originalIds.includes(device.id));
-    }
-    return devices;
-  }, [devices, mode, originalIds]);
+  const pool = useMemo(
+    () => devices.filter((device) => originalIds.includes(device.id)),
+    [devices, originalIds]
+  );
 
   const roomName = useCallback(
     (roomId: string | null) =>
-      roomId
-        ? rooms.find((room) => room.id === roomId)?.name ?? 'Без комнаты'
-        : 'Без комнаты',
+      roomId ? rooms.find((room) => room.id === roomId)?.name ?? 'Без комнаты' : 'Без комнаты',
     [rooms]
   );
 
@@ -106,7 +84,6 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
   if (!panel || !line) return null;
 
   const color = lineColors.get(line.id) ?? '#38bdf8';
-  const unchanged = sameSet(selected, originalIds);
   const moveCount = originalIds.filter((id) => !selected.has(id)).length;
   const remainCount = originalIds.filter((id) => selected.has(id)).length;
 
@@ -117,11 +94,6 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
       else next.add(deviceId);
       return next;
     });
-  };
-
-  const handleSave = () => {
-    setPanelLineComposition(line.id, [...selected]);
-    onClose();
   };
 
   const handleSplit = () => {
@@ -136,8 +108,6 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
   };
 
   const renderDeviceRow = (device: ElectricalDevice) => {
-    const owner = deviceLine.get(device.id);
-    const ownerColor = owner ? lineColors.get(owner.id) : undefined;
     const roomId = deviceRoomId(device, rooms, partitions);
     return (
       <label
@@ -160,29 +130,15 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
             {device.powerWatts > 0 ? ` · ${device.powerWatts} Вт` : ''}
           </span>
         </span>
-        {owner && owner.id !== line.id && (
-          <span className="flex items-center gap-1 shrink-0 text-[9px] text-slate-500 max-w-[110px]">
-            <span
-              className="w-1.5 h-1.5 rounded-full shrink-0"
-              style={{ backgroundColor: ownerColor ?? '#64748b' }}
-            />
-            <span className="truncate">{owner.name}</span>
-          </span>
-        )}
       </label>
     );
   };
-
-  const insideTitle =
-    mode === 'split' ? 'Остаются в линии' : 'В линии';
-  const outsideTitle =
-    mode === 'split' ? 'Уйдут в новую линию' : 'Вне линии';
 
   return (
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={mode === 'split' ? 'Разделить линию' : 'Состав линии'}
+      aria-label="Разделить линию"
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
       onMouseDown={onClose}
     >
@@ -196,9 +152,7 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
             style={{ backgroundColor: color }}
           />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-bold text-white truncate">
-              {mode === 'split' ? 'Разделить линию' : 'Состав линии'}
-            </div>
+            <div className="text-sm font-bold text-white truncate">Разделить линию</div>
             <div className="text-[10px] text-slate-400 truncate">
               {line.name} · {LINE_PRESETS[line.purpose].label}
             </div>
@@ -214,30 +168,12 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
 
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                {insideTitle} ({inside.length})
-              </span>
-              {mode === 'edit' && inside.length > 0 && (
-                <button
-                  onClick={() =>
-                    setSelected((previous) => {
-                      const next = new Set(previous);
-                      inside.forEach((device) => next.delete(device.id));
-                      return next;
-                    })
-                  }
-                  className="text-[9px] text-slate-400 hover:text-slate-200 underline underline-offset-2"
-                >
-                  снять все
-                </button>
-              )}
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+              Остаются в линии ({inside.length})
             </div>
             {inside.length === 0 ? (
               <p className="text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2 py-1.5">
-                {mode === 'split'
-                  ? 'Отметьте хотя бы один прибор, который останется в линии.'
-                  : 'На линии нет приборов. Отметьте приборы ниже.'}
+                Отметьте хотя бы один прибор, который останется в линии.
               </p>
             ) : (
               <div className="space-y-1">{inside.map(renderDeviceRow)}</div>
@@ -246,13 +182,11 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
 
           <div>
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-              {outsideTitle} ({outside.length})
+              Уйдут в новую линию ({outside.length})
             </div>
             {outside.length === 0 ? (
               <p className="text-[10px] text-slate-500 px-1">
-                {mode === 'split'
-                  ? 'Все приборы линии отмечены — делить нечего.'
-                  : 'Все приборы уже в этой линии.'}
+                Все приборы линии отмечены — делить нечего.
               </p>
             ) : (
               <div className="space-y-2">
@@ -271,78 +205,47 @@ export const LineCompositionDialog: React.FC<LineCompositionDialogProps> = ({
           </div>
 
           <p className="text-[9px] text-slate-500 leading-snug">
-            {mode === 'split'
-              ? 'Отмеченные приборы останутся в текущей линии, снятые перейдут в новую. Защита новой линии пересчитается по её нагрузке.'
-              : 'Прибор входит только в одну линию. Отмеченные приборы будут перенесены в эту линию из других линий или из списка «вне линий».'}
+            Отмеченные приборы останутся в текущей линии, снятые перейдут в новую.
+            Защита новой линии пересчитается по её нагрузке.
           </p>
         </div>
 
         <div className="p-3 border-t border-slate-800 space-y-2">
-          {mode === 'split' ? (
-            <>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-slate-400 shrink-0">
-                  Новая линия:
-                </span>
-                <select
-                  value={newPurpose}
-                  onChange={(event) =>
-                    setNewPurpose(event.target.value as LinePurpose)
-                  }
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
-                >
-                  {LINE_PURPOSES.map((purpose) => (
-                    <option key={purpose} value={purpose}>
-                      {LINE_PRESETS[purpose].label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[9px] font-mono text-slate-500">
-                  остаётся {remainCount} · уйдёт {moveCount}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={onClose}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold transition"
-                  >
-                    Отмена
-                  </button>
-                  <button
-                    onClick={handleSplit}
-                    disabled={moveCount === 0 || remainCount === 0}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-[10px] font-bold transition"
-                  >
-                    <Scissors size={12} />
-                    Разделить
-                  </button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[9px] font-mono text-slate-500">
-                в линии {selected.size} из {devices.length}
-              </span>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={onClose}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold transition"
-                >
-                  Отмена
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={unchanged}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
-                >
-                  <Check size={12} />
-                  Сохранить
-                </button>
-              </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-slate-400 shrink-0">Новая линия:</span>
+            <select
+              value={newPurpose}
+              onChange={(event) => setNewPurpose(event.target.value as LinePurpose)}
+              className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-sky-500"
+            >
+              {LINE_PURPOSES.map((purpose) => (
+                <option key={purpose} value={purpose}>
+                  {LINE_PRESETS[purpose].label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[9px] font-mono text-slate-500">
+              остаётся {remainCount} · уйдёт {moveCount}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={onClose}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-semibold transition"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleSplit}
+                disabled={moveCount === 0 || remainCount === 0}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-[10px] font-bold transition"
+              >
+                <Scissors size={12} />
+                Разделить
+              </button>
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

@@ -13,12 +13,9 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Trash2,
-  CheckCircle2,
   CircuitBoard,
   Cable,
   ArrowRight,
-  Plus,
-  Wand2,
   ChevronDown,
   ListChecks,
   FileText,
@@ -173,9 +170,7 @@ export const PanelScreen: React.FC = () => {
     updatePanel,
     updatePanelSupply,
     setPanelStrategy,
-    generatePanelLines,
     appendUnassignedDevices,
-    confirmPanelDraft,
     createManualPanelLine,
     updatePanelLine,
     deletePanelLine,
@@ -390,127 +385,6 @@ export const PanelScreen: React.FC = () => {
             onOpen={() => setPanelStep('devices')}
           >
             <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
-              <div className="flex items-start justify-between gap-2 mb-2">
-                <div>
-                  <div className="text-[11px] font-bold text-white">Сборка линий</div>
-                  <div className="text-[9px] text-slate-500">
-                    {panel.assembly === 'manual'
-                      ? 'Режим: вручную'
-                      : panel.assembly === 'auto'
-                        ? 'Режим: авто-черновик'
-                        : 'Выберите путь — оба доступны всегда'}
-                  </div>
-                </div>
-                {panel.lines.length > 0 && (
-                  <button
-                    onClick={() => {
-                      if (confirm('Очистить схему и собрать щиток с нуля?')) clearPanelLines();
-                    }}
-                    className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition shrink-0"
-                    title="Удалить все линии и начать с пустого щитка"
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                )}
-              </div>
-
-              {panel.linesDraft && (
-                <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
-                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-amber-200">
-                    <Wand2 size={11} />
-                    Черновик — проверьте состав
-                  </div>
-                  <p className="text-[9px] text-amber-300/80 leading-snug mt-0.5">
-                    Собрано автоматически по комнатам: проверьте приборы. Кабель — на
-                    шаге 2, автоматы и УЗО — на шаге 3.
-                  </p>
-                  <div className="flex gap-1.5 mt-1.5">
-                    <button
-                      onClick={() => confirmPanelDraft()}
-                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold transition"
-                    >
-                      <CheckCircle2 size={11} />
-                      Подтвердить
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (
-                          confirm(
-                            'Пересобрать все линии заново? Текущий состав и правки будут заменены.'
-                          )
-                        ) {
-                          generatePanelLines();
-                        }
-                      }}
-                      className="px-2 py-1 rounded-md border border-amber-500/40 hover:bg-amber-500/15 text-amber-200 text-[10px] font-semibold transition"
-                    >
-                      Пересобрать
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <button
-                  onClick={() => createManualPanelLine()}
-                  className={`w-full text-left rounded-lg border px-2.5 py-2 transition ${
-                    panel.lines.length === 0
-                      ? 'border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/20'
-                      : 'border-slate-700 bg-slate-900/60 hover:border-sky-500/60'
-                  }`}
-                >
-                  <span className="flex items-center gap-1.5 text-[11px] font-bold text-sky-200">
-                    <Plus size={13} />
-                    {panel.lines.length === 0
-                      ? 'Создать линию вручную'
-                      : 'Новая линия вручную'}
-                  </span>
-                  {panel.lines.length === 0 && (
-                    <span className="block mt-0.5 text-[9px] text-slate-400 leading-snug">
-                      Пустая линия: сами отметите приборы в её составе. Кабель и защита —
-                      следующие шаги.
-                    </span>
-                  )}
-                </button>
-                <button
-                  onClick={() => {
-                    if (
-                      panel.lines.length > 0 &&
-                      !confirm(
-                        'Пересобрать все линии заново? Текущий состав, названия, правки и трассы будут заменены, трассы построятся автоматически.'
-                      )
-                    ) {
-                      return;
-                    }
-                    generatePanelLines();
-                  }}
-                  className={`w-full text-left rounded-lg border px-2.5 py-2 transition ${
-                    panel.lines.length === 0
-                      ? 'border-sky-500/50 bg-sky-500/10 hover:bg-sky-500/20'
-                      : 'border-slate-700 bg-slate-900/60 hover:border-amber-500/60'
-                  }`}
-                >
-                  <span
-                    className={`flex items-center gap-1.5 text-[11px] font-bold ${
-                      panel.lines.length === 0 ? 'text-sky-200' : 'text-slate-300'
-                    }`}
-                  >
-                    <Wand2 size={13} />
-                    {panel.lines.length === 0
-                      ? 'Собрать автоматически'
-                      : 'Пересобрать автоматически'}
-                  </span>
-                  {panel.lines.length === 0 && (
-                    <span className="block mt-0.5 text-[9px] text-slate-400 leading-snug">
-                      Черновик по комнатам: розетки, свет, влажные зоны. Трассы
-                      построятся автоматически — их можно перепроложить вручную.
-                    </span>
-                  )}
-                </button>
-              </div>
-            </section>
-
-            <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
               <PanelLinesTable
                 panel={panel}
                 rooms={rooms}
@@ -522,6 +396,9 @@ export const PanelScreen: React.FC = () => {
                 lineChecks={lineChecks}
                 onHighlight={setHighlightedLine}
                 onCreateEmpty={() => createManualPanelLine()}
+                onClear={() => {
+                  if (confirm('Очистить схему и собрать щиток с нуля?')) clearPanelLines();
+                }}
                 onUpdate={updatePanelLine}
                 onDelete={deletePanelLine}
                 onAppend={appendUnassignedDevices}
@@ -575,9 +452,9 @@ export const PanelScreen: React.FC = () => {
             <section className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
               <div className="text-[11px] font-bold text-white">Стратегия защиты</div>
               <p className="text-[9px] text-slate-500 leading-snug mt-0.5 mb-2">
-                Стратегия подбирает автоматы, УЗО и кабели всех линий. Ручная правка
-                автомата или УЗО переключает на «Своя защита» и больше не
-                перезаписывается.
+                Стратегия подбирает автоматы и УЗО всех линий под выбранные
+                кабели. Ручная правка автомата или УЗО переключает на «Своя
+                защита» и больше не перезаписывается.
               </p>
               <div className="grid grid-cols-2 gap-1.5">
                 {STRATEGIES.map((strategy) => {

@@ -1,7 +1,10 @@
 import React from 'react';
 import type { DeviceType } from '../../types';
 import { DEVICE_CATALOG } from '../../core/electrical/devices';
-import type { PlanSheetLayout } from '../../core/electrical/planSheet';
+import type {
+  PlanDeviceSymbol,
+  PlanSheetLayout,
+} from '../../core/electrical/planSheet';
 import { SheetViewer } from './SheetViewer';
 import { SheetDocumentBlock } from './SheetDocumentBlock';
 
@@ -250,6 +253,36 @@ const Glyph: React.FC<{ type: DeviceType; color: string }> = ({ type, color }) =
     </g>
   );
 };
+
+const NoteMark: React.FC<{ note: NonNullable<PlanDeviceSymbol['note']> }> = ({
+  note,
+}) => (
+  <g>
+    <line
+      x1={note.leader.x1}
+      y1={note.leader.y1}
+      x2={note.leader.x2}
+      y2={note.leader.y2}
+      stroke={MUTED}
+      strokeWidth={note.leader.weight}
+    />
+    {note.lines.map((line, lineIndex) => (
+      <text
+        key={`note-${lineIndex}`}
+        x={note.x}
+        y={note.y + lineIndex * note.lineHeight}
+        fontSize={1.15}
+        textAnchor="middle"
+        fill={INK}
+        stroke="#ffffff"
+        strokeWidth={0.45}
+        paintOrder="stroke"
+      >
+        {line}
+      </text>
+    ))}
+  </g>
+);
 
 const PlanGraphics: React.FC<{ layout: PlanSheetLayout }> = ({ layout }) => (
   <g>
@@ -502,12 +535,16 @@ const PlanGraphics: React.FC<{ layout: PlanSheetLayout }> = ({ layout }) => (
         <text
           x={device.labelX}
           y={device.labelY}
-          fontSize={1.35}
+          fontSize={1.25}
           textAnchor="middle"
           fill={MUTED}
+          stroke="#ffffff"
+          strokeWidth={0.45}
+          paintOrder="stroke"
         >
-          {device.heightLabel}
+          {device.label}
         </text>
+        {device.note && <NoteMark note={device.note} />}
       </g>
     ))}
 

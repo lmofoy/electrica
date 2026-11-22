@@ -3,25 +3,20 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronUp,
-  Droplets,
   GitFork,
   GripVertical,
-  Lightbulb,
   ListOrdered,
   Lock,
   MapPin,
   PenLine,
   Plug,
-  Plus,
   RotateCcw,
   Square,
-  ToggleLeft,
   Trash2,
   X,
 } from 'lucide-react';
 import type {
   CircuitLine,
-  DeviceType,
   ElectricalDevice,
   ManualRoute,
 } from '../../types';
@@ -30,6 +25,7 @@ import {
   manualRouteBranches,
   type ManualRouteStop,
 } from '../../core/electrical/manualRoute';
+import { deviceIcon } from './deviceIcon';
 
 interface RouteStopsPopoverProps {
   line: CircuitLine;
@@ -40,12 +36,10 @@ interface RouteStopsPopoverProps {
   bounds: { width: number; height: number };
   cableLengthMm: number;
   error: string | null;
-  assignActive: boolean;
   onSelectNode: (index: number | null) => void;
   onReorder: (branchIndex: number, fromIndex: number, toIndex: number) => void;
   onRemoveNode: (nodeIndex: number) => void;
   onReset: () => void;
-  onAddDevices: () => void;
   onBeginManualDraw: () => void;
   onClose: () => void;
 }
@@ -56,13 +50,6 @@ interface DragSource {
 }
 
 const CARD_WIDTH = 326;
-
-function deviceIcon(type: DeviceType) {
-  const entry = DEVICE_CATALOG[type];
-  if (entry.group === 'light') return Lightbulb;
-  if (entry.group === 'switch') return ToggleLeft;
-  return entry.ipRating !== 'IP20' ? Droplets : Plug;
-}
 
 function stopMeta(
   stop: ManualRouteStop,
@@ -120,12 +107,10 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
   bounds,
   cableLengthMm,
   error,
-  assignActive,
   onSelectNode,
   onReorder,
   onRemoveNode,
   onReset,
-  onAddDevices,
   onBeginManualDraw,
   onClose,
 }) => {
@@ -300,8 +285,8 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
             {branches.length === 0 && (
               <p className="text-[10px] text-slate-400 px-1 py-3 text-center leading-snug">
                 {line.deviceIds.length === 0
-                  ? 'В линии пока нет приборов — добавьте их кнопкой «Приборы».'
-                  : 'Трасса не проложена — приборы линии перечислены ниже. Проведите кабель вручную или нажмите «Сбросить к авто».'}
+                  ? 'В линии пока нет приборов — добавьте их на шаге «Приборы по линиям».'
+                  : 'Трасса не проложена — приборы линии перечислены ниже. Проведите кабель вручную или нажмите «Проложить автоматически».'}
               </p>
             )}
 
@@ -535,7 +520,7 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
                         key={device.id}
                         data-route-unconnected-device={device.id}
                         className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-1.5 py-1"
-                        title="Прибор в линии, но кабель к нему ещё не проложен: «Сбросить к авто» или «Проложить вручную» добавят его в трассу"
+                        title="Прибор в линии, но кабель к нему ещё не проложен: «Проложить автоматически» или «Проложить вручную» добавят его в трассу"
                       >
                         <span className="flex items-center justify-center w-5 h-5 rounded-md shrink-0 text-[9px] font-bold text-amber-300/80 bg-amber-500/10">
                           ·
@@ -570,22 +555,6 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
             )}
             <div className="flex flex-wrap items-center gap-1.5">
               <button
-                onClick={onAddDevices}
-                className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-semibold transition ${
-                  assignActive
-                    ? 'bg-emerald-500 border-emerald-400 text-slate-950 shadow-[0_0_12px_-2px_rgba(16,185,129,0.7)]'
-                    : 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/40 text-emerald-300'
-                }`}
-                title={
-                  assignActive
-                    ? 'Кликайте приборы на плане — они сразу появляются в списке. Повторное нажатие или Enter — закончить.'
-                    : 'Добавлять приборы этой линии кликами на плане'
-                }
-              >
-                <Plus size={11} />
-                {assignActive ? 'Добавление…' : 'Приборы'}
-              </button>
-              <button
                 onClick={onBeginManualDraw}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
                 title="Провести трассу по плану вручную"
@@ -600,7 +569,7 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
                 title="Построить автоматическую трассу и порядок по ближайшему прибору"
               >
                 <RotateCcw size={11} />
-                Сбросить к авто
+                Проложить автоматически
               </button>
               <button
                 onClick={onClose}
@@ -610,9 +579,7 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
               </button>
             </div>
             <p className="text-[9px] text-slate-500 leading-snug">
-              {assignActive
-                ? 'Клик по прибору на плане — добавить или убрать его из линии, список обновляется сразу. Enter — закончить, Esc — отменить изменения состава. Трасса к новым приборам появится после «Сбросить к авто» или ручной прокладки.'
-                : 'Перетащите строку — кабель пойдёт строго в этом порядке, перестроится только эта ветвь. Клик по линии — вставить точку, Delete — удалить, Esc — выйти. Приборы и щиток на плане не двигаются. Стык — место ветвления, не распределительная коробка.'}
+              Трассу удобнее провести вручную; автоматическая — запасной вариант. Перетащите строку — кабель пойдёт строго в этом порядке, перестроится только эта ветвь. Клик по линии — вставить точку, Delete — удалить, Esc — выйти. Приборы и щиток на плане не двигаются. Стык — место ветвления, не распределительная коробка.
             </p>
           </div>
         </>

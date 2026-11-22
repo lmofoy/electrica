@@ -16,12 +16,13 @@ import type {
 } from '../../types';
 import { DEVICE_CATALOG, resolveDevice, type DevicePose } from './devices';
 import { sanitizeManualRoute } from './manualRoute';
+import { sanitizePlanSheets } from './planSheets';
 import {
   CABLE_BRAND,
   LINE_PRESETS,
+  applyPresetProtection,
   applyPresetToLine,
-  breakerForCurrent,
-  cableForBreaker,
+  breakerForSection,
   calculateInput,
   lineDesignCurrentA,
   makeBreaker,
@@ -108,13 +109,12 @@ export function sanitizePanel(
   };
   if (dinOrder) result.dinOrder = dinOrder;
   else delete result.dinOrder;
-  if (panel.assembly === 'auto' || panel.assembly === 'manual') {
-    result.assembly = panel.assembly;
-  } else {
-    delete result.assembly;
-  }
-  if (panel.linesDraft === true && lines.length > 0) result.linesDraft = true;
-  else delete result.linesDraft;
+  const planSheets = sanitizePlanSheets(panel.planSheets, result);
+  if (planSheets) result.planSheets = planSheets;
+  else delete result.planSheets;
+  // Поля бывшей автосборки из старых снапшотов не переносим.
+  delete (result as { assembly?: unknown }).assembly;
+  delete (result as { linesDraft?: unknown }).linesDraft;
   return result;
 }
 
@@ -332,7 +332,7 @@ export function applyStrategy(
     return { ...panel, strategy };
   }
 
-  const lines = panel.lines.map((line) => applyPresetToLine(line));
+  const lines = panel.lines.map((line) => applyPresetProtection(line));
 
   if (strategy === 'budget') {
     // Одно общее УЗО 30 мА типа A на все линии вместо отдельных на каждую.
@@ -396,6 +396,7 @@ export function createLine(
   const preset = LINE_PRESETS[purpose];
   const line: CircuitLine = {
     id: `line-${Date.now()}-${existingCount}`,
+    code: existingCount + 2,
     name: `${roomName} — ${preset.label}`,
     purpose,
     roomIds,
@@ -411,21 +412,17 @@ export function createLine(
   return applyPresetToLine(line);
 }
 
-// Пересчёт только аппаратов защиты по нагрузке. Ручной выбор УЗО сохраняется.
+// Пересчёт только аппаратов защиты по нагрузке. Кабель не меняется: если
+// нагрузка выросла за его допуск, проверка отправит к шагу «Кабель и трасса».
 export function recalculateLine(line: CircuitLine): CircuitLine {
   const preset = LINE_PRESETS[line.purpose];
-  const currentA = lineDesignCurrentA(line);
-  const breakerRatingA = Math.max(
-    preset.breakerRatingA,
-    breakerForCurrent(currentA, 63)
-  );
-  const cableSectionMm2 = Math.max(
-    preset.cableSectionMm2,
-    cableForBreaker(breakerRatingA)
+  const breakerRatingA = breakerForSection(
+    lineDesignCurrentA(line),
+    line.cable.sectionMm2,
+    preset.breakerRatingA
   );
   return {
     ...line,
-    cable: makeCable(cableSectionMm2),
     breaker: makeBreaker(breakerRatingA, preset.curve),
   };
 }

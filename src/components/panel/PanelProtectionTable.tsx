@@ -5,6 +5,7 @@ import {
   CABLE_AMPACITY_A,
   makeBreaker,
   makeRcd,
+  maxBreakerForSection,
 } from '../../core/electrical/norms';
 import { lineCurrentA } from '../../core/electrical/panel';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
@@ -63,9 +64,18 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
 
   return (
     <div className="space-y-1.5">
-      {panel.lines.map((line) => {
+      {panel.lines.map((line, index) => {
         const current = lineCurrentA(line);
         const ampacity = CABLE_AMPACITY_A[line.cable.sectionMm2] ?? 0;
+        const maxRating = maxBreakerForSection(line.cable.sectionMm2);
+        const allowedRatings = BREAKER_RATINGS.filter(
+          (rating) => maxRating === 0 || rating <= maxRating
+        );
+        const ratingOptions = (allowedRatings as readonly number[]).includes(
+          line.breaker.ratingA
+        )
+          ? allowedRatings
+          : [...allowedRatings, line.breaker.ratingA].sort((a, b) => a - b);
         const checks = (lineChecks.get(line.id) ?? []).filter(
           (check) => check.step === 'protection'
         );
@@ -113,6 +123,12 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
                   }}
                 />
               </button>
+              <span
+                className="shrink-0 rounded border border-slate-700 px-1 py-0.5 font-mono text-[9px] text-slate-400"
+                title="Код группы — тот же номер на плане и в документах"
+              >
+                гр. {line.code ?? index + 2}
+              </span>
               <span className="flex-1 min-w-0 truncate text-[11px] font-semibold text-white">
                 {line.name}
               </span>
@@ -144,11 +160,18 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
                       ? 'border-rose-700/70 text-rose-300'
                       : 'border-slate-700 text-slate-200'
                   }`}
-                  title="Номинал автомата — не ниже тока нагрузки и не выше пропускной способности кабеля"
+                  title={
+                    maxRating > 0
+                      ? `Автомат ограничен допуском кабеля ${line.cable.sectionMm2} мм² — до ${maxRating} А`
+                      : 'Номинал автомата — не ниже тока нагрузки и не выше допуска кабеля'
+                  }
                 >
-                  {BREAKER_RATINGS.map((rating) => (
+                  {ratingOptions.map((rating) => (
                     <option key={rating} value={rating}>
                       {rating} А · {line.breaker.curve}
+                      {maxRating > 0 && rating > maxRating
+                        ? ' — выше допуска кабеля'
+                        : ''}
                     </option>
                   ))}
                 </select>
@@ -184,8 +207,9 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
             </div>
 
             <div className="mt-1 flex items-center gap-1.5 text-[9px] font-mono text-slate-500">
-              <span>
-                кабель {line.cable.sectionMm2} мм² · до {ampacity} А
+              <span title="Допуск кабеля и наибольший автомат, который он защищает">
+                кабель {line.cable.sectionMm2} мм² · допуск {ampacity} А
+                {maxRating > 0 ? ` · автомат до ${maxRating} А` : ''}
               </span>
               {hasError && <AlertTriangle size={10} className="text-rose-400 shrink-0" />}
               <button
@@ -211,8 +235,8 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
                 ))}
                 {(breakerError || checks.some((check) => check.id.startsWith('load-breaker-'))) && (
                   <p className="text-[9px] leading-snug text-slate-400">
-                    Подберите автомат в пределах: ток линии ≤ автомат ≤ допуск кабеля.
-                    Кабель меняется на шаге 2.
+                    Кабель первичен: автомат не выше его допуска. Если ток линии не
+                    помещается — увеличьте сечение на шаге 2.
                   </p>
                 )}
               </div>

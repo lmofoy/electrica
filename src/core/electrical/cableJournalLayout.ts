@@ -88,7 +88,7 @@ function plural(count: number, one: string, few: string, many: string): string {
 
 export function buildCableJournalSheet(
   journal: CableJournal,
-  options: { date?: string } = {}
+  options: { date?: string; sheetNumber?: string; sheetTotal?: string } = {}
 ): CableJournalSheet {
   const rowCount = journal.rows.length;
   const available = TABLE_BOTTOM_LIMIT - (TABLE_TOP + HEADER_HEIGHT) - 9;
@@ -102,7 +102,7 @@ export function buildCableJournalSheet(
     height: rowHeight,
     fill: index % 2 === 1 ? '#f8fafc' : '#ffffff',
     cells: [
-      { text: String(index + 1) },
+      { text: String(row.code) },
       { text: `${row.groupLabel} · ${row.lineName}`, sub: row.purposeLabel },
       { text: row.start },
       { text: row.end },
@@ -203,8 +203,8 @@ export function buildCableJournalSheet(
       designation: 'ЭС-07',
       basis: 'ГОСТ 21.613-2014 · ПУЭ-7 гл. 2.1',
       date,
-      sheet: '8',
-      sheetTotal: '8',
+      sheet: options.sheetNumber ?? '8',
+      sheetTotal: options.sheetTotal ?? '8',
     }),
   };
 }

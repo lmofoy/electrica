@@ -18,6 +18,7 @@ import { DEVICE_CATALOG, resolveDevice } from './devices';
 import type { DeviceGlyphKind } from './devices';
 import { resolvePanelPose } from './panel';
 import { buildLineColorMap } from './lineColors';
+import { lineCodes } from './lineOps';
 import type { LineRoute } from './routing';
 import {
   A3_HEIGHT_MM,
@@ -57,6 +58,12 @@ export interface PlanSheetSource {
 export interface PlanSheetOptions {
   date?: string;
   scale?: number;
+  // Группы выбранного листа. Не заданы — на лист попадают все группы вида
+  // (поведение одиночного листа для старых проектов).
+  lineIds?: string[];
+  sheetName?: string;
+  sheetNumber?: string;
+  sheetTotal?: string;
 }
 
 export interface PlanRect {
@@ -98,6 +105,14 @@ export interface PlanOpening {
   middleLine: SheetStampLine | null;
 }
 
+export interface PlanNote {
+  lines: string[];
+  x: number;
+  y: number;
+  lineHeight: number;
+  leader: SheetStampLine;
+}
+
 export interface PlanDeviceSymbol {
   id: string;
   type: ElectricalDevice['type'];
@@ -110,6 +125,9 @@ export interface PlanDeviceSymbol {
   roomName: string;
   lineIndex: number | null;
   heightLabel: string;
+  groupLabel: string;
+  label: string;
+  note: PlanNote | null;
   labelX: number;
   labelY: number;
 }
@@ -226,6 +244,37 @@ const GROUP_TITLES: Record<PlanMode, { title: string; subtitle: string; designat
 function num(value: number, digits = 1): string {
   if (!Number.isFinite(value)) return '—';
   return value.toFixed(digits).replace('.', ',');
+}
+
+export const NOTE_CHARS_PER_LINE = 36;
+const NOTE_LINE_HEIGHT = 1.55;
+const NOTE_MAX_LINES = 3;
+
+export function wrapPlanNote(note: string): string[] {
+  const words = note.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= NOTE_CHARS_PER_LINE) {
+      current = candidate;
+    } else {
+      if (current) lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  if (lines.length > NOTE_MAX_LINES) {
+    const kept = lines.slice(0, NOTE_MAX_LINES);
+    const last = kept[NOTE_MAX_LINES - 1];
+    kept[NOTE_MAX_LINES - 1] = `${last.slice(0, NOTE_CHARS_PER_LINE - 1).trimEnd()}…`;
+    return kept;
+  }
+  return lines;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function plural(count: number, one: string, few: string, many: string): string {
@@ -388,9 +437,22 @@ export function buildPlanSheet(
   const { mode } = source;
   const groups = groupsFor(mode);
   const panel = source.panel;
+  const sheetLineIds = options.lineIds ? new Set(options.lineIds) : null;
+  const sheetLines = (panel?.lines ?? []).filter(
+    (line) => lineInMode(line.purpose, mode) && (!sheetLineIds || sheetLineIds.has(line.id))
+  );
+  const allowedDeviceIds = sheetLineIds
+    ? new Set(sheetLines.flatMap((line) => line.deviceIds))
+    : null;
+  const sheetName = options.sheetName?.trim() ?? '';
   const lineColorMap = buildLineColorMap(panel);
   const lineIndexById = new Map<string, number>();
-  panel?.lines.forEach((line, index) => lineIndexById.set(line.id, index + 1));
+  if (panel) {
+    const codes = lineCodes(panel);
+    panel.lines.forEach((line, index) =>
+      lineIndexById.set(line.id, codes.get(line.id) ?? index + 2)
+    );
+  }
   const lineIndexByDevice = new Map<string, number>();
   const lineIdByDevice = new Map<string, string>();
   for (const line of panel?.lines ?? []) {
@@ -512,6 +574,7 @@ export function buildPlanSheet(
   for (const device of source.devices) {
     const entry = DEVICE_CATALOG[device.type];
     if (!groups.includes(entry.group)) continue;
+    if (allowedDeviceIds && !allowedDeviceIds.has(device.id)) continue;
     const resolved = resolveDevice(
       device,
       source.rooms,
@@ -522,6 +585,8 @@ export function buildPlanSheet(
     const lineIndex = lineIndexByDevice.get(device.id) ?? null;
     const isCeiling = entry.mounting === 'ceiling';
     const heightLabel = isCeiling ? 'пот.' : String(device.heightFromFloorMm);
+    const groupLabel = lineIndex === null ? 'без группы' : `гр. ${lineIndex}`;
+    const label = `${heightLabel} · ${groupLabel}`;
     for (const pose of resolved.poses) {
       const point = toSheet(pose.position);
       const radians = (pose.rotationDeg * Math.PI) / 180;
@@ -530,6 +595,36 @@ export function buildPlanSheet(
         point.x + (isCeiling ? 0 : -Math.sin(radians) * offset);
       const labelY =
         point.y + (isCeiling ? 4.2 : Math.cos(radians) * offset + 0.6);
+      const noteText = device.note?.trim() ?? '';
+      let note: PlanNote | null = null;
+      if (noteText) {
+        const lines = wrapPlanNote(noteText);
+        const nx = -Math.sin(radians);
+        const ny = Math.cos(radians);
+        const noteX = clamp(
+          isCeiling ? point.x : point.x + nx * 16,
+          PLAN_AREA.x + 12,
+          PLAN_AREA.x + PLAN_AREA.width - 12
+        );
+        const noteY = clamp(
+          isCeiling ? point.y + 8.6 : point.y + ny * 16,
+          PLAN_AREA.y + 6,
+          PLAN_AREA.y + PLAN_AREA.height - 6 - NOTE_MAX_LINES * NOTE_LINE_HEIGHT
+        );
+        note = {
+          lines,
+          x: noteX,
+          y: noteY,
+          lineHeight: NOTE_LINE_HEIGHT,
+          leader: {
+            x1: isCeiling ? point.x : point.x + nx * 2.6,
+            y1: isCeiling ? point.y + 2.4 : point.y + ny * 2.6,
+            x2: noteX,
+            y2: noteY - 1.4,
+            weight: 0.2,
+          },
+        };
+      }
       devices.push({
         id: device.id,
         type: device.type,
@@ -542,6 +637,9 @@ export function buildPlanSheet(
         roomName: roomById.get(pose.roomId)?.name ?? '—',
         lineIndex,
         heightLabel,
+        groupLabel,
+        label,
+        note,
         labelX,
         labelY,
       });
@@ -549,8 +647,7 @@ export function buildPlanSheet(
   }
 
   const routes: PlanRoutePath[] = [];
-  for (const line of panel?.lines ?? []) {
-    if (!lineInMode(line.purpose, mode)) continue;
+  for (const line of sheetLines) {
     const route = source.routes.get(line.id);
     if (!route || route.paths.length === 0) continue;
     const labelPoint = midpointOfLongest(route.paths);
@@ -650,10 +747,8 @@ export function buildPlanSheet(
   const planDevicesCount = new Set(devices.map((device) => device.id)).size;
   const panelLabel = panel?.name ?? 'Щиток';
   const title = GROUP_TITLES[mode].title;
-  const lineCount = panel
-    ? panel.lines.filter((line) => lineInMode(line.purpose, mode)).length
-    : 0;
-  const subtitle = `${panelLabel} · ${lineCount} ${plural(
+  const lineCount = sheetLines.length;
+  const subtitle = `${panelLabel}${sheetName ? ` · ${sheetName}` : ''} · ${lineCount} ${plural(
     lineCount,
     'группа',
     'группы',
@@ -735,7 +830,7 @@ export function buildPlanSheet(
           type: device.type,
           roomName: withRoom ? device.roomName : '—',
           height: device.heightLabel,
-          line: withLine && device.lineIndex ? String(device.lineIndex) : '—',
+          line: withLine && device.lineIndex ? `гр. ${device.lineIndex}` : '—',
           count: 1,
         });
       }
@@ -801,6 +896,13 @@ export function buildPlanSheet(
   );
   const cableBrand = panel?.supply.cableBrand ?? 'ВВГнг(А)-LS';
   const notesLines = [
+    sheetLineIds
+      ? 'На листе — приборы только выбранных групп; приборы вне линий на план не выводятся.'
+      : 'Подпись прибора — высота и группа: «300 · гр. 2»; «без группы» — прибор не входит в линии.',
+    sheetLineIds
+      ? 'Код группы совпадает с номером автомата QF; пустые группы на лист не раскладываются.'
+      : 'В ведомости «—» в графе «Гр.» означает прибор без группы; код группы совпадает с номером автомата QF.',
+    'Заметки к приборам печатаются с выноской; пустая заметка не выводится, длинная переносится по словам.',
     'Высоты установки указаны над полом; у светильников — «пот.» (на потолке).',
     'Приборы привязаны к стенам и осям помещений; размеры на плане — в мм.',
     `Групповые линии — ${cableBrand}; сплошная линия — потолок, пунктир — пол.`,
@@ -850,8 +952,8 @@ export function buildPlanSheet(
       designation: GROUP_TITLES[mode].designation,
       basis: 'ГОСТ 21.613-2014 · ГОСТ 2.301-68 · ПУЭ-7',
       date,
-      sheet: GROUP_TITLES[mode].sheet,
-      sheetTotal: '8',
+      sheet: options.sheetNumber ?? GROUP_TITLES[mode].sheet,
+      sheetTotal: options.sheetTotal ?? '8',
     }),
   };
 }

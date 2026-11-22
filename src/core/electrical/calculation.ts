@@ -242,7 +242,7 @@ export function buildPanelCalculation(
     );
     const limit = voltageDropLimitPercent(line?.purpose ?? 'other');
     return {
-      index: group.index,
+      index: group.code,
       lineId: group.lineId,
       designation: group.breakerDesignation,
       rcdDesignation: group.rcdDesignation,

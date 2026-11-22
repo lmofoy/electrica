@@ -7,6 +7,7 @@ import {
   type PanelItemKind,
 } from './panelLayout';
 import { lineColorFor } from './lineColors';
+import { lineCodes } from './lineOps';
 import {
   A3_HEIGHT_MM,
   A3_WIDTH_MM,
@@ -136,8 +137,9 @@ function designationMap(panel: ElectricalPanel): Map<string, string> {
   if (panel.supply.voltageRelay) map.set('voltage-relay', 'KV1');
   if (panel.supply.surgeProtection) map.set('spd', 'F1');
   let rcdCounter = panel.supply.mainRcd ? 1 : 0;
+  const codes = lineCodes(panel);
   panel.lines.forEach((line, index) => {
-    map.set(`${line.id}-breaker`, `QF${index + 2}`);
+    map.set(`${line.id}-breaker`, `QF${codes.get(line.id) ?? index + 2}`);
     if (line.rcd) map.set(`${line.id}-rcd`, `QD${++rcdCounter}`);
   });
   return map;

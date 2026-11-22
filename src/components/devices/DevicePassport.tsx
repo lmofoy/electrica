@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import {
   DEVICE_CATALOG,
+  DEVICE_NOTE_MAX_CHARS,
   resolveDevice,
   type ResolvedDevice,
 } from '../../core/electrical/devices';
@@ -12,6 +13,41 @@ interface DevicePassportProps {
   deviceId: string;
   onClose: () => void;
 }
+
+const DeviceNoteField: React.FC<{
+  deviceId: string;
+  note: string | undefined;
+  onCommit: (id: string, note: string) => void;
+}> = ({ deviceId, note, onCommit }) => {
+  const [draft, setDraft] = useState(note ?? '');
+  const commit = () => onCommit(deviceId, draft);
+  return (
+    <label className="block">
+      <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+        Заметка для плана
+      </span>
+      <textarea
+        value={draft}
+        maxLength={DEVICE_NOTE_MAX_CHARS}
+        rows={2}
+        placeholder="Например: над столешницей"
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            commit();
+            event.currentTarget.blur();
+          }
+        }}
+        className="mt-1 w-full resize-none bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+      />
+      <span className="mt-0.5 block text-[9px] text-slate-500 leading-snug">
+        Печатается с выноской у прибора; пустое поле — без подписи.
+      </span>
+    </label>
+  );
+};
 
 export const DevicePassport: React.FC<DevicePassportProps> = ({
   deviceId,
@@ -26,6 +62,7 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
     setHighlightedLine,
     assignDevicesToLine,
     unassignDevicesFromLines,
+    setDeviceNote,
     deleteDevice,
   } = useProjectStore();
 
@@ -109,6 +146,13 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
           </strong>
         </span>
       </div>
+
+      <DeviceNoteField
+        key={`${selected.device.id}:${selected.device.note ?? ''}`}
+        deviceId={selected.device.id}
+        note={selected.device.note}
+        onCommit={setDeviceNote}
+      />
 
       {panel && panel.lines.length > 0 ? (
         <label className="block">

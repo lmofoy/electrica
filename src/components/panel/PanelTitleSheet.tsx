@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import type { RoomZone } from '../../types';
+import type { PlanSheetKind, RoomZone } from '../../types';
 import type { PanelSchematic } from '../../core/electrical/schematic';
 import type { PanelSpecification } from '../../core/electrical/specification';
 import {
@@ -14,6 +14,7 @@ interface PanelTitleSheetProps {
   specification: PanelSpecification;
   rooms: RoomZone[];
   deviceCount: number;
+  planSheetCounts?: Record<PlanSheetKind, number>;
   onClose: () => void;
 }
 
@@ -134,11 +135,19 @@ export const PanelTitleSheet: React.FC<PanelTitleSheetProps> = ({
   specification,
   rooms,
   deviceCount,
+  planSheetCounts,
   onClose,
 }) => {
   const layout = useMemo(
-    () => buildTitleSheet({ schematic, specification, rooms, deviceCount }),
-    [schematic, specification, rooms, deviceCount]
+    () =>
+      buildTitleSheet({
+        schematic,
+        specification,
+        rooms,
+        deviceCount,
+        planSheetCounts,
+      }),
+    [schematic, specification, rooms, deviceCount, planSheetCounts]
   );
 
   const { header } = layout;

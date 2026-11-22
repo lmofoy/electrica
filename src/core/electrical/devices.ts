@@ -1484,11 +1484,28 @@ export function buildPlacementDimensions(
   return [];
 }
 
+export const DEVICE_NOTE_MAX_CHARS = 80;
+
+export function normalizeDeviceNote(note: unknown): string | undefined {
+  if (typeof note !== 'string') return undefined;
+  const text = note.replace(/\s+/g, ' ').trim().slice(0, DEVICE_NOTE_MAX_CHARS).trim();
+  return text.length > 0 ? text : undefined;
+}
+
 export function sanitizeDevices(
   devices: ElectricalDevice[],
   rooms: RoomZone[],
   partitions: FreePartition[],
   thickness: number
 ): ElectricalDevice[] {
-  return devices.filter((device) => resolveDevice(device, rooms, partitions, thickness) !== null);
+  return devices
+    .filter((device) => resolveDevice(device, rooms, partitions, thickness) !== null)
+    .map((device) => {
+      const note = normalizeDeviceNote(device.note);
+      if (note === device.note) return device;
+      const next = { ...device };
+      if (note) next.note = note;
+      else delete next.note;
+      return next;
+    });
 }

@@ -45,7 +45,6 @@ export interface LineCreateResult {
 export interface AppendDevicesResult {
   panel: ElectricalPanel;
   assigned: number;
-  created: number;
 }
 
 function unique<T>(items: T[]): T[] {
@@ -167,8 +166,44 @@ function defaultLineName(
   return room ? `${room.name} — ${preset.label}` : preset.label;
 }
 
+function validLineCode(code: unknown): code is number {
+  return Number.isInteger(code) && (code as number) >= 2; // QF1 — ввод
+}
+
+// Следующий свободный код группы. Удалённые коды не переиспользуются:
+// новая линия получает max + 1, чтобы обозначения в старых документах
+// не начали указывать на другую группу.
+export function nextLineCode(panel: ElectricalPanel): number {
+  let max = 1;
+  panel.lines.forEach((line, index) => {
+    const code = validLineCode(line.code) ? line.code : index + 2;
+    if (code > max) max = code;
+  });
+  return max + 1;
+}
+
+// Коды линий для документов. Сохранённые коды имеют приоритет; пропуски и
+// дубли закрываются следующими номерами, чтобы один код не попал дважды.
+export function lineCodes(panel: ElectricalPanel): Map<string, number> {
+  const stored = new Map<string, number>();
+  const used = new Set<number>();
+  let max = 1;
+  for (const line of panel.lines) {
+    if (!validLineCode(line.code) || used.has(line.code)) continue;
+    used.add(line.code);
+    stored.set(line.id, line.code);
+    if (line.code > max) max = line.code;
+  }
+  for (const line of panel.lines) {
+    if (stored.has(line.id)) continue;
+    max += 1;
+    stored.set(line.id, max);
+  }
+  return stored;
+}
+
 // Нормализация: прибор не может входить в две линии (побеждает первая),
-// каждой линии выдаётся стабильный цвет.
+// каждой линии выдаётся стабильный код и цвет.
 export function normalizeLineAssignments(panel: ElectricalPanel): ElectricalPanel {
   const seen = new Set<string>();
   const usedColors = new Set<number>();
@@ -178,9 +213,23 @@ export function normalizeLineAssignments(panel: ElectricalPanel): ElectricalPane
 
   let changed = false;
   let nextColor = 0;
+  let maxCode = 1;
+  for (const line of panel.lines) {
+    if (validLineCode(line.code) && line.code > maxCode) maxCode = line.code;
+  }
+  const usedCodes = new Set<number>();
 
   const lines = panel.lines.map((line) => {
     let next = line;
+
+    if (validLineCode(next.code) && !usedCodes.has(next.code)) {
+      usedCodes.add(next.code);
+    } else {
+      maxCode += 1;
+      usedCodes.add(maxCode);
+      next = { ...next, code: maxCode };
+      changed = true;
+    }
 
     if (next.colorIndex === undefined) {
       while (usedColors.has(nextColor)) nextColor += 1;
@@ -307,6 +356,7 @@ export function createLineFromDevices(
     ? {
         ...options.template,
         id: nextLineId(panel),
+        code: nextLineCode(panel),
         name: uniqueLineName(panel, options.name ?? options.template.name),
         deviceIds: [],
         roomIds,
@@ -320,6 +370,7 @@ export function createLineFromDevices(
       }
     : {
         id: nextLineId(panel),
+        code: nextLineCode(panel),
         name: uniqueLineName(panel, options.name ?? fallbackName),
         purpose: options.purpose,
         deviceIds: [],
@@ -410,17 +461,17 @@ export function mergeLines(
   };
 }
 
-// «Дособрать новые»: приборы вне линий группируются по комнате и назначению.
-// Если подходящая линия уже есть — приборы добавляются в неё.
+// «Дособрать»: приборы вне линий группируются по комнате и назначению и
+// добавляются только в подходящие существующие линии. Новые линии не
+// создаются — их заводит пользователь кнопкой «Создать линию».
 export function appendUnassignedDevices(
   panel: ElectricalPanel,
-  ctx: LineOpsContext,
-  routing?: LineRouting
+  ctx: LineOpsContext
 ): AppendDevicesResult {
   const assignedIds = new Set(panel.lines.flatMap((line) => line.deviceIds));
   const unassigned = ctx.devices.filter((device) => !assignedIds.has(device.id));
   if (unassigned.length === 0) {
-    return { panel, assigned: 0, created: 0 };
+    return { panel, assigned: 0 };
   }
 
   const groups = new Map<
@@ -444,36 +495,22 @@ export function appendUnassignedDevices(
 
   let lines = panel.lines;
   let assigned = 0;
-  let created = 0;
 
   for (const group of groups.values()) {
     const deviceIds = group.devices.map((device) => device.id);
     const existing = lines.find(
       (line) => line.purpose === group.purpose && line.roomIds.includes(group.roomId)
     );
-
-    if (existing) {
-      lines = lines.map((line) =>
-        line.id === existing.id
-          ? withComposition(line, [...line.deviceIds, ...deviceIds], ctx)
-          : line
-      );
-      assigned += deviceIds.length;
-      continue;
-    }
-
-    const result = createLineFromDevices(
-      { ...panel, lines },
-      deviceIds,
-      { purpose: group.purpose, routing, applyStrategy: true, trace: 'auto' },
-      ctx
+    if (!existing) continue;
+    lines = lines.map((line) =>
+      line.id === existing.id
+        ? withComposition(line, [...line.deviceIds, ...deviceIds], ctx)
+        : line
     );
-    lines = result.panel.lines;
     assigned += deviceIds.length;
-    created += 1;
   }
 
-  return { panel: { ...panel, lines }, assigned, created };
+  return { panel: { ...panel, lines }, assigned };
 }
 
 export interface LineCompositionWarning {

@@ -120,6 +120,7 @@ function device(value: Entity): boolean {
   return oneOf(value.type, DEVICE_TYPES) && typeof value.name === 'string' &&
     anchor(value.anchor, true) && nonnegative(value.heightFromFloorMm) &&
     nonnegative(value.powerWatts) && typeof value.shared === 'boolean' &&
+    (value.note === undefined || typeof value.note === 'string') &&
     (value.circuitId === undefined || id(value.circuitId));
 }
 

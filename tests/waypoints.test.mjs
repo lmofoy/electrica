@@ -437,7 +437,7 @@ try {
     assert.equal(state().panel, null);
     assert.deepEqual(historySize(), [0, 0]);
   });
-  await test('store: route edit is UI-only, assignment keeps it open, cleared on deletion/reset', () => {
+  await test('store: route edit is UI-only, assignment closes it, cleared on deletion/reset', () => {
     loadFresh();
     state().setLineAssignLine(LINE_ID);
     state().setRouteEditLine(LINE_ID);
@@ -457,8 +457,8 @@ try {
     state().setLineAssignLine(LINE_ID);
     assert.equal(
       state().routeEditLineId,
-      LINE_ID,
-      'assignment keeps the route editor open'
+      null,
+      'assignment closes the route editor: steps are separated'
     );
     assert.equal(state().lineAssignLineId, LINE_ID);
     state().setRouteEditLine('missing-line');

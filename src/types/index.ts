@@ -234,6 +234,7 @@ export interface ElectricalDevice {
   heightFromFloorMm: number; // розетки 300 мм, выключатели 900 мм, светильники — потолок
   powerWatts: number;
   shared: boolean; // сквозное устройство: принадлежит двум смежным комнатам
+  note?: string; // заметка для печатного плана, с выноской у прибора
   circuitId?: string;
 }
 
@@ -244,8 +245,6 @@ export type ProjectStep = 'plan' | 'lines' | 'docs';
 export type PanelStep = 'devices' | 'cable' | 'protection';
 
 export type PanelStrategy = 'budget' | 'optimal' | 'maximum' | 'custom';
-
-export type PanelAssemblyMode = 'auto' | 'manual'; // выбранный путь сборки линий
 
 export type PanelMounting = 'flush' | 'surface'; // встроенный / накладной
 
@@ -319,6 +318,11 @@ export interface CircuitLine {
   purpose: LinePurpose;
   roomIds: string[];
   deviceIds: string[]; // фактический состав линии для подсветки и трассировки
+  // Постоянный код группы: выдаётся при создании, не меняется при удалении
+  // и перестановке соседних линий. Совпадает с номером автомата QF<code>;
+  // QF1 зарезервирован за вводным автоматом, поэтому первая группа — 2.
+  // Не задан — старый снапшот: код восстанавливается как позиция + 2.
+  code?: number;
   colorIndex?: number; // стабильный цвет линии; не задан — берётся позиция в списке
   loadW: number; // установленная мощность группы
   cosPhi?: number; // коэффициент мощности группы; не задан — 1
@@ -352,6 +356,18 @@ export interface PanelSupply {
   surgeProtection: boolean;
 }
 
+// Вид печатного плана: розеточные сети или освещение.
+export type PlanSheetKind = 'power' | 'lighting';
+
+// Лист плана, который пользователь собирает из выбранных групп.
+// Пустой lineIds в проекте не хранится: лист без групп не сохраняется.
+export interface PlanSheetSpec {
+  id: string;
+  kind: PlanSheetKind;
+  name: string; // пустое имя — собирается из групп автоматически
+  lineIds: string[];
+}
+
 export interface ElectricalPanel {
   id: string;
   name: string;
@@ -362,6 +378,6 @@ export interface ElectricalPanel {
   strategy: PanelStrategy;
   lines: CircuitLine[];
   dinOrder?: string[]; // ручной порядок аппаратов на DIN-рейках (id из PanelLayoutItem)
-  assembly?: PanelAssemblyMode; // последний выбранный путь сборки: авто или вручную
-  linesDraft?: boolean; // линии собраны автоматически и ещё не подтверждены
+  // Не задан — по одному листу на вид со всеми группами (старые проекты).
+  planSheets?: PlanSheetSpec[];
 }

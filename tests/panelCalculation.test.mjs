@@ -176,7 +176,7 @@ try {
     );
     assert.deepEqual(
       calculation.rows.map((row) => row.index),
-      [1, 2, 3]
+      [2, 3, 4]
     );
   });
 

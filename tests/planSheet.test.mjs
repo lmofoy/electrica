@@ -133,8 +133,11 @@ try {
     logLevel: 'error',
   });
 
-  const { buildPlanSheet } = await server.ssrLoadModule(
+  const { buildPlanSheet, wrapPlanNote } = await server.ssrLoadModule(
     '/src/core/electrical/planSheet.ts'
+  );
+  const { sanitizeDevices } = await server.ssrLoadModule(
+    '/src/core/electrical/devices.ts'
   );
   const { createLine, defaultPanelSupply } = await server.ssrLoadModule(
     '/src/core/electrical/panel.ts'
@@ -221,19 +224,86 @@ try {
     }
   });
 
-  await test('plan: socket plan shows only sockets with height labels', () => {
+  await test('plan: socket plan shows only sockets with height and group labels', () => {
     const power = buildPlanSheet(source('power'));
     assert.equal(power.devices.length, 1);
     assert.equal(power.devices[0].type, 'socket_single');
     assert.equal(power.devices[0].heightLabel, '300');
+    assert.equal(power.devices[0].groupLabel, 'гр. 2');
+    assert.equal(power.devices[0].label, '300 · гр. 2');
     assert.equal(power.devices[0].roomName, 'Зал');
-    assert.equal(power.devices[0].lineIndex, 1);
+    assert.equal(power.devices[0].lineIndex, 2);
 
     const lighting = buildPlanSheet(source('lighting'));
     const types = lighting.devices.map((device) => device.type).sort();
     assert.deepEqual(types, ['light_ceiling', 'switch_1k']);
-    assert.equal(lighting.devices.find((device) => device.type === 'switch_1k').heightLabel, '900');
-    assert.equal(lighting.devices.find((device) => device.type === 'light_ceiling').heightLabel, 'пот.');
+    const switchSymbol = lighting.devices.find((device) => device.type === 'switch_1k');
+    const lampSymbol = lighting.devices.find((device) => device.type === 'light_ceiling');
+    assert.equal(switchSymbol.heightLabel, '900');
+    assert.equal(switchSymbol.label, '900 · гр. 3');
+    assert.equal(lampSymbol.heightLabel, 'пот.');
+    assert.equal(lampSymbol.label, 'пот. · гр. 3');
+  });
+
+  await test('plan: device without a line is labelled "без группы"', () => {
+    const loose = {
+      ...socket,
+      id: 'd4',
+      anchor: { kind: 'room_edge', roomId: 'room-hall', edgeIndex: 3, offsetMm: 900 },
+    };
+    const layout = buildPlanSheet(
+      source('power', { devices: [socket, loose] })
+    );
+    assert.equal(layout.devices.length, 2);
+    const grouped = layout.devices.find((device) => device.id === 'd1');
+    const ungrouped = layout.devices.find((device) => device.id === 'd4');
+    assert.equal(grouped.label, '300 · гр. 2');
+    assert.equal(ungrouped.lineIndex, null);
+    assert.equal(ungrouped.groupLabel, 'без группы');
+    assert.equal(ungrouped.label, '300 · без группы');
+    const lineCells = layout.schedule.rows.map((row) => row.cells[4]).sort();
+    assert.deepEqual(lineCells, ['гр. 2', '—']);
+  });
+
+  await test('plan: device note is wrapped and drawn with a leader line', () => {
+    const note = 'Отдельная линия над столешницей, справа от окна';
+    const noted = { ...socket, note };
+    const layout = buildPlanSheet(
+      source('power', { devices: [noted] })
+    );
+    const symbol = layout.devices[0];
+    assert.ok(symbol.note, 'note geometry present');
+    assert.deepEqual(symbol.note.lines, wrapPlanNote(note));
+    assert.ok(symbol.note.lines.length >= 2);
+    assert.ok(symbol.note.lines.every((line) => line.length <= 36));
+    assert.ok(symbol.note.lines.join(' ').includes('столешницей'));
+    assert.equal(symbol.note.leader.weight, 0.2);
+    assert.ok(symbol.note.leader.x2 >= layout.planArea.x);
+    assert.ok(symbol.note.leader.x2 <= layout.planArea.x + layout.planArea.width);
+    assert.ok(symbol.note.leader.y2 >= layout.planArea.y);
+    assert.ok(symbol.note.leader.y2 <= layout.planArea.y + layout.planArea.height);
+
+    const plain = buildPlanSheet(source('power'));
+    assert.equal(plain.devices[0].note, null);
+
+    const longText = 'Сложная заметка '.repeat(10);
+    assert.ok(wrapPlanNote(longText).length <= 3);
+    assert.ok(wrapPlanNote(longText)[2].endsWith('…'));
+  });
+
+  await test('plan: note sanitizing trims, caps and removes empty notes', () => {
+    const withEmpty = { ...socket, note: '   ' };
+    const withLong = { ...socket, id: 'd5', note: `  ${'x'.repeat(120)}  ` };
+    const cleaned = sanitizeDevices(
+      [socket, withEmpty, withLong],
+      [room],
+      partitions,
+      120
+    );
+    assert.equal(cleaned[0].note, undefined);
+    assert.equal(cleaned[1].note, undefined);
+    assert.equal(cleaned[2].note.length, 80);
+    assert.equal(cleaned[2].note, 'x'.repeat(80));
   });
 
   await test('plan: group routes are filtered by plan mode and coloured', () => {
@@ -257,6 +327,7 @@ try {
     assert.ok(Math.abs(width - schedule.rect.width) < EPS);
     assert.equal(schedule.rows.length, 2);
     assert.ok(schedule.rows.every((row) => row.cells[5] === '1'));
+    assert.ok(schedule.rows.every((row) => row.cells[4] === 'гр. 3'));
     const names = schedule.rows.map((row) => row.cells[1]).sort();
     assert.deepEqual(names, ['Выкл. 1', 'Свет']);
     assert.ok(schedule.rows.every((row) => row.cells[2] === 'Зал'));

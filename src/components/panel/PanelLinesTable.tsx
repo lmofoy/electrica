@@ -13,6 +13,7 @@ import {
   LINE_PRESETS,
   LINE_PURPOSES,
   makeCable,
+  maxBreakerForSection,
 } from '../../core/electrical/norms';
 import { lineCurrentA } from '../../core/electrical/panel';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
@@ -41,6 +42,7 @@ interface PanelLinesTableProps {
   lineChecks: Map<string, PanelCheckItem[]>;
   onHighlight: (id: string | null) => void;
   onCreateEmpty: () => void;
+  onClear?: () => void;
   onUpdate: (id: string, updates: Partial<CircuitLine>) => void;
   onDelete: (id: string) => void;
   onAppend: () => void;
@@ -112,18 +114,18 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
   lineChecks,
   onHighlight,
   onCreateEmpty,
+  onClear,
   onUpdate,
   onDelete,
   onAppend,
   onOpenStep,
 }) => {
-  const [dialog, setDialog] = useState<{ lineId: string; mode: 'edit' | 'split' } | null>(
-    null
-  );
+  const [splitLineId, setSplitLineId] = useState<string | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeIds, setMergeIds] = useState<Set<string>>(new Set());
   const mergePanelLines = useProjectStore((state) => state.mergePanelLines);
   const setRouteEditLine = useProjectStore((state) => state.setRouteEditLine);
+  const setLineAssignLine = useProjectStore((state) => state.setLineAssignLine);
   const lineColors = buildLineColorMap(panel);
   const composition = mode === 'composition';
 
@@ -180,10 +182,19 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
               <button
                 onClick={onAppend}
                 className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-[10px] font-semibold transition"
-                title="Добавить в линии приборы, оставшиеся без линии. Текущие линии и их правки не меняются."
+                title="Добавить приборы без линии в подходящие существующие линии. Новые линии не создаются."
               >
                 <Plus size={12} />
                 Дособрать ({unassignedCount})
+              </button>
+            )}
+            {panel.lines.length > 0 && onClear && (
+              <button
+                onClick={() => onClear()}
+                className="p-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-800 border border-slate-700 text-slate-300 transition"
+                title="Удалить все линии и начать с пустого щитка"
+              >
+                <Trash2 size={12} />
               </button>
             )}
           </div>
@@ -218,9 +229,10 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
         <EmptyState mode={mode} onCreate={onCreateEmpty} />
       ) : (
         <div className="space-y-1.5">
-          {panel.lines.map((line) => {
+          {panel.lines.map((line, index) => {
             const current = lineCurrentA(line);
             const ampacity = CABLE_AMPACITY_A[line.cable.sectionMm2] ?? 0;
+            const maxRating = maxBreakerForSection(line.cable.sectionMm2);
             const roomId = line.roomIds[0] ?? '';
             const lineColor = lineColors.get(line.id) ?? '#38bdf8';
             const active = line.id === highlightedLineId;
@@ -286,6 +298,12 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                       }}
                     />
                   </button>
+                  <span
+                    className="shrink-0 rounded border border-slate-700 px-1 py-0.5 font-mono text-[9px] text-slate-400"
+                    title="Код группы — тот же номер на плане и в документах"
+                  >
+                    гр. {line.code ?? index + 2}
+                  </span>
                   <input
                     value={line.name}
                     onChange={(e) => onUpdate(line.id, { name: e.target.value })}
@@ -413,14 +431,17 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
 
                     <div className="mt-1 flex flex-wrap items-center gap-1">
                       <button
-                        onClick={() => setDialog({ lineId: line.id, mode: 'edit' })}
-                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-sky-500/60 hover:text-sky-300 text-[9px] text-slate-400 transition"
-                        title="Отметить приборы, которые входят в линию"
+                        onClick={() => {
+                          onHighlight(line.id);
+                          setLineAssignLine(line.id);
+                        }}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 hover:bg-sky-500/20 text-[9px] text-sky-300 transition"
+                        title="Добавлять и убирать приборы линии кликами на плане"
                       >
                         Приборы ({line.deviceIds.length})
                       </button>
                       <button
-                        onClick={() => setDialog({ lineId: line.id, mode: 'split' })}
+                        onClick={() => setSplitLineId(line.id)}
                         disabled={line.deviceIds.length < 2}
                         className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900/60 hover:border-amber-500/60 hover:text-amber-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-700 disabled:hover:text-slate-400 text-[9px] text-slate-400 transition"
                         title="Разделить линию на две"
@@ -460,7 +481,11 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
                               ? 'border-rose-700/70 text-rose-300'
                               : 'border-slate-700 text-slate-200'
                           }`}
-                          title="Сечение жилы кабеля линии"
+                          title={
+                            maxRating > 0
+                              ? `Сечение жилы линии. Автомат на шаге 3 будет не выше ${maxRating} А`
+                              : 'Сечение жилы кабеля линии'
+                          }
                         >
                           {CABLE_SECTIONS.map((section) => (
                             <option key={section} value={section}>
@@ -490,7 +515,10 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
 
                     <div className="mt-1 flex items-center gap-1.5 text-[9px] font-mono text-slate-500">
                       <span>I {current.toFixed(1)} А</span>
-                      <span>· кабель до {ampacity} А</span>
+                      <span title="Допуск кабеля и наибольший автомат для него">
+                        · допуск {ampacity} А
+                        {maxRating > 0 ? ` · автомат до ${maxRating} А` : ''}
+                      </span>
                       {route?.warning && (
                         <span className="text-amber-400 truncate" title={route.warning}>
                           · трасса с разрывом
@@ -550,16 +578,15 @@ export const PanelLinesTable: React.FC<PanelLinesTableProps> = ({
 
       <p className="text-[9px] text-slate-500 leading-snug">
         {composition
-          ? 'Прибор входит только в одну линию. «Приборы» отмечает состав, «Разделить» переносит часть приборов в новую линию. Кабель и трасса — на шаге 2.'
-          : 'Новая линия создаётся без трассы: кабель 0 м, пока трасса не проложена. «Монтаж линии» открывает редактор на плане: приборы добавляются кликами, вершины двигаются, порядок точек меняется в списке.'}
+          ? '«Приборы» открывает набор кликами по плану: клик добавляет или убирает прибор, Esc отменяет. «Разделить» переносит часть приборов в новую линию. Кабель и трасса — на шаге 2.'
+          : 'Новая линия создаётся без трассы: кабель 0 м, пока трасса не проложена. «Монтаж линии» открывает редактор на плане: трасса прокладывается вручную или автоматически.'}
       </p>
 
-      {dialog && (
+      {splitLineId && (
         <LineCompositionDialog
-          key={`${dialog.mode}-${dialog.lineId}`}
-          lineId={dialog.lineId}
-          mode={dialog.mode}
-          onClose={() => setDialog(null)}
+          key={splitLineId}
+          lineId={splitLineId}
+          onClose={() => setSplitLineId(null)}
         />
       )}
     </div>

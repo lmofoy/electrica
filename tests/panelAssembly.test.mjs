@@ -62,6 +62,15 @@ const devices = [
     powerWatts: 60,
     shared: false,
   },
+  {
+    id: 'd3',
+    type: 'hob',
+    name: 'Варочная панель',
+    anchor: { kind: 'room', roomId: 'room-1' },
+    heightFromFloorMm: 300,
+    powerWatts: 6000,
+    shared: false,
+  },
 ];
 
 let server;
@@ -117,63 +126,40 @@ try {
     });
   }
 
-  await test('auto assembly marks the scheme as a draft, confirm drops the mark', () => {
+  await test('append never creates lines on its own', () => {
     fixture({ lines: [] });
-    state().generatePanelLines();
-    assert.ok(state().panel.lines.length > 0);
-    assert.equal(state().panel.assembly, 'auto');
-    assert.equal(state().panel.linesDraft, true);
-
-    state().confirmPanelDraft();
-    assert.equal(state().panel.linesDraft, undefined);
-    assert.ok(state().toasts.at(-1)?.message.includes('подтверждён'));
+    state().appendUnassignedDevices();
+    assert.equal(state().panel.lines.length, 0);
+    assert.ok(state().toasts.at(-1)?.message.includes('Создайте линию'));
   });
 
-  await test('manual line switches the remembered path to manual', () => {
+  await test('manual line is created empty', () => {
     fixture();
     const lineId = state().createManualPanelLine();
     assert.ok(lineId);
-    assert.equal(state().panel.assembly, 'manual');
     const created = state().panel.lines.find((line) => line.id === lineId);
     assert.ok(created);
     assert.deepEqual(created.deviceIds, []);
   });
 
-  await test('clearing lines drops both the path and the draft flag', () => {
-    fixture({ assembly: 'manual', linesDraft: true });
+  await test('clearing lines drops the lines and the assignment session', () => {
+    fixture();
+    state().setLineAssignLine('line-a');
     state().clearPanelLines();
     assert.equal(state().panel.lines.length, 0);
-    assert.equal(state().panel.assembly, undefined);
-    assert.equal(state().panel.linesDraft, undefined);
     assert.equal(state().lineAssignStartPanel, null);
   });
 
-  await test('sanitizePanel keeps valid assembly and drops a stale draft', () => {
+  await test('sanitizePanel drops legacy assembly and draft fields', () => {
     const kept = sanitizePanel(
       basePanel({ assembly: 'manual', linesDraft: true }),
       [room],
       [],
       120
     );
-    assert.equal(kept.assembly, 'manual');
-    assert.equal(kept.linesDraft, true);
-
-    const noLines = sanitizePanel(
-      basePanel({ lines: [], assembly: 'manual', linesDraft: true }),
-      [room],
-      [],
-      120
-    );
-    assert.equal(noLines.assembly, 'manual');
-    assert.equal(noLines.linesDraft, undefined);
-
-    const invalid = sanitizePanel(
-      basePanel({ assembly: 'weird', linesDraft: true }),
-      [room],
-      [],
-      120
-    );
-    assert.equal(invalid.assembly, undefined);
+    assert.equal(kept.assembly, undefined);
+    assert.equal(kept.linesDraft, undefined);
+    assert.equal(kept.lines.length, 2);
   });
 
   await test('assignment session rolls the whole panel back on cancel', () => {
@@ -237,11 +223,17 @@ try {
     assert.equal(line.trace, 'none');
   });
 
-  await test('auto assembly marks every generated line as auto-traced', () => {
+  await test('append fills a matching line and keeps its trace and cable', () => {
     fixture({ lines: [] });
-    state().generatePanelLines();
-    assert.ok(state().panel.lines.length > 0);
-    assert.ok(state().panel.lines.every((line) => line.trace === 'auto'));
+    const lineId = state().createManualPanelLine();
+    state().updatePanelLine(lineId, { purpose: 'sockets', roomIds: ['room-1'] });
+    state().appendUnassignedDevices();
+    const panel = state().panel;
+    assert.equal(panel.lines.length, 1, 'no extra lines are created');
+    const line = panel.lines.find((candidate) => candidate.id === lineId);
+    assert.deepEqual(line.deviceIds, ['d1', 'd3']);
+    assert.equal(line.trace, 'none');
+    assert.ok(state().toasts.at(-1)?.message.includes('Добавлено приборов: 2'));
   });
 
   await test('reset route switches an untraced line to auto and keeps auto lines as no-op', () => {
@@ -276,6 +268,27 @@ try {
     state().updatePanelLine('line-a', { cable: makeCable(4) });
     state().updatePanelLine('line-a', { purpose: 'kitchen' });
     assert.equal(state().panel.strategy, 'optimal');
+    const line = state().panel.lines.find((candidate) => candidate.id === 'line-a');
+    assert.equal(line.cable.sectionMm2, 4, 'purpose preset must not touch the cable');
+  });
+
+  await test('growing composition keeps the chosen cable and caps the breaker', () => {
+    fixture();
+    state().updatePanelLine('line-a', { cable: makeCable(2.5) });
+    state().assignDevicesToLine('line-a', ['d3']);
+    const line = state().panel.lines.find((candidate) => candidate.id === 'line-a');
+    assert.equal(line.cable.sectionMm2, 2.5, 'cable stays as chosen');
+    assert.equal(line.breaker.ratingA, 20, 'breaker capped by a 2.5 mm² cable');
+    assert.equal(line.loadW, 6100);
+  });
+
+  await test('strategy switch keeps the cable chosen by the user', () => {
+    fixture({ strategy: 'optimal' });
+    state().updatePanelLine('line-a', { cable: makeCable(6) });
+    state().setPanelStrategy('maximum');
+    const line = state().panel.lines.find((candidate) => candidate.id === 'line-a');
+    assert.equal(line.cable.sectionMm2, 6);
+    assert.ok(line.breaker.ratingA <= 32);
   });
 
   await test('sanitizePanel keeps trace none and drops unknown values', () => {

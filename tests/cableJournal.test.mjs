@@ -133,21 +133,21 @@ try {
     assert.equal(journal.rows.length, 2);
 
     const [power, light] = journal.rows;
-    assert.equal(power.groupLabel, 'Гр. 1');
+    assert.equal(power.groupLabel, 'Гр. 2');
     assert.match(power.lineName, /Розетки/);
     assert.equal(power.purposeLabel, 'Розетки');
     assert.equal(power.start, 'ЩР-1');
     assert.equal(power.end, 'Зал');
     assert.match(power.cable, /ВВГнг\(А\)-LS 3×2,5 мм²/);
     assert.equal(power.routingLabel, 'по потолку');
-    assert.equal(power.breakerLabel, 'QF1 16 А');
+    assert.equal(power.breakerLabel, 'QF2 16 А');
     assert.equal(power.lengthLabel, '8,0 м');
 
-    assert.equal(light.groupLabel, 'Гр. 2');
+    assert.equal(light.groupLabel, 'Гр. 3');
     assert.equal(light.purposeLabel, 'Освещение');
     assert.match(light.cable, /3×1,5 мм²/);
     assert.equal(light.routingLabel, 'в полу');
-    assert.equal(light.breakerLabel, 'QF2 10 А');
+    assert.equal(light.breakerLabel, 'QF3 10 А');
     assert.equal(light.warning, 'Трасса проходит по диагонали');
   });
 
@@ -197,8 +197,8 @@ try {
     const width = sheet.columns.reduce((sum, column) => sum + column.width, 0);
     assert.equal(width, sheet.table.width);
     assert.equal(sheet.table.rows.length, 2);
-    assert.equal(sheet.table.rows[0].cells[0].text, '1');
-    assert.match(sheet.table.rows[0].cells[1].text, /Гр\. 1/);
+    assert.equal(sheet.table.rows[0].cells[0].text, '2');
+    assert.match(sheet.table.rows[0].cells[1].text, /Гр\. 2/);
     assert.match(sheet.table.rows[0].cells[4].text, /ВВГнг/);
     assert.equal(sheet.table.rows[0].cells[5].text, 'по потолку');
     assert.equal(sheet.table.rows[0].cells[6].text, '8,0 м');

@@ -5,6 +5,7 @@ import type {
   RoomZone,
 } from '../../types';
 import { LINE_PRESETS } from './norms';
+import { lineCodes } from './lineOps';
 import type { LineRoute } from './routing';
 import { formatCableLengthMm } from './routing';
 
@@ -22,6 +23,7 @@ export interface CableJournalSource {
 
 export interface CableJournalRow {
   id: string;
+  code: number;
   groupLabel: string;
   lineName: string;
   purposeLabel: string;
@@ -96,6 +98,7 @@ export function buildCableJournal(
   panel: ElectricalPanel,
   source: CableJournalSource
 ): CableJournal {
+  const codes = lineCodes(panel);
   const rows: CableJournalRow[] = panel.lines.map((line, index) => {
     const route = source.routes.get(line.id);
     const roomNames = lineRooms(line.deviceIds, source.devices, source.rooms, source.partitions);
@@ -103,9 +106,11 @@ export function buildCableJournal(
     const cores = line.cable.cores;
     const lengthMm = route?.cableLengthMm ?? 0;
     const breaker = line.breaker;
+    const code = codes.get(line.id) ?? index + 2;
     return {
       id: line.id,
-      groupLabel: `Гр. ${index + 1}`,
+      code,
+      groupLabel: `Гр. ${code}`,
       lineName: line.name,
       purposeLabel: LINE_PRESETS[line.purpose].label,
       start: panel.name,
@@ -115,7 +120,7 @@ export function buildCableJournal(
           : `${line.deviceIds.length} приб.`,
       cable: `${panel.supply.cableBrand} ${cores}×${sectionLabel(line.cable.sectionMm2)} мм²`,
       routingLabel: routing === 'floor' ? 'в полу' : 'по потолку',
-      breakerLabel: `QF${index + 1} ${breaker.ratingA} А`,
+      breakerLabel: `QF${code} ${breaker.ratingA} А`,
       lengthMm,
       lengthLabel: formatCableLengthMm(lengthMm),
       warning: route?.warning ?? null,

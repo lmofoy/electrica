@@ -1,4 +1,4 @@
-import type { RoomZone } from '../../types';
+import type { PlanSheetKind, RoomZone } from '../../types';
 import { calculateNetAreaM2 } from '../geometry/math';
 import type { PanelSchematic } from './schematic';
 import type { PanelSpecification } from './specification';
@@ -27,6 +27,8 @@ export interface TitleSheetSource {
   specification: PanelSpecification;
   rooms: RoomZone[];
   deviceCount: number;
+  // Число листов каждого плана; не задано — по одному (старые проекты).
+  planSheetCounts?: Record<PlanSheetKind, number>;
 }
 
 export interface TitleSheetOptions {
@@ -266,8 +268,23 @@ function buildParams(source: TitleSheetSource): TitleSheetTable {
   );
 }
 
+function sheetRange(first: number, count: number): string {
+  return count > 1 ? `${first}–${first + count - 1}` : String(first);
+}
+
+function sheetNameWithCount(name: string, count: number): string {
+  return count > 1
+    ? `${name} — ${count} ${plural(count, 'лист', 'листа', 'листов')}`
+    : name;
+}
+
 function buildSheets(source: TitleSheetSource): TitleSheetTable {
   const panelName = source.schematic.panelName;
+  const powerCount = Math.max(1, source.planSheetCounts?.power ?? 1);
+  const lightingCount = Math.max(1, source.planSheetCounts?.lighting ?? 1);
+  const powerFirst = 6;
+  const lightingFirst = powerFirst + powerCount;
+  const journalNumber = lightingFirst + lightingCount;
   const rows: TitleSheetRow[] = [
     { cells: ['1', 'ЭС-00', 'Титульный лист, ведомость документов'] },
     {
@@ -280,9 +297,33 @@ function buildSheets(source: TitleSheetSource): TitleSheetTable {
     { cells: ['3', 'ЭС-02', 'Расчёт нагрузок и проверка по нормам'] },
     { cells: ['4', 'ЭС-03', 'Спецификация оборудования и материалов'] },
     { cells: ['5', 'ЭС-04', 'Компоновка щита на DIN-рейках'] },
-    { cells: ['6', 'ЭС-05', 'План розеточных сетей с высотами и привязками'] },
-    { cells: ['7', 'ЭС-06', 'План осветительных сетей с высотами и привязками'] },
-    { cells: ['8', 'ЭС-07', 'Кабельный журнал: группы, кабели и длины'] },
+    {
+      cells: [
+        sheetRange(powerFirst, powerCount),
+        'ЭС-05',
+        sheetNameWithCount(
+          'План розеточных сетей с высотами и привязками',
+          powerCount
+        ),
+      ],
+    },
+    {
+      cells: [
+        sheetRange(lightingFirst, lightingCount),
+        'ЭС-06',
+        sheetNameWithCount(
+          'План осветительных сетей с высотами и привязками',
+          lightingCount
+        ),
+      ],
+    },
+    {
+      cells: [
+        String(journalNumber),
+        'ЭС-07',
+        'Кабельный журнал: группы, кабели и длины',
+      ],
+    },
   ];
 
   return buildTable(
@@ -350,6 +391,9 @@ export function buildTitleSheet(
   options: TitleSheetOptions = {}
 ): TitleSheetLayout {
   const { schematic } = source;
+  const powerCount = Math.max(1, source.planSheetCounts?.power ?? 1);
+  const lightingCount = Math.max(1, source.planSheetCounts?.lighting ?? 1);
+  const sheetTotal = 6 + powerCount + lightingCount;
   const roomsCount = source.rooms.length;
   const objectLine = `Объект: квартира · ${areaLabel(
     source.rooms
@@ -392,7 +436,7 @@ export function buildTitleSheet(
       basis: 'ПУЭ-7 · СП 256.1325800.2016 · ГОСТ 21.613-2014',
       date,
       sheet: '1',
-      sheetTotal: '8',
+      sheetTotal: String(sheetTotal),
     }),
   };
 }

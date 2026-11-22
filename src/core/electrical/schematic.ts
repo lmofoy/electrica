@@ -25,6 +25,7 @@ import {
   validatePanel,
   type NormativeFinding,
 } from './panelValidation';
+import { lineCodes } from './lineOps';
 
 export type SchematicInputKind =
   | 'input_breaker'
@@ -42,7 +43,7 @@ export interface SchematicInputItem {
 }
 
 export interface SchematicGroup {
-  index: number;
+  code: number; // постоянный код группы, совпадает с QF<code>
   lineId: string;
   name: string;
   purposeLabel: string;
@@ -180,10 +181,12 @@ export function buildPanelSchematic(
   const demandFactor = normalizeDemandFactor(supply.demandFactor);
 
   let rcdCounter = hasMainRcd ? 1 : 0;
+  const codes = lineCodes(panel);
   const groups: SchematicGroup[] = panel.lines.map((line, index) => {
     const rcdDesignation = line.rcd ? `QD${++rcdCounter}` : null;
+    const code = codes.get(line.id) ?? index + 2;
     return {
-      index: index + 1,
+      code,
       lineId: line.id,
       name: line.name,
       purposeLabel: LINE_PRESETS[line.purpose].label,
@@ -197,7 +200,7 @@ export function buildPanelSchematic(
       rcd: line.rcd,
       cable: line.cable,
       cableLengthMm: cableLengthFor(options.cableLengthsMm, line.id),
-      breakerDesignation: `QF${index + 2}`,
+      breakerDesignation: `QF${code}`,
       rcdDesignation,
     };
   });
