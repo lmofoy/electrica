@@ -53,6 +53,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onOpenSettings }) => {
         if (activeTool === 'place_device') {
           return `План · прибор: ${DEVICE_CATALOG[activeDeviceType].label}`;
         }
+        if (activeTool === 'place_frame') return 'План · размещение подрозетника';
         if (activeTool === 'place_panel') return 'План · размещение щитка';
         if (activeTool === 'select') return 'План · комнаты, проёмы и электрика';
         return 'План · разметка и электрика';

@@ -7,7 +7,7 @@ import { RoomsLayer } from './RoomsLayer';
 import { WallsAndDimensionsLayer } from './WallsAndDimensionsLayer';
 import { SelectionLayer } from './SelectionLayer';
 import { RoutingLayer } from './RoutingLayer';
-import { ElectricalLayer } from './ElectricalLayer';
+import { ElectricalLayer, type FramePreview } from './ElectricalLayer';
 import { DraftingLayer } from './DraftingLayer';
 import { ManualRouteLayer } from './ManualRouteLayer';
 import { ManualDrawLayer, type ManualDrawHover } from './ManualDrawLayer';
@@ -26,6 +26,7 @@ import {
   type ResolvedDevice,
 } from '../../core/electrical/devices';
 import { resolvePanelPose } from '../../core/electrical/panel';
+import { findFramePlacement } from '../../core/electrical/frames';
 import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { computeLineRoutes, materializeRouteForLine } from '../../core/electrical/routing';
@@ -77,6 +78,7 @@ export const CADCanvas: React.FC = () => {
     openings,
     freePartitions,
     devices,
+    frames,
     panel,
     nodes,
     walls,
@@ -88,6 +90,9 @@ export const CADCanvas: React.FC = () => {
     activeTool,
     activeDeviceType,
     deviceShared,
+    activeFramePosts,
+    activeFrameMounting,
+    activeFrameSeatTypes,
     zoom,
     stagePos,
     gridSnap,
@@ -118,6 +123,7 @@ export const CADCanvas: React.FC = () => {
     startApartmentDrawing,
     startRoomDrawing,
     addDevice,
+    addFrame,
     placePanel,
     addToast,
     drawingStage,
@@ -490,6 +496,44 @@ export const CADCanvas: React.FC = () => {
     deviceShared,
     settings.defaultWallThicknessMm,
   ]);
+
+  const framePreview = useMemo<{ preview: FramePreview | null; error: string | null }>(() => {
+    if (activeTool !== 'place_frame') return { preview: null, error: null };
+    if (rooms.length === 0) {
+      return { preview: null, error: 'Сначала создайте комнату в режиме «Архитектура».' };
+    }
+    const placement = findFramePlacement(
+      cursorPosMm,
+      activeFramePosts,
+      rooms,
+      freePartitions,
+      settings.defaultWallThicknessMm
+    );
+    if (!placement.ok) return { preview: null, error: placement.error };
+    return {
+      preview: {
+        anchor: placement.anchor,
+        position: placement.position,
+        rotationDeg: placement.rotationDeg,
+        posts: activeFramePosts,
+        mounting: activeFrameMounting,
+      },
+      error: null,
+    };
+  }, [
+    activeTool,
+    cursorPosMm,
+    activeFramePosts,
+    activeFrameMounting,
+    rooms,
+    freePartitions,
+    settings.defaultWallThicknessMm,
+  ]);
+
+  const frameBlockSummary = `${activeFrameMounting === 'flush' ? 'скрытая' : 'накладная'} · ${activeFrameSeatTypes
+    .slice(0, activeFramePosts)
+    .map((type) => (type ? DEVICE_CATALOG[type].shortLabel : 'заглушка'))
+    .join(' · ')}`;
 
   const placementDims = useMemo(() => {
     if (activeTool !== 'place_device' || !devicePreview.resolved) return [];
@@ -1041,6 +1085,16 @@ export const CADCanvas: React.FC = () => {
       if (dynamicInput.lockedLength === null) {
         worldPos = snap.point;
       }
+    } else if (activeTool === 'place_frame') {
+      // Рамка садится на стену: берём уже привязанную к стене точку, а не курсор.
+      const placement = findFramePlacement(
+        worldPos,
+        activeFramePosts,
+        rooms,
+        freePartitions,
+        settings.defaultWallThicknessMm
+      );
+      if (placement.ok) worldPos = placement.position;
     } else if (gridSnap) {
       worldPos = snapToGrid(worldPos, gridStepMm);
     }
@@ -1117,6 +1171,29 @@ export const CADCanvas: React.FC = () => {
         return;
       }
       addDevice(activeDeviceType, placement.anchor, deviceShared);
+      return;
+    }
+
+    if (activeTool === 'place_frame') {
+      const pointer = stage.getPointerPosition();
+      if (!pointer) return;
+      let clickPoint = screenToWorld(pointer.x, pointer.y);
+      if (gridSnap) clickPoint = snapToGrid(clickPoint, gridStepMm);
+
+      const placement = findFramePlacement(
+        clickPoint,
+        activeFramePosts,
+        rooms,
+        freePartitions,
+        settings.defaultWallThicknessMm
+      );
+      if (!placement.ok) {
+        addToast(placement.error, 'error');
+        return;
+      }
+      // Инструмент остаётся активным: блоки ставятся подряд в одной
+      // конфигурации (монтаж, состав мест, высота).
+      addFrame(placement.anchor);
       return;
     }
 
@@ -1253,6 +1330,13 @@ export const CADCanvas: React.FC = () => {
           closeDynamicInput();
         } else if (draftVertices.length > 0) {
           cancelDraft();
+        } else if (
+          activeTool === 'place_frame' ||
+          activeTool === 'place_device' ||
+          activeTool === 'place_panel'
+        ) {
+          // Из инструмента размещения — в выбор, выделение не сбрасываем.
+          useProjectStore.getState().setActiveTool('select');
         } else {
           useProjectStore.getState().setActiveTool('select');
           setSelection(null);
@@ -1280,6 +1364,7 @@ export const CADCanvas: React.FC = () => {
         !routeEditLineId &&
         activeTool !== 'place_device' &&
         activeTool !== 'place_panel' &&
+        activeTool !== 'place_frame' &&
         selection
       ) {
         e.preventDefault();
@@ -1299,6 +1384,10 @@ export const CADCanvas: React.FC = () => {
         }
         if (selection.kind === 'device') {
           state.deleteDevice(selection.id);
+          return;
+        }
+        if (selection.kind === 'frame') {
+          state.deleteFrame(selection.id);
           return;
         }
 
@@ -1371,6 +1460,7 @@ export const CADCanvas: React.FC = () => {
     routeNodeSelectionIndex,
     removeLineRouteNode,
     handleManualDrawKeyDown,
+    activeFramePosts,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
@@ -1462,6 +1552,9 @@ export const CADCanvas: React.FC = () => {
           openings={openings}
           partitions={freePartitions}
           devices={resolvedDevices}
+          frames={frames}
+          rooms={rooms}
+          thickness={settings.defaultWallThicknessMm}
           panelId={panel?.id ?? null}
           panelPose={panelPose}
           zoom={zoom}
@@ -1485,6 +1578,12 @@ export const CADCanvas: React.FC = () => {
           lineColors={lineColorMap}
           highlightedLineId={highlightedLineId}
           assignLineId={lineAssignLineId}
+          frames={frames}
+          rooms={rooms}
+          partitions={freePartitions}
+          thickness={settings.defaultWallThicknessMm}
+          selectedFrameId={selection?.kind === 'frame' ? selection.id : null}
+          framePreview={framePreview.preview}
           panelPreview={
             panelPreview && !panelPreview.error
               ? { position: panelPreview.position, rotationDeg: panelPreview.rotationDeg }
@@ -1806,6 +1905,20 @@ export const CADCanvas: React.FC = () => {
           </div>
         )}
 
+      {activeTool === 'place_frame' && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+          <div className="rounded-xl border border-sky-500/40 bg-slate-900/95 backdrop-blur-md px-4 py-2 shadow-2xl text-center">
+            <div className="text-xs font-bold text-sky-200">
+              Кликните по стене, чтобы поставить подрозетник
+            </div>
+            <div className="text-[10px] text-slate-400 leading-snug">
+              {framePreview.error ??
+                `Блок на ${activeFramePosts} ${activeFramePosts === 1 ? 'место' : 'места'} (${frameBlockSummary}) встанет на ближайшую стену. Esc — выйти.`}
+            </div>
+          </div>
+        </div>
+      )}
+
       {draftVertices.length > 0 && (
         <CadFloatingInput
           width={dimensions.width}
@@ -1844,6 +1957,14 @@ export const CADCanvas: React.FC = () => {
                 <>
                   Модуль: <strong className="text-sky-400">Электрощиток</strong>
                 </>
+              ) : activeTool === 'place_frame' ? (
+                <>
+                  Подрозетник:{' '}
+                  <strong className="text-sky-400">
+                    {activeFramePosts} {activeFramePosts === 1 ? 'место' : 'места'}
+                  </strong>
+                  <span className="text-slate-400"> · {frameBlockSummary}</span>
+                </>
               ) : (
                 <>
                   Прибор:{' '}
@@ -1867,6 +1988,14 @@ export const CADCanvas: React.FC = () => {
                 <span className="text-slate-600">|</span>
                 <span className={devicePreview.error ? 'text-rose-400' : 'text-emerald-400'}>
                   {devicePreview.error ?? 'ЛКМ — поставить, Esc — выйти'}
+                </span>
+              </>
+            )}
+            {activeTool === 'place_frame' && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className={framePreview.error ? 'text-rose-400' : 'text-emerald-400'}>
+                  {framePreview.error ?? 'Кликните по стене, чтобы поставить подрозетник · Esc — выйти'}
                 </span>
               </>
             )}

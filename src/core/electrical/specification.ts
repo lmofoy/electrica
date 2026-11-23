@@ -1,6 +1,14 @@
-import type { ElectricalPanel, RoomZone } from '../../types';
+import type {
+  ElectricalPanel,
+  FrameMounting,
+  FramePosts,
+  MountingFrame,
+  RoomZone,
+} from '../../types';
+import { FRAME_POSTS_OPTIONS, FRAME_POST_PITCH_MM, FRAME_SINGLE_WIDTH_MM } from './frames';
 import { buildPanelLayout } from './panelLayout';
 import { buildPanelSchematic, type SchematicGroup } from './schematic';
+import { breakingCapacityLabel } from './norms';
 import { REF, type NormativeFinding } from './panelValidation';
 
 // -------------------------------------------------------------
@@ -56,7 +64,24 @@ export interface BuildSpecificationOptions {
   rooms?: RoomZone[];
   cableLengthsMm?: Map<string, number> | Record<string, number>;
   findings?: NormativeFinding[];
+  frames?: MountingFrame[];
 }
+
+const FRAME_POSTS_WORD: Record<FramePosts, string> = {
+  1: '1 место',
+  2: '2 места',
+  3: '3 места',
+  4: '4 места',
+};
+
+const FRAME_MOUNTING_OPTIONS: {
+  id: FrameMounting;
+  label: string;
+  type: string;
+}[] = [
+  { id: 'flush', label: 'скрытая', type: 'встраиваемая' },
+  { id: 'surface', label: 'накладная', type: 'накладная' },
+];
 
 function num(value: number, digits = 1): string {
   if (!Number.isFinite(value)) return '—';
@@ -116,6 +141,14 @@ interface RcdGroup {
   designations: string[];
 }
 
+interface RcboGroup {
+  ratingA: number;
+  curve: string;
+  sensitivityMa: number;
+  type: string;
+  designations: string[];
+}
+
 interface CableGroup {
   brand: string;
   cores: number;
@@ -128,6 +161,7 @@ function aggregateBreakers(
 ): Map<string, BreakerGroup> {
   const result = new Map<string, BreakerGroup>();
   for (const group of groups) {
+    if (group.combinedProtection) continue;
     const key = `${group.breaker.ratingA}|${group.breaker.curve}|${group.breaker.poles}`;
     const entry = result.get(key);
     if (entry) {
@@ -147,7 +181,7 @@ function aggregateBreakers(
 function aggregateRcds(groups: SchematicGroup[]): Map<string, RcdGroup> {
   const result = new Map<string, RcdGroup>();
   for (const group of groups) {
-    if (!group.rcd || !group.rcdDesignation) continue;
+    if (!group.rcd || !group.rcdDesignation || group.combinedProtection) continue;
     const rcd = group.rcd;
     const key = `${rcd.ratingA}|${rcd.sensitivityMa}|${rcd.type}|${rcd.poles}|${rcd.selective}`;
     const entry = result.get(key);
@@ -161,6 +195,27 @@ function aggregateRcds(groups: SchematicGroup[]): Map<string, RcdGroup> {
         poles: rcd.poles,
         selective: Boolean(rcd.selective),
         designations: [group.rcdDesignation],
+      });
+    }
+  }
+  return result;
+}
+
+function aggregateRcbos(groups: SchematicGroup[]): Map<string, RcboGroup> {
+  const result = new Map<string, RcboGroup>();
+  for (const group of groups) {
+    if (!group.combinedProtection || !group.rcd) continue;
+    const key = `${group.breaker.ratingA}|${group.breaker.curve}|${group.rcd.sensitivityMa}|${group.rcd.type}`;
+    const entry = result.get(key);
+    if (entry) {
+      entry.designations.push(group.breakerDesignation);
+    } else {
+      result.set(key, {
+        ratingA: group.breaker.ratingA,
+        curve: group.breaker.curve,
+        sensitivityMa: group.rcd.sensitivityMa,
+        type: group.rcd.type,
+        designations: [group.breakerDesignation],
       });
     }
   }
@@ -232,6 +287,7 @@ export function buildPanelSpecification(
   });
   const layout = buildPanelLayout(panel);
   const supply = schematic.supply;
+  const capacity = breakingCapacityLabel(supply.breakingCapacityKa);
   const items: SpecificationItem[] = [];
 
   const equipment = (
@@ -259,7 +315,7 @@ export function buildPanelSpecification(
       'input-breaker',
       'QF1',
       'Выключатель автоматический вводной',
-      `${supply.inputBreaker.ratingA} А · характеристика ${supply.inputBreaker.curve} · ${supply.inputBreaker.poles}P`,
+      `${supply.inputBreaker.ratingA} А · характеристика ${supply.inputBreaker.curve} · ${supply.inputBreaker.poles}P · ${capacity}`,
       'модульный',
       1
     )
@@ -336,9 +392,22 @@ export function buildPanelSpecification(
         `breaker-${breaker.ratingA}-${breaker.curve}-${breaker.poles}`,
         joinDesignations(breaker.designations),
         'Выключатель автоматический',
-        `${breaker.ratingA} А · характеристика ${breaker.curve} · ${breaker.poles}P`,
+        `${breaker.ratingA} А · характеристика ${breaker.curve} · ${breaker.poles}P · ${capacity}`,
         'модульный',
         breaker.designations.length
+      )
+    );
+  }
+
+  for (const rcbo of aggregateRcbos(schematic.groups).values()) {
+    items.push(
+      equipment(
+        `rcbo-${rcbo.ratingA}-${rcbo.curve}-${rcbo.sensitivityMa}-${rcbo.type}`,
+        joinDesignations(rcbo.designations),
+        'Дифавтомат (АВДТ)',
+        `${rcbo.ratingA} А · ${rcbo.curve} · ${rcbo.sensitivityMa} мА · тип ${rcbo.type} · ${capacity} · 1P+N`,
+        'модульный',
+        rcbo.designations.length
       )
     );
   }
@@ -356,6 +425,31 @@ export function buildPanelSpecification(
         rcd.designations.length
       )
     );
+  }
+
+  // Рамки — монтажная часть механизмов; идут перед материалами, после аппаратов.
+  // Рамки считаются отдельно по монтажу: скрытая и накладная — разные изделия.
+  const frameCounts = new Map<string, number>();
+  for (const frame of options.frames ?? []) {
+    const key = `${frame.mounting}:${frame.posts}`;
+    frameCounts.set(key, (frameCounts.get(key) ?? 0) + 1);
+  }
+  for (const mounting of FRAME_MOUNTING_OPTIONS) {
+    for (const posts of FRAME_POSTS_OPTIONS) {
+      const count = frameCounts.get(`${mounting.id}:${posts}`) ?? 0;
+      if (count === 0) continue;
+      const widthMm = (posts - 1) * FRAME_POST_PITCH_MM + FRAME_SINGLE_WIDTH_MM;
+      items.push(
+        equipment(
+          `frame-${mounting.id}-${posts}`,
+          '—',
+          `Подрозетник на ${FRAME_POSTS_WORD[posts]} (${mounting.label})`,
+          `${widthMm} мм · плата под механизмы`,
+          mounting.type,
+          count
+        )
+      );
+    }
   }
 
   items.push({
@@ -417,10 +511,14 @@ export function buildPanelSpecification(
   const notes = [
     'Спецификация составлена по схеме ЭС-01 и расчётной таблице ЭС-02.',
     `Корпус: ${enclosure.modules} модулей (${enclosure.rails} реек), занято ${enclosure.occupied}, свободно ${enclosure.free}.`,
+    `Класс модульных аппаратов по отключающей способности — ${capacity} (Icn, ГОСТ IEC 60898-1). УЗО класса не имеет.`,
     'Кабель групповых линий учтён по длинам трасс с проектным запасом; вводной кабель — по месту.',
     'Тип, марка и производитель аппаратов не заданы: подбираются по характеристикам и ТУ.',
     'Аппараты округлены до целых штук, кабель — до целого метра вверх.',
     'Документ не является коммерческим предложением; цены и артикулы не рассчитываются.',
+    panel.lines.some((line) => line.combinedProtection && line.rcd)
+      ? 'Дифавтомат объединяет автомат и УЗО в одном аппарате и занимает 2 модуля.'
+      : 'Автомат и УЗО каждой линии закупаются отдельными позициями.',
     panel.lines.length > 0
       ? `Проверка по нормам: ошибок ${errors}, замечаний ${warnings}.`
       : 'Проверка по нормам: линии не заданы, состав щита не рассчитан.',

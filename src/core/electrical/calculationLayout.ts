@@ -325,7 +325,7 @@ function lineSeeds(
     index: { text: String(row.index), tone: 'muted' },
     designation: {
       text: row.designation,
-      sub: row.rcdDesignation ?? undefined,
+      sub: row.combinedProtection ? 'диф.' : row.rcdDesignation ?? undefined,
       bold: true,
     },
     name: { text: row.name, sub: details },

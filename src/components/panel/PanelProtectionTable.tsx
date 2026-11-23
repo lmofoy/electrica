@@ -179,7 +179,7 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
 
               <div className="min-w-0">
                 <span className="block text-[8px] uppercase tracking-wider text-slate-500 mb-0.5">
-                  УЗО
+                  {line.combinedProtection ? 'УЗО (АВДТ)' : 'УЗО'}
                 </span>
                 <select
                   value={rcdValue(line)}
@@ -204,6 +204,43 @@ export const PanelProtectionTable: React.FC<PanelProtectionTableProps> = ({
                   <option value="300-A">300 мА · A</option>
                 </select>
               </div>
+            </div>
+
+            <div className="mt-1 flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  if (line.combinedProtection) {
+                    onUpdate(line.id, { combinedProtection: false });
+                  } else {
+                    onUpdate(line.id, {
+                      combinedProtection: true,
+                      rcd: line.rcd ?? makeRcd(30, 'A', line.breaker.ratingA),
+                    });
+                  }
+                }}
+                className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] transition ${
+                  line.combinedProtection
+                    ? 'border-sky-500/60 bg-sky-500/10 text-sky-300'
+                    : 'border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-300'
+                }`}
+                title="АВДТ: автомат и УЗО одним аппаратом 1P+N на двух модулях"
+              >
+                <span
+                  className={`w-2.5 h-2.5 rounded-sm border flex items-center justify-center text-[7px] font-bold ${
+                    line.combinedProtection
+                      ? 'bg-sky-500 border-sky-400 text-white'
+                      : 'border-slate-600 text-transparent'
+                  }`}
+                >
+                  ✓
+                </span>
+                Дифавтомат
+              </button>
+              <span className="text-[9px] text-slate-500 truncate">
+                {line.combinedProtection
+                  ? 'АВДТ 1P+N · 2 модуля · один аппарат QF'
+                  : 'автомат и УЗО — отдельные аппараты'}
+              </span>
             </div>
 
             <div className="mt-1 flex items-center gap-1.5 text-[9px] font-mono text-slate-500">

@@ -27,6 +27,8 @@ export interface TitleSheetSource {
   specification: PanelSpecification;
   rooms: RoomZone[];
   deviceCount: number;
+  // Число монтажных подрозетников; не задано — строка не выводится.
+  frameCount?: number;
   // Число листов каждого плана; не задано — по одному (старые проекты).
   planSheetCounts?: Record<PlanSheetKind, number>;
 }
@@ -199,6 +201,9 @@ function buildParams(source: TitleSheetSource): TitleSheetTable {
     },
     { cells: ['Приборов', String(source.deviceCount)] },
     { cells: ['Групповых линий', String(source.schematic.groups.length)] },
+    ...(source.frameCount === undefined
+      ? []
+      : [{ cells: ['Подрозетников', String(source.frameCount)] }]),
     {
       cells: [
         'Ввод',

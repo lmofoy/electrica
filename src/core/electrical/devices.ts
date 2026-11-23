@@ -824,6 +824,15 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceCatalogEntry> = {
 
 export const DEVICE_TYPES: DeviceType[] = Object.keys(DEVICE_CATALOG) as DeviceType[];
 
+// Механизмы (розетки и выключатели) монтируются только в рамки.
+// Светильники к рамкам не относятся: у них своя привязка к стене или потолку.
+export function isMechanismType(type: DeviceType): boolean {
+  const group = DEVICE_CATALOG[type].group;
+  return group === 'socket' || group === 'switch';
+}
+
+export const MECHANISM_TYPES: DeviceType[] = DEVICE_TYPES.filter(isMechanismType);
+
 export interface DeviceCatalogLeaf {
   type: DeviceType;
   entry: DeviceCatalogEntry;

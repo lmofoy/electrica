@@ -27,17 +27,19 @@ import {
   Search,
   Shuffle,
   SlidersHorizontal,
+  SquareDashed,
   Star,
   Sun,
   ToggleLeft,
   X,
   Zap,
 } from 'lucide-react';
-import type { DeviceType } from '../../types';
+import type { DeviceType, FrameMounting, FramePosts } from '../../types';
 import {
   DEVICE_CATALOG,
   DEVICE_CATALOG_TREE,
   DEVICE_SECTIONS,
+  isMechanismType,
   searchDeviceCatalog,
   type DeviceCatalogEntry,
   type DeviceCatalogLeaf,
@@ -45,6 +47,7 @@ import {
   type DeviceCatalogSectionView,
   type DeviceGlyphKind,
 } from '../../core/electrical/devices';
+import { FRAME_POSTS_OPTIONS, framePlateWidthMm } from '../../core/electrical/frames';
 import { LINE_PRESETS } from '../../core/electrical/norms';
 import type { DeviceUiPreferences } from '../../core/electrical/devicePreferences';
 
@@ -197,6 +200,58 @@ function QuickChip({
   );
 }
 
+export interface FrameCatalogConfig {
+  posts: FramePosts;
+  mounting: FrameMounting;
+  seatTypes: (DeviceType | null)[];
+  heightMm: number;
+  onPostsChange: (posts: FramePosts) => void;
+  onMountingChange: (mounting: FrameMounting) => void;
+  onSeatTypeChange: (seatIndex: number, type: DeviceType | null) => void;
+  onHeightChange: (heightMm: number) => void;
+  onPlace: () => void;
+}
+
+const MOUNTING_OPTIONS: { id: FrameMounting; label: string; hint: string }[] = [
+  { id: 'flush', label: 'Скрытая', hint: 'Подрозетник утоплен в стену, механизмы заподлицо' },
+  { id: 'surface', label: 'Накладная', hint: 'Подрозетник стоит поверх отделки, для бетона и кирпича' },
+];
+
+const FrameHeightInput = ({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (heightMm: number) => void;
+}) => {
+  // Черновик живёт до commit; внешнее значение приходит через key и перемонтирует поле.
+  const [draft, setDraft] = useState(String(value));
+  const commit = () => {
+    const parsed = Number(draft);
+    if (Number.isFinite(parsed)) onCommit(parsed);
+    else setDraft(String(value));
+  };
+  return (
+    <input
+      type="number"
+      step={10}
+      min={0}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commit();
+          event.currentTarget.blur();
+        }
+      }}
+      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] font-mono text-slate-200 focus:outline-none focus:border-sky-500"
+      aria-label="Высота блока от пола, мм"
+    />
+  );
+};
+
 export interface DeviceCatalogMenuProps {
   anchorEl: HTMLElement;
   initialSection: DeviceCatalogSectionId;
@@ -205,6 +260,8 @@ export interface DeviceCatalogMenuProps {
   onSelect: (type: DeviceType) => void;
   onToggleFavorite: (type: DeviceType) => void;
   onClose: () => void;
+  // Режим рамки: слева — число мест, в центре — механизмы, справа — паспорт.
+  frameMode?: FrameCatalogConfig;
 }
 
 function computePlacement(anchorEl: HTMLElement) {
@@ -234,11 +291,28 @@ export function DeviceCatalogMenu({
   onSelect,
   onToggleFavorite,
   onClose,
+  frameMode,
 }: DeviceCatalogMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const initialView = sectionView(initialSection);
-  const [sectionId, setSectionId] = useState<DeviceCatalogSectionId>(initialSection);
+  const isFrameMode = frameMode !== undefined;
+  const frameViews = useMemo(
+    () =>
+      DEVICE_CATALOG_TREE.filter((view) =>
+        view.subsections.some((subsection) =>
+          subsection.leaves.some((leaf) => isMechanismType(leaf.type))
+        )
+      ),
+    []
+  );
+  const sectionViews = isFrameMode ? frameViews : DEVICE_CATALOG_TREE;
+  const safeInitialSection = sectionViews.some(
+    (view) => view.section.id === initialSection
+  )
+    ? initialSection
+    : sectionViews[0]?.section.id ?? initialSection;
+  const initialView = sectionView(safeInitialSection);
+  const [sectionId, setSectionId] = useState<DeviceCatalogSectionId>(safeInitialSection);
   const [subsectionId, setSubsectionId] = useState<string | null>(() =>
     subsectionFor(initialView, activeDeviceType)
   );
@@ -246,6 +320,7 @@ export function DeviceCatalogMenu({
     previewFor(initialView, subsectionFor(initialView, activeDeviceType), activeDeviceType)
   );
   const [query, setQuery] = useState('');
+  const [seatIndex, setSeatIndex] = useState(0);
   const [placement, setPlacement] = useState(() => computePlacement(anchorEl));
 
   const updatePlacement = useCallback(() => {
@@ -296,26 +371,131 @@ export function DeviceCatalogMenu({
     () => view.subsections.flatMap((subsection) => subsection.leaves),
     [view]
   );
-  const results = useMemo(() => searchDeviceCatalog(query), [query]);
+  const frameLeaves = useMemo(
+    () =>
+      view.subsections.flatMap((subsection) =>
+        subsection.leaves.filter((leaf) => isMechanismType(leaf.type))
+      ),
+    [view]
+  );
+  const results = useMemo(() => {
+    const found = searchDeviceCatalog(query);
+    return isFrameMode
+      ? found.filter((leaf) => isMechanismType(leaf.type))
+      : found;
+  }, [query, isFrameMode]);
   const previewLeaf: DeviceCatalogLeaf | null = useMemo(() => {
     if (query.trim()) return results[0] ?? null;
-    const source = activeSubsection?.leaves ?? sectionLeaves;
+    const source = isFrameMode
+      ? frameLeaves
+      : activeSubsection?.leaves ?? sectionLeaves;
     return (
       source.find((leaf) => leaf.type === previewType) ??
       source.find((leaf) => leaf.type === activeDeviceType) ??
       source[0] ??
       null
     );
-  }, [query, results, activeSubsection, sectionLeaves, previewType, activeDeviceType]);
+  }, [
+    query,
+    results,
+    isFrameMode,
+    frameLeaves,
+    activeSubsection,
+    sectionLeaves,
+    previewType,
+    activeDeviceType,
+  ]);
 
   const recentTypes = preferences.recentDeviceTypes.filter(
-    (type) => DEVICE_CATALOG[type]
+    (type) =>
+      DEVICE_CATALOG[type] && (!isFrameMode || isMechanismType(type))
   );
   const favoriteTypes = preferences.favoriteDeviceTypes.filter(
-    (type) => DEVICE_CATALOG[type]
+    (type) =>
+      DEVICE_CATALOG[type] && (!isFrameMode || isMechanismType(type))
   );
+
+  // Выбранное место нового блока: механизм попадает именно в него.
+  const activeSeat = frameMode ? Math.min(seatIndex, frameMode.posts - 1) : 0;
+  const seatTypes = frameMode ? frameMode.seatTypes.slice(0, frameMode.posts) : [];
+  const seatType = seatTypes[activeSeat] ?? null;
+  const seatLeaf: DeviceCatalogLeaf | null = seatType
+    ? { type: seatType, entry: DEVICE_CATALOG[seatType] }
+    : null;
+  const filledSeats = seatTypes.filter((type) => type !== null).length;
+  const passportLeaf = isFrameMode ? seatLeaf : previewLeaf;
+  const blockLabel = frameMode
+    ? `Поставить подрозетник · ${frameMode.posts} ${
+        frameMode.posts === 1 ? 'место' : 'места'
+      } · ${frameMode.mounting === 'flush' ? 'скрытая' : 'накладная'}`
+    : '';
   const isFavorite =
-    previewLeaf !== null && favoriteTypes.includes(previewLeaf.type);
+    passportLeaf !== null && favoriteTypes.includes(passportLeaf.type);
+
+  const assignSeat = (type: DeviceType | null) => {
+    if (!frameMode) return;
+    frameMode.onSeatTypeChange(activeSeat, type);
+    if (type) setSectionId(DEVICE_CATALOG[type].section);
+    setQuery('');
+  };
+
+  const goToNextFreeSeat = () => {
+    if (!frameMode) return;
+    const next = seatTypes.findIndex((type) => type === null);
+    if (next >= 0) setSeatIndex(next);
+  };
+
+  const renderLeafRow = (leaf: DeviceCatalogLeaf) => {
+    const isActive = isFrameMode
+      ? leaf.type === seatType
+      : leaf.type === activeDeviceType;
+    const isPreview = !isFrameMode && leaf.type === previewLeaf?.type;
+    return (
+      <button
+        key={leaf.type}
+        type="button"
+        onMouseEnter={() => {
+          if (!isFrameMode) setPreviewType(leaf.type);
+        }}
+        onFocus={() => {
+          if (!isFrameMode) setPreviewType(leaf.type);
+        }}
+        onClick={() =>
+          isFrameMode ? assignSeat(leaf.type) : onSelect(leaf.type)
+        }
+        className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition ${
+          isPreview ? 'bg-slate-800/90' : 'hover:bg-slate-900'
+        }`}
+        title={
+          isFrameMode
+            ? `${leaf.entry.label} → место ${activeSeat + 1}`
+            : leaf.entry.label
+        }
+      >
+        <DeviceTypeIcon type={leaf.type} size={14} />
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate text-xs font-semibold text-white">
+              {leaf.entry.shortLabel}
+            </span>
+            <BadgeChip entry={leaf.entry} />
+          </span>
+          <span className="block truncate text-[10px] text-slate-500">
+            {leaf.entry.ipRating}
+            {leaf.entry.mounting === 'ceiling'
+              ? ''
+              : ` · H ${leaf.entry.defaultHeightMm} мм`}
+          </span>
+        </span>
+        {leaf.entry.defaultPowerWatts > 0 && (
+          <span className="shrink-0 font-mono text-[9px] text-slate-600">
+            {leaf.entry.defaultPowerWatts} Вт
+          </span>
+        )}
+        {isActive && <Check size={12} className="shrink-0 text-sky-400" />}
+      </button>
+    );
+  };
 
   const handleSectionSelect = (nextSectionId: DeviceCatalogSectionId) => {
     const nextView = sectionView(nextSectionId);
@@ -325,6 +505,9 @@ export function DeviceCatalogMenu({
     setPreviewType(previewFor(nextView, nextSubsectionId, activeDeviceType));
     setQuery('');
   };
+
+  // В режиме рамки чипы сразу ставят механизм в выбранное место.
+  const previewFrameType = (type: DeviceType) => assignSeat(type);
 
   const handleSubsectionSelect = (nextSubsectionId: string) => {
     setSubsectionId(nextSubsectionId);
@@ -337,14 +520,15 @@ export function DeviceCatalogMenu({
   const handleSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter' && results.length > 0) {
       event.preventDefault();
-      onSelect(results[0].type);
+      if (isFrameMode) previewFrameType(results[0].type);
+      else onSelect(results[0].type);
     }
   };
 
   const compact = placement.width < 720;
   const gridTemplateColumns = compact
     ? '1fr'
-    : '180px 280px minmax(260px, 1fr)';
+    : '200px 260px minmax(250px, 1fr)';
 
   return createPortal(
     <div
@@ -357,11 +541,11 @@ export function DeviceCatalogMenu({
         maxHeight: placement.maxHeight,
       }}
       role="dialog"
-      aria-label="Каталог электрических элементов"
+      aria-label={isFrameMode ? 'Каталог механизмов для подрозетника' : 'Каталог электрических элементов'}
     >
       <div className="flex shrink-0 items-start justify-between gap-2 border-b border-slate-800 px-2.5 py-2">
         <div className="flex flex-wrap items-center gap-1">
-          {DEVICE_CATALOG_TREE.map(({ section, count }) => {
+          {sectionViews.map(({ section, count }) => {
             const isActive = section.id === sectionId;
             return (
               <button
@@ -410,7 +594,11 @@ export function DeviceCatalogMenu({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleSearchKeyDown}
-            placeholder="Найти элемент: розетка, влажная, люстра…"
+            placeholder={
+              isFrameMode
+                ? 'Найти механизм: розетка, влажная, выключатель…'
+                : 'Найти элемент: розетка, влажная, люстра…'
+            }
             className="min-w-0 flex-1 bg-transparent text-xs text-white placeholder:text-slate-600 focus:outline-none"
             aria-label="Поиск по каталогу"
           />
@@ -433,7 +621,11 @@ export function DeviceCatalogMenu({
                 <Clock size={11} />
                 <span>Недавние:</span>
                 {recentTypes.map((type) => (
-                  <QuickChip key={`recent-${type}`} type={type} onSelect={onSelect} />
+                  <QuickChip
+                    key={`recent-${type}`}
+                    type={type}
+                    onSelect={isFrameMode ? previewFrameType : onSelect}
+                  />
                 ))}
               </div>
             )}
@@ -442,7 +634,11 @@ export function DeviceCatalogMenu({
                 <Star size={11} />
                 <span>Избранное:</span>
                 {favoriteTypes.map((type) => (
-                  <QuickChip key={`favorite-${type}`} type={type} onSelect={onSelect} />
+                  <QuickChip
+                    key={`favorite-${type}`}
+                    type={type}
+                    onSelect={isFrameMode ? previewFrameType : onSelect}
+                  />
                 ))}
               </div>
             )}
@@ -457,7 +653,9 @@ export function DeviceCatalogMenu({
               <button
                 key={leaf.type}
                 type="button"
-                onClick={() => onSelect(leaf.type)}
+                onClick={() =>
+                  isFrameMode ? previewFrameType(leaf.type) : onSelect(leaf.type)
+                }
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition hover:bg-slate-900"
               >
                 <DeviceTypeIcon type={leaf.type} size={15} />
@@ -471,7 +669,7 @@ export function DeviceCatalogMenu({
                   </span>
                 </span>
                 <BadgeChip entry={leaf.entry} />
-                {leaf.type === activeDeviceType && (
+                {leaf.type === (isFrameMode ? seatType : activeDeviceType) && (
                   <Check size={12} className="shrink-0 text-sky-400" />
                 )}
               </button>
@@ -506,26 +704,140 @@ export function DeviceCatalogMenu({
               compact ? 'border-b' : 'border-r'
             }`}
           >
-            {view.subsections.map((subsection) => {
-              const isActive = subsection.id === activeSubsection?.id;
-              return (
-                <button
-                  key={subsection.id}
-                  type="button"
-                  onClick={() => handleSubsectionSelect(subsection.id)}
-                  className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-2 text-left text-[11px] transition ${
-                    isActive
-                      ? 'bg-slate-800 text-white'
-                      : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
-                  }`}
-                >
-                  <span className="truncate">{subsection.label}</span>
-                  <span className="font-mono text-[9px] text-slate-600">
-                    {subsection.leaves.length}
+            {frameMode ? (
+              <div className="flex flex-col gap-2">
+                <div>
+                  <div className="px-1 pb-1 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    Монтаж блока
+                  </div>
+                  <div className="grid grid-cols-2 gap-0.5 rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+                    {MOUNTING_OPTIONS.map((option) => {
+                      const isActive = frameMode.mounting === option.id;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => frameMode.onMountingChange(option.id)}
+                          title={option.hint}
+                          className={`rounded-md py-1.5 text-[11px] font-semibold transition ${
+                            isActive
+                              ? 'bg-sky-500 text-white shadow'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="px-1 pb-1 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    Мест в подрозетнике
+                  </div>
+                  <div className="grid grid-cols-4 gap-0.5">
+                    {FRAME_POSTS_OPTIONS.map((posts) => {
+                      const isActive = frameMode.posts === posts;
+                      return (
+                        <button
+                          key={posts}
+                          type="button"
+                          onClick={() => frameMode.onPostsChange(posts)}
+                          className={`rounded py-1 text-[11px] font-mono font-semibold transition ${
+                            isActive
+                              ? 'bg-sky-500 text-white'
+                              : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'
+                          }`}
+                          title={`Подрозетник на ${posts} ${posts === 1 ? 'место' : 'места'} · ${framePlateWidthMm(posts)} мм`}
+                        >
+                          {posts}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="px-1 pb-1 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    Места блока
+                  </div>
+                  {Array.from({ length: frameMode.posts }, (_, seat) => {
+                    const type = frameMode.seatTypes[seat] ?? null;
+                    const isActive = seat === activeSeat;
+                    return (
+                      <button
+                        key={seat}
+                        type="button"
+                        onClick={() => setSeatIndex(seat)}
+                        className={`flex w-full items-center gap-1.5 rounded-lg px-1.5 py-1.5 text-left transition ${
+                          isActive
+                            ? 'bg-slate-800 ring-1 ring-sky-500'
+                            : 'hover:bg-slate-900'
+                        }`}
+                        title={`Место ${seat + 1}: выбрать механизм`}
+                      >
+                        <span
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded font-mono text-[9px] ${
+                            isActive
+                              ? 'bg-sky-500 text-white'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {seat + 1}
+                        </span>
+                        <span
+                          className={`min-w-0 flex-1 truncate text-[11px] ${
+                            type ? 'text-slate-200' : 'italic text-slate-500'
+                          }`}
+                        >
+                          {type ? DEVICE_CATALOG[type].shortLabel : 'Заглушка'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <label className="block px-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    Высота блока, мм
                   </span>
-                </button>
-              );
-            })}
+                  <span className="mt-1 block">
+                    <FrameHeightInput
+                      key={`frame-height-${frameMode.heightMm}`}
+                      value={frameMode.heightMm}
+                      onCommit={frameMode.onHeightChange}
+                    />
+                  </span>
+                </label>
+
+                <div className="px-1 text-[9px] leading-snug text-slate-600">
+                  {framePlateWidthMm(frameMode.posts)} мм по стене · одна высота на все
+                  места
+                </div>
+              </div>
+            ) : (
+              view.subsections.map((subsection) => {
+                const isActive = subsection.id === activeSubsection?.id;
+                return (
+                  <button
+                    key={subsection.id}
+                    type="button"
+                    onClick={() => handleSubsectionSelect(subsection.id)}
+                    className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-2 text-left text-[11px] transition ${
+                      isActive
+                        ? 'bg-slate-800 text-white'
+                        : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                    }`}
+                  >
+                    <span className="truncate">{subsection.label}</span>
+                    <span className="font-mono text-[9px] text-slate-600">
+                      {subsection.leaves.length}
+                    </span>
+                  </button>
+                );
+              })
+            )}
           </div>
 
           <div
@@ -533,71 +845,110 @@ export function DeviceCatalogMenu({
               compact ? 'border-b' : 'border-r'
             }`}
           >
-            {activeSubsection?.leaves.map((leaf) => {
-              const isActive = leaf.type === activeDeviceType;
-              const isPreview = leaf.type === previewLeaf?.type;
-              return (
-                <button
-                  key={leaf.type}
-                  type="button"
-                  onMouseEnter={() => setPreviewType(leaf.type)}
-                  onFocus={() => setPreviewType(leaf.type)}
-                  onClick={() => onSelect(leaf.type)}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition ${
-                    isPreview
-                      ? 'bg-slate-800/90'
-                      : 'hover:bg-slate-900'
-                  }`}
-                  title={leaf.entry.label}
-                >
-                  <DeviceTypeIcon type={leaf.type} size={14} />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span className="truncate text-xs font-semibold text-white">
-                        {leaf.entry.shortLabel}
+            {frameMode ? (
+              <>
+                <div className="mb-1">
+                  <div className="px-2 pt-1 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                    Место {activeSeat + 1}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => assignSeat(null)}
+                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition ${
+                      seatType === null ? 'bg-slate-800/90' : 'hover:bg-slate-900'
+                    }`}
+                    title="Оставить место пустым — закроется заглушкой"
+                  >
+                    <SquareDashed size={14} className="text-slate-500" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-semibold text-white">
+                        Заглушка
                       </span>
-                      <BadgeChip entry={leaf.entry} />
+                      <span className="block text-[10px] text-slate-500">
+                        Пустое место без механизма
+                      </span>
                     </span>
-                    <span className="block truncate text-[10px] text-slate-500">
-                      {leaf.entry.ipRating}
-                      {leaf.entry.mounting === 'ceiling'
-                        ? ''
-                        : ` · H ${leaf.entry.defaultHeightMm} мм`}
-                    </span>
-                  </span>
-                  {leaf.entry.defaultPowerWatts > 0 && (
-                    <span className="shrink-0 font-mono text-[9px] text-slate-600">
-                      {leaf.entry.defaultPowerWatts} Вт
-                    </span>
-                  )}
-                  {isActive && <Check size={12} className="shrink-0 text-sky-400" />}
-                </button>
-              );
-            })}
+                    {seatType === null && (
+                      <Check size={12} className="shrink-0 text-sky-400" />
+                    )}
+                  </button>
+                </div>
+                {view.subsections.map((subsection) => {
+                  const leaves = subsection.leaves.filter((leaf) =>
+                    isMechanismType(leaf.type)
+                  );
+                  if (leaves.length === 0) return null;
+                  return (
+                    <div key={subsection.id} className="mb-1">
+                      <div className="px-2 pt-1 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                        {subsection.label}
+                      </div>
+                      {leaves.map(renderLeafRow)}
+                    </div>
+                  );
+                })}
+              </>
+            ) : (
+              activeSubsection?.leaves.map(renderLeafRow)
+            )}
           </div>
 
           <div className="min-h-0 overflow-y-auto p-3">
-            {previewLeaf ? (
+            {frameMode && !passportLeaf ? (
               <div className="flex h-full flex-col gap-3">
                 <div className="flex items-start gap-2.5">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10 text-sky-300">
-                    <DeviceTypeIcon type={previewLeaf.type} size={20} />
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-500">
+                    <SquareDashed size={20} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold leading-tight text-white">
-                      {previewLeaf.entry.label}
+                      Место {activeSeat + 1} — заглушка
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-500">
+                      {frameMode.mounting === 'flush' ? 'Скрытая' : 'Накладная'} ·
+                      высота {frameMode.heightMm} мм
+                    </div>
+                  </div>
+                </div>
+                <p className="text-[11px] leading-relaxed text-slate-400">
+                  Выберите розетку или выключатель в средней колонке — механизм
+                  встанет на это место. Место без механизма закроется заглушкой.
+                </p>
+                <div className="rounded-md border border-slate-800 bg-slate-900/50 px-2 py-1.5 text-[10px] text-slate-400">
+                  Заполнено {filledSeats} из {frameMode.posts}. Каждый компонент
+                  можно выделить и посмотреть его параметры.
+                </div>
+                <button
+                  type="button"
+                  onClick={frameMode.onPlace}
+                  disabled={filledSeats === 0}
+                  className="mt-auto flex items-center justify-center gap-1.5 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-sky-950/40 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
+                >
+                  <Check size={13} />
+                  {filledSeats === 0 ? 'Выберите механизмы для мест' : blockLabel}
+                </button>
+              </div>
+            ) : passportLeaf ? (
+              <div className="flex h-full flex-col gap-3">
+                <div className="flex items-start gap-2.5">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10 text-sky-300">
+                    <DeviceTypeIcon type={passportLeaf.type} size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold leading-tight text-white">
+                      {passportLeaf.entry.label}
                     </div>
                     <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-slate-500">
                       <span className="truncate">
-                        {sectionLabel(previewLeaf.entry.section)} →{' '}
-                        {previewLeaf.entry.subsection}
+                        {sectionLabel(passportLeaf.entry.section)} →{' '}
+                        {passportLeaf.entry.subsection}
                       </span>
-                      <BadgeChip entry={previewLeaf.entry} />
+                      <BadgeChip entry={passportLeaf.entry} />
                     </div>
                   </div>
                   <button
                     type="button"
-                    onClick={() => onToggleFavorite(previewLeaf.type)}
+                    onClick={() => onToggleFavorite(passportLeaf.type)}
                     className={`rounded-md p-1 transition ${
                       isFavorite
                         ? 'text-amber-400 hover:bg-amber-500/10'
@@ -615,39 +966,39 @@ export function DeviceCatalogMenu({
                 </div>
 
                 <p className="text-[11px] leading-relaxed text-slate-400">
-                  {previewLeaf.entry.description}
+                  {passportLeaf.entry.description}
                 </p>
 
                 <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
                   <SpecRow
                     label="Монтаж"
-                    value={MOUNTING_LABELS[previewLeaf.entry.mounting]}
+                    value={MOUNTING_LABELS[passportLeaf.entry.mounting]}
                   />
                   <SpecRow
                     label="Высота"
                     value={
-                      previewLeaf.entry.mounting === 'ceiling'
+                      passportLeaf.entry.mounting === 'ceiling'
                         ? 'Потолок'
-                        : `${previewLeaf.entry.defaultHeightMm} мм`
+                        : `${passportLeaf.entry.defaultHeightMm} мм`
                     }
                   />
                   <SpecRow
                     label="Мощность"
                     value={
-                      previewLeaf.entry.defaultPowerWatts > 0
-                        ? `${previewLeaf.entry.defaultPowerWatts} Вт`
+                      passportLeaf.entry.defaultPowerWatts > 0
+                        ? `${passportLeaf.entry.defaultPowerWatts} Вт`
                         : '—'
                     }
                   />
-                  <SpecRow label="IP" value={previewLeaf.entry.ipRating} />
+                  <SpecRow label="IP" value={passportLeaf.entry.ipRating} />
                   <SpecRow
                     label="Подключение"
-                    value={CONNECTION_LABELS[previewLeaf.entry.connection]}
+                    value={CONNECTION_LABELS[passportLeaf.entry.connection]}
                   />
-                  <SpecRow label="Линия" value={lineLabel(previewLeaf.entry)} />
+                  <SpecRow label="Линия" value={lineLabel(passportLeaf.entry)} />
                 </dl>
 
-                {previewLeaf.entry.requiresDedicatedLine && (
+                {passportLeaf.entry.requiresDedicatedLine && (
                   <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-300">
                     Рекомендуется отдельная линия.
                   </div>
@@ -658,7 +1009,7 @@ export function DeviceCatalogMenu({
                     Нормы
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1">
-                    {previewLeaf.entry.normRefs.map((reference) => (
+                    {passportLeaf.entry.normRefs.map((reference) => (
                       <span
                         key={reference}
                         className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[9px] text-slate-400"
@@ -669,16 +1020,48 @@ export function DeviceCatalogMenu({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => onSelect(previewLeaf.type)}
-                  className="mt-auto flex items-center justify-center gap-1.5 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-sky-950/40 transition hover:bg-sky-400"
-                >
-                  <Check size={13} />
-                  {previewLeaf.type === activeDeviceType
-                    ? 'Продолжить установку'
-                    : 'Выбрать элемент'}
-                </button>
+                {frameMode && (
+                  <div className="rounded-md border border-sky-500/20 bg-sky-500/5 px-2 py-1.5 text-[10px] leading-relaxed text-sky-300">
+                    Стоит на месте {activeSeat + 1} из {frameMode.posts}. Высота блока
+                    общая: {frameMode.heightMm} мм.
+                  </div>
+                )}
+
+                <div className="mt-auto flex flex-col gap-1.5">
+                  {frameMode && (
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => assignSeat(null)}
+                        className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-[10px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white"
+                      >
+                        Освободить место
+                      </button>
+                      <button
+                        type="button"
+                        onClick={goToNextFreeSeat}
+                        disabled={filledSeats >= frameMode.posts}
+                        className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-[10px] font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:text-slate-600"
+                      >
+                        Следующее свободное
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      frameMode ? frameMode.onPlace() : onSelect(passportLeaf.type)
+                    }
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-sky-950/40 transition hover:bg-sky-400"
+                  >
+                    <Check size={13} />
+                    {frameMode
+                      ? blockLabel
+                      : passportLeaf.type === activeDeviceType
+                        ? 'Продолжить установку'
+                        : 'Выбрать элемент'}
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-[11px] text-slate-500">

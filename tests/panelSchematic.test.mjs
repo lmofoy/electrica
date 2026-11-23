@@ -508,6 +508,57 @@ try {
     assert.equal(budget.supply.mainRcd.sensitivityMa, 30);
     assert.equal(budget.supply.mainRcd.type, 'A');
   });
+
+  await test('class: default 6 kA, label on input and sanitize fallback', () => {
+    const source = panel({ lines: [line('a', 'sockets')] });
+    const schematic = buildPanelSchematic(source);
+    assert.equal(schematic.supply.breakingCapacityKa, 6);
+    assert.match(schematic.inputItems[0].detail, /6 кА/);
+
+    const high = buildPanelSchematic({ ...source, breakingCapacityKa: 10 });
+    assert.equal(high.supply.breakingCapacityKa, 10);
+    assert.match(high.inputItems[0].detail, /10 кА/);
+
+    const sanitized = sanitizePanel(
+      { ...source, breakingCapacityKa: 8 },
+      [livingRoom],
+      [],
+      120
+    );
+    assert.equal(sanitized.breakingCapacityKa, 6);
+  });
+
+  await test('rcbo: combined line keeps QF, skips QD and syncs the RCD rating', () => {
+    const lines = [
+      line('a', 'sockets', { combinedProtection: true }),
+      line('b', 'sockets'),
+    ];
+    const schematic = buildPanelSchematic(panel({ lines }));
+    assert.equal(schematic.groups[0].combinedProtection, true);
+    assert.ok(schematic.groups[0].rcd);
+    assert.equal(schematic.groups[0].rcdDesignation, null);
+    assert.equal(schematic.groups[0].breakerDesignation, 'QF2');
+    assert.equal(schematic.groups[1].combinedProtection, false);
+    assert.equal(schematic.groups[1].rcdDesignation, 'QD2');
+
+    const base = line('a', 'sockets');
+    const raw = line('a', 'sockets', {
+      combinedProtection: true,
+      rcd: { ...base.rcd, ratingA: 10 },
+    });
+    const sanitized = sanitizePanel(panel({ lines: [raw] }), [livingRoom], [], 120);
+    assert.equal(sanitized.lines[0].combinedProtection, true);
+    assert.equal(sanitized.lines[0].rcd.ratingA, sanitized.lines[0].breaker.ratingA);
+
+    const withoutRcd = sanitizePanel(
+      panel({ lines: [line('a', 'sockets', { combinedProtection: true, rcd: null })] }),
+      [livingRoom],
+      [],
+      120
+    );
+    assert.equal(withoutRcd.lines[0].combinedProtection, undefined);
+  });
+
 } catch (error) {
   failed += 1;
   console.error(`FAIL test setup\n${error.stack ?? error}`);

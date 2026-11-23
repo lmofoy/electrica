@@ -5,6 +5,7 @@ import { computeAutoFloors } from '../../core/geometry/autoLayout';
 import { Trash2, Home, Layers, Info, Check } from 'lucide-react';
 import type { RoomType } from '../../types';
 import { DevicePassport } from '../devices/DevicePassport';
+import { FramePassport } from '../frames/FramePassport';
 import {
   resolveDevice,
   type ResolvedDevice,
@@ -55,6 +56,7 @@ export const Sidebar: React.FC = () => {
     if (!selection) return null;
     if (selection.kind === 'room') return selection.id;
     if (selection.kind === 'panel') return null;
+    if (selection.kind === 'frame') return null;
     if (selection.kind === 'partition') {
       return freePartitions.find((partition) => partition.id === selection.id)?.roomId ?? null;
     }
@@ -253,6 +255,13 @@ export const Sidebar: React.FC = () => {
           <DevicePassport
             key={selection.id}
             deviceId={selection.id}
+            onClose={() => setSelection(null)}
+          />
+        )}
+        {selection?.kind === 'frame' && (
+          <FramePassport
+            key={selection.id}
+            frameId={selection.id}
             onClose={() => setSelection(null)}
           />
         )}

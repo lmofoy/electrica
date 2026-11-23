@@ -1,5 +1,6 @@
 import type { PhaseLabel } from '../../types';
 import type { PanelSchematic, SchematicGroup, SchematicInputItem } from './schematic';
+import { breakingCapacityLabel } from './norms';
 
 // -------------------------------------------------------------
 // Раскладка листа A3 (420×297 мм, горизонтальная) для схемы щита.
@@ -34,6 +35,8 @@ const BREAKER_X = 80;
 const BREAKER_WIDTH = 13;
 const RCD_X = 95;
 const RCD_WIDTH = 15;
+// Дифавтомат рисуется одним блоком на месте автомата и УЗО.
+const COMBINED_BREAKER_WIDTH = RCD_X + RCD_WIDTH - BREAKER_X;
 const GROUP_END_X = 411;
 const PHASE_BUS_X_3: Record<'L1' | 'L2' | 'L3', number> = {
   L1: 38,
@@ -90,6 +93,7 @@ export interface SheetGroup {
   phaseColor: string;
   breakerRect: SheetRect;
   rcdRect: SheetRect | null;
+  combined: boolean;
   labelX: number;
   powerX: number;
   endpoint: SheetPoint;
@@ -286,9 +290,12 @@ function buildNotes(schematic: PanelSchematic): string[] {
       supply.inputBreaker.curve
     }.`,
     mainRcd,
+    `Класс аппаратов по отключающей способности — ${breakingCapacityLabel(
+      supply.breakingCapacityKa
+    )} (Icn).`,
     `Групповые линии: ${supply.cableBrand}; суммарная длина кабелей ${totalCable}.`,
     `Включение: ${sequence}`,
-    'Обозначения: QF — автоматический выключатель; QD — УЗО; PI — счётчик; KV — реле напряжения; F — УЗИП.',
+    'Обозначения: QF — автомат или дифавтомат; QD — УЗО; PI — счётчик; KV — реле напряжения; F — УЗИП.',
     'Нормативная база: ПУЭ-7; СП 256.1325800.2016; СП 31-110-2003; ГОСТ 2.702-2011.',
     schematic.groups.length === 0
       ? 'Групповые линии не заданы — схема неполная.'
@@ -492,9 +499,11 @@ export function buildPanelSheet(
 
   const groups: SheetGroup[] = schematic.groups.map((group, index) => {
     const rowY = startY + groupPitch * (index + 0.5);
-    const rcdRect = group.rcd
-      ? { x: RCD_X, y: rowY - boxHeight / 2, width: RCD_WIDTH, height: boxHeight }
-      : null;
+    const combined = group.combinedProtection;
+    const rcdRect =
+      group.rcd && !combined
+        ? { x: RCD_X, y: rowY - boxHeight / 2, width: RCD_WIDTH, height: boxHeight }
+        : null;
     return {
       group,
       rowY,
@@ -504,11 +513,16 @@ export function buildPanelSheet(
       breakerRect: {
         x: BREAKER_X,
         y: rowY - boxHeight / 2,
-        width: BREAKER_WIDTH,
+        width: combined ? COMBINED_BREAKER_WIDTH : BREAKER_WIDTH,
         height: boxHeight,
       },
       rcdRect,
-      labelX: rcdRect ? RCD_X + RCD_WIDTH + 4 : BREAKER_X + BREAKER_WIDTH + 4,
+      combined,
+      labelX: combined
+        ? BREAKER_X + COMBINED_BREAKER_WIDTH + 4
+        : rcdRect
+          ? RCD_X + RCD_WIDTH + 4
+          : BREAKER_X + BREAKER_WIDTH + 4,
       powerX: GROUP_END_X - 2,
       endpoint: { x: GROUP_END_X, y: rowY },
     };

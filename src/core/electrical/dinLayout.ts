@@ -8,6 +8,7 @@ import {
 } from './panelLayout';
 import { lineColorFor } from './lineColors';
 import { lineCodes } from './lineOps';
+import { breakingCapacityLabel, normalizeBreakingCapacity } from './norms';
 import {
   A3_HEIGHT_MM,
   A3_WIDTH_MM,
@@ -140,7 +141,7 @@ function designationMap(panel: ElectricalPanel): Map<string, string> {
   const codes = lineCodes(panel);
   panel.lines.forEach((line, index) => {
     map.set(`${line.id}-breaker`, `QF${codes.get(line.id) ?? index + 2}`);
-    if (line.rcd) map.set(`${line.id}-rcd`, `QD${++rcdCounter}`);
+    if (line.rcd && !line.combinedProtection) map.set(`${line.id}-rcd`, `QD${++rcdCounter}`);
   });
   return map;
 }
@@ -156,7 +157,8 @@ function toneFor(kind: PanelItemKind): DinTone {
     kind === 'main_rcd' ||
     kind === 'voltage_relay' ||
     kind === 'spd' ||
-    kind === 'line_rcd'
+    kind === 'line_rcd' ||
+    kind === 'line_rcbo'
   ) {
     return 'protection';
   }
@@ -281,7 +283,7 @@ export function buildDinSheetLayout(
     title: 'Обозначения',
     entries: [
       { tone: 'input' as const, label: 'Ввод и учёт' },
-      { tone: 'protection' as const, label: 'УЗО, РКН, УЗИП' },
+      { tone: 'protection' as const, label: 'УЗО, дифавтоматы, РКН, УЗИП' },
       { tone: 'line' as const, label: 'Групповые автоматы' },
       { tone: 'free' as const, label: 'Свободные модули' },
     ],
@@ -324,8 +326,12 @@ export function buildDinSheetLayout(
     truncated,
   };
 
+  const capacity = normalizeBreakingCapacity(panel.breakingCapacityKa);
   const notes = [
     `Занято ${layout.modulesTotal} из ${layout.enclosureModules} модулей, свободно ${layout.freeModules}.`,
+    `Класс всех модульных аппаратов — ${breakingCapacityLabel(
+      capacity
+    )} по отключающей способности (Icn).`,
     'Обозначения соответствуют схеме ЭС-01, перечень — спецификации ЭС-03.',
     'Один модуль — 17,5 мм; на листе ширина модуля 18 мм, рейка — 216 мм.',
     `Зон раскладки: ${layout.zones.length}. Границы зон показаны цветом и подписями над рейками.`,

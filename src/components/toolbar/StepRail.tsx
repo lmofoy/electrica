@@ -17,12 +17,15 @@ import {
   ClipboardList,
   ListChecks,
   ShieldCheck,
+  SquareDashed,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import {
   DEVICE_CATALOG,
   DEVICE_CATALOG_TREE,
   deviceCatalogPath,
+  isMechanismType,
+  type DeviceCatalogLeaf,
   type DeviceCatalogSectionId,
 } from '../../core/electrical/devices';
 import {
@@ -58,6 +61,14 @@ const toolClass = (active: boolean, accent = false) =>
         ? 'text-sky-300 bg-sky-500/10 border-sky-500/20 hover:bg-sky-500/20'
         : 'text-slate-400 border-transparent hover:text-white hover:bg-slate-800'
   }`;
+
+function sectionLeaves(section: DeviceCatalogSectionId): DeviceCatalogLeaf[] {
+  return (
+    DEVICE_CATALOG_TREE.find((view) => view.section.id === section)?.subsections.flatMap(
+      (subsection) => subsection.leaves
+    ) ?? []
+  );
+}
 
 function computePopoverPlacement(anchorEl: HTMLElement, width: number, height: number) {
   const rect = anchorEl.getBoundingClientRect();
@@ -150,6 +161,10 @@ export const StepRail: React.FC = () => {
     activeRoomType,
     activeOpeningType,
     activeDeviceType,
+    activeFramePosts,
+    activeFrameMounting,
+    activeFrameSeatTypes,
+    activeFrameHeightMm,
     deviceShared,
     panel,
     boundaryMode,
@@ -159,6 +174,11 @@ export const StepRail: React.FC = () => {
     setActiveRoomType,
     setActiveOpeningType,
     setActiveDeviceType,
+    setActiveFramePosts,
+    setActiveFrameMounting,
+    setActiveFrameSeatType,
+    setActiveFrameHeight,
+    startFramePlacement,
     setDeviceShared,
     setPanelStep,
     setActiveStep,
@@ -178,7 +198,9 @@ export const StepRail: React.FC = () => {
   const [catalogMenu, setCatalogMenu] = useState<{
     section: DeviceCatalogSectionId;
     anchorEl: HTMLElement;
+    mode: 'catalog' | 'frame';
   } | null>(null);
+  const frameAnchorRef = useRef<HTMLButtonElement | null>(null);
   const [openingsMenu, setOpeningsMenu] = useState<{
     anchorEl: HTMLElement;
   } | null>(null);
@@ -216,22 +238,56 @@ export const StepRail: React.FC = () => {
     updateDevicePreferences((current) => toggleFavoriteDevice(type, current));
   };
 
+  const isMechanismSection = (section: DeviceCatalogSectionId) => {
+    const leaves = sectionLeaves(section);
+    return leaves.length > 0 && leaves.every((leaf) => isMechanismType(leaf.type));
+  };
+
+  const frameSeatSummary = activeFrameSeatTypes
+    .slice(0, activeFramePosts)
+    .map((type) =>
+      type ? DEVICE_CATALOG[type].shortLabel : 'заглушка'
+    )
+    .join(' · ');
+
+  const openFrameMenu = (anchorEl: HTMLElement, section?: DeviceCatalogSectionId) => {
+    const seatType = activeFrameSeatTypes.find((type) => type !== null) ?? null;
+    setCatalogMenu({
+      section:
+        section ?? (seatType ? DEVICE_CATALOG[seatType].section : 'sockets'),
+      anchorEl,
+      mode: 'frame',
+    });
+  };
+
   const toggleCatalogMenu = (section: DeviceCatalogSectionId) => {
     setCatalogMenu((current) => {
       if (current?.section === section) return null;
       const anchorEl = sectionAnchors.current[section];
-      return anchorEl ? { section, anchorEl } : null;
+      if (!anchorEl) return null;
+      return {
+        section,
+        anchorEl,
+        mode: isMechanismSection(section) ? 'frame' : 'catalog',
+      };
     });
   };
 
   const handleDeviceSectionClick = (section: DeviceCatalogSectionId) => {
+    // Механизмы (розетки/выключатели) ставятся только внутрь рамки,
+    // поэтому такие разделы открывают меню рамки.
+    if (isMechanismSection(section)) {
+      const anchorEl = sectionAnchors.current[section];
+      if (anchorEl) openFrameMenu(anchorEl, section);
+      return;
+    }
     const view = DEVICE_CATALOG_TREE.find(
       (candidate) => candidate.section.id === section
     );
     const leaves = view?.subsections.flatMap((subsection) => subsection.leaves) ?? [];
     if (leaves.length === 0) {
       const anchorEl = sectionAnchors.current[section];
-      if (anchorEl) setCatalogMenu({ section, anchorEl });
+      if (anchorEl) setCatalogMenu({ section, anchorEl, mode: 'catalog' });
       return;
     }
     const recent = devicePreferences.recentDeviceTypes.find((type) =>
@@ -244,6 +300,10 @@ export const StepRail: React.FC = () => {
     activeTool === 'place_device' ? DEVICE_CATALOG[activeDeviceType].section : null;
   const activeDevicePath =
     activeTool === 'place_device' ? deviceCatalogPath(activeDeviceType) : null;
+  const frameToolActive = activeTool === 'place_frame';
+  // Механизм стоит только в рамке: прямую постановку из панели не показываем.
+  const showActiveDeviceCard =
+    activeDevicePath !== null && !frameToolActive && !isMechanismType(activeDeviceType);
 
   const showCommonTools = activeStep === 'plan' || activeStep === 'lines';
 
@@ -433,54 +493,111 @@ export const StepRail: React.FC = () => {
               Электрика
             </div>
             <div className="flex flex-col gap-0.5">
-              {DEVICE_CATALOG_TREE.map(({ section, count }) => {
-                const isActive = activeSectionId === section.id;
-                return (
-                  <div
-                    key={section.id}
-                    ref={(element) => {
-                      sectionAnchors.current[section.id] = element;
+
+              {frameToolActive ? (
+                <div className="flex items-stretch rounded-lg border border-sky-400 bg-sky-500 text-white shadow">
+                  <button
+                    ref={frameAnchorRef}
+                    type="button"
+                    onClick={() => {
+                      if (frameAnchorRef.current) openFrameMenu(frameAnchorRef.current);
                     }}
-                    className={`flex items-stretch rounded-lg border transition ${
-                      isActive
-                        ? 'border-sky-400 bg-sky-500 text-white'
-                        : count === 0
-                          ? 'border-transparent text-slate-500'
-                          : 'border-transparent text-slate-400 hover:bg-slate-800 hover:text-white'
-                    }`}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded-l-lg px-2 py-1.5 text-left text-[11px] font-medium"
+                    title="Открыть меню подрозетника: места и механизмы"
                   >
-                    <button
-                      type="button"
-                      onClick={() => handleDeviceSectionClick(section.id)}
-                      className="flex flex-1 min-w-0 items-center gap-1.5 rounded-l-lg px-2 py-1.5 text-[11px] font-medium text-left"
-                      title={
-                        count === 0
-                          ? `${section.hint}. Раздел пока пуст — откройте каталог.`
-                          : `${section.hint}. Клик — последний элемент, стрелка — выбрать.`
-                      }
-                    >
-                      <DeviceSectionIcon section={section.id} size={13} />
-                      <span className="truncate">{section.label}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => toggleCatalogMenu(section.id)}
-                      className={`rounded-r-lg border-l px-1 transition ${
+                    <SquareDashed size={13} className="shrink-0" />
+                    <span className="truncate">Подрозетник</span>
+                    <span className="ml-auto shrink-0 rounded bg-white/20 px-1 font-mono text-[9px]">
+                      {activeFramePosts}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTool('select')}
+                    className="rounded-r-lg border-l border-white/20 px-1 text-white/70 hover:bg-white/10 hover:text-white"
+                    title="Выйти из режима подрозетника (Esc)"
+                    aria-label="Выйти из режима размещения подрозетника"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  ref={frameAnchorRef}
+                  type="button"
+                  onClick={() => {
+                    if (frameAnchorRef.current) openFrameMenu(frameAnchorRef.current);
+                  }}
+                  className={toolClass(false, true)}
+                  title="Подрозетник: места, механизмы и их параметры"
+                >
+                  <SquareDashed size={13} />
+                  Подрозетник
+                </button>
+              )}
+
+              {frameToolActive && (
+                <p className="px-1 text-[9px] leading-snug text-sky-300/80">
+                  {activeFrameMounting === 'flush' ? 'Скрытая' : 'Накладная'} ·{' '}
+                  {frameSeatSummary}. Клик по стене ставит блок целиком.
+                </p>
+              )}
+
+              {!frameToolActive &&
+                DEVICE_CATALOG_TREE.map(({ section }) => {
+                  const leaves = sectionLeaves(section.id);
+                  const mechanismOnly =
+                    leaves.length > 0 && leaves.every((leaf) => isMechanismType(leaf.type));
+                  // Розетки и выключатели живут внутри подрозетника:
+                  // отдельные разделы в панели не нужны.
+                  if (mechanismOnly) return null;
+                  const isActive = activeSectionId === section.id;
+                  return (
+                    <div
+                      key={section.id}
+                      ref={(element) => {
+                        sectionAnchors.current[section.id] = element;
+                      }}
+                      className={`flex items-stretch rounded-lg border transition ${
                         isActive
-                          ? 'border-white/20 hover:bg-white/10'
-                          : 'border-slate-800 hover:bg-slate-700'
+                          ? 'border-sky-400 bg-sky-500 text-white'
+                          : leaves.length === 0
+                            ? 'border-transparent text-slate-500'
+                            : 'border-transparent text-slate-400 hover:bg-slate-800 hover:text-white'
                       }`}
-                      title="Открыть каталог раздела"
-                      aria-label={`Открыть каталог: ${section.label}`}
                     >
-                      <span className="text-[9px]">▾</span>
-                    </button>
-                  </div>
-                );
-              })}
+                      <button
+                        type="button"
+                        onClick={() => handleDeviceSectionClick(section.id)}
+                        className="flex flex-1 min-w-0 items-center gap-1.5 rounded-l-lg px-2 py-1.5 text-[11px] font-medium text-left"
+                        title={
+                          leaves.length === 0
+                            ? `${section.hint}. Раздел пока пуст — откройте каталог.`
+                            : `${section.hint}. Клик — последний элемент, стрелка — выбрать.`
+                        }
+                      >
+                        <DeviceSectionIcon section={section.id} size={13} />
+                        <span className="truncate">{section.label}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleCatalogMenu(section.id)}
+                        className={`rounded-r-lg border-l px-1 transition ${
+                          isActive
+                            ? 'border-white/20 hover:bg-white/10'
+                            : 'border-slate-800 hover:bg-slate-700'
+                        }`}
+                        title="Открыть каталог раздела"
+                        aria-label={`Открыть каталог: ${section.label}`}
+                      >
+                        <span className="text-[9px]">▾</span>
+                      </button>
+                    </div>
+                  );
+                })}
             </div>
 
-            {activeDevicePath && (
+            {showActiveDeviceCard && (
               <div className="rounded-lg border border-sky-500/30 bg-sky-950/50 p-1.5 text-[10px] text-sky-100">
                 <div className="flex items-center gap-1">
                   <DeviceTypeIcon
@@ -606,14 +723,36 @@ export const StepRail: React.FC = () => {
 
       {catalogMenu && (
         <DeviceCatalogMenu
-          key={catalogMenu.section}
+          key={`${catalogMenu.mode}-${catalogMenu.section}`}
           anchorEl={catalogMenu.anchorEl}
           initialSection={catalogMenu.section}
-          activeDeviceType={activeDeviceType}
+          activeDeviceType={
+            catalogMenu.mode === 'frame'
+              ? activeFrameSeatTypes.find((type) => type !== null) ?? activeDeviceType
+              : activeDeviceType
+          }
           preferences={devicePreferences}
           onSelect={selectDeviceType}
           onToggleFavorite={toggleFavorite}
           onClose={() => setCatalogMenu(null)}
+          frameMode={
+            catalogMenu.mode === 'frame'
+              ? {
+                  posts: activeFramePosts,
+                  mounting: activeFrameMounting,
+                  seatTypes: activeFrameSeatTypes,
+                  heightMm: activeFrameHeightMm,
+                  onPostsChange: setActiveFramePosts,
+                  onMountingChange: setActiveFrameMounting,
+                  onSeatTypeChange: setActiveFrameSeatType,
+                  onHeightChange: setActiveFrameHeight,
+                  onPlace: () => {
+                    startFramePlacement();
+                    setCatalogMenu(null);
+                  },
+                }
+              : undefined
+          }
         />
       )}
     </>

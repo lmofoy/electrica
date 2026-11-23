@@ -352,15 +352,15 @@ try {
       panel({ lines: [line('a', 'sockets')] }),
       { cableLengthsMm: { a: 12000 } }
     );
-    assert.equal(calculation.notes.length, 10);
+    assert.equal(calculation.notes.length, 11);
     for (const note of calculation.notes) assert.ok(note.trim().length > 0);
     assert.match(calculation.notes[0], /230 В, 1 фаза/);
     assert.match(calculation.notes[0], /TN-S/);
     assert.match(calculation.notes[2], /Pр = Pу·Kс/);
     assert.match(calculation.notes[2], /ΔU/);
-    assert.match(calculation.notes[7], /3 %/);
-    assert.match(calculation.notes[7], /5 %/);
-    assert.match(calculation.notes[9], /ошибок 0/);
+    assert.match(calculation.notes[8], /3 %/);
+    assert.match(calculation.notes[8], /5 %/);
+    assert.match(calculation.notes[10], /ошибок 0/);
     assert.ok(
       calculation.references.some((reference) => reference.includes('ПУЭ-7, табл. 1.3.4'))
     );
@@ -481,7 +481,7 @@ try {
     assert.equal(layout.title, 'Расчёт нагрузок групповых линий и ввода');
     assert.match(layout.subtitle, /ЩР-1/);
     assert.match(layout.subtitle, /230 В, 1 фаза/);
-    assert.equal(layout.notesLines.length, 10);
+    assert.equal(layout.notesLines.length, 11);
   });
 
   await test('sheet: 40 lines stay compact and separated', () => {

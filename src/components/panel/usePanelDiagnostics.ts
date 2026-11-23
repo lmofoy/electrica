@@ -63,6 +63,7 @@ export function usePanelDiagnostics() {
     walls,
     openings,
     freePartitions,
+    frames,
     settings,
     boundaryMode,
   } = useProjectStore();
@@ -133,9 +134,10 @@ export function usePanelDiagnostics() {
             rooms,
             cableLengthsMm,
             findings: schematic?.findings,
+            frames,
           })
         : null,
-    [panel, rooms, cableLengthsMm, schematic]
+    [panel, rooms, cableLengthsMm, schematic, frames]
   );
 
   const checks = useMemo<PanelCheckItem[]>(() => {
@@ -276,6 +278,7 @@ export function usePanelDiagnostics() {
     schematic,
     calculation,
     specification,
+    frames,
     lineChecks,
     checks,
     checksByStep,

@@ -436,6 +436,38 @@ const PlanGraphics: React.FC<{ layout: PlanSheetLayout }> = ({ layout }) => (
       );
     })}
 
+    {/* Платы монтажных рамок и свободные места — под символами механизмов */}
+    {layout.frames.map((frame) => (
+      <g
+        key={`frame-${frame.id}`}
+        transform={`translate(${frame.x} ${frame.y}) rotate(${frame.rotationDeg})`}
+      >
+        <rect
+          x={-frame.width / 2}
+          y={-frame.depth / 2}
+          width={frame.width}
+          height={frame.depth}
+          rx={1.2}
+          fill="#f1f5f9"
+          stroke={MUTED}
+          strokeWidth={STROKE}
+          strokeDasharray={frame.mounting === 'surface' ? '1.2 0.8' : undefined}
+        />
+      </g>
+    ))}
+    {layout.frameSeats.map((seat) => (
+      <circle
+        key={`seat-${seat.frameId}-${seat.seatIndex}`}
+        cx={seat.x}
+        cy={seat.y}
+        r={seat.radius}
+        fill="none"
+        stroke={MUTED}
+        strokeWidth={STROKE}
+        strokeDasharray="0.8 0.6"
+      />
+    ))}
+
     {/* Трассы групповых линий */}
     {layout.routes.map((route, index) => (
       <g key={`route-${index}`}>

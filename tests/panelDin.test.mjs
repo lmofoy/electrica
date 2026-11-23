@@ -304,6 +304,37 @@ try {
     assert.ok(manual.notesLines.some((note) => note.includes('Порядок аппаратов ручной')));
   });
 
+  await test('din: combined line prints one 2-module QF without a separate RCD', () => {
+    const source = panel({
+      lines: [
+        line('a', 'sockets', { combinedProtection: true }),
+        line('b', 'sockets'),
+      ],
+    });
+    const layout = buildPanelLayout(source);
+    const rcbo = layout.items.find((item) => item.kind === 'line_rcbo');
+    assert.ok(rcbo, 'combined line must produce a single RCBO item');
+    assert.equal(rcbo.modules, 2);
+    assert.equal(rcbo.lineId, 'a');
+    assert.match(rcbo.label, /30 мА/);
+    assert.equal(layout.items.filter((item) => item.lineId === 'a').length, 1);
+
+    const sheet = buildDinSheetLayout(source);
+    const designations = sheet.rails.flatMap((rail) =>
+      rail.items.map((item) => item.designation)
+    );
+    assert.ok(designations.includes('QF2'));
+    assert.ok(designations.includes('QF3'));
+    assert.ok(designations.includes('QD2'), 'plain line keeps its own QD2');
+    const aItems = sheet.rails
+      .flatMap((rail) => rail.items)
+      .filter((item) => item.id.startsWith('a-'));
+    assert.equal(aItems.length, 1, 'combined line gets no separate RCD slot');
+    assert.ok(
+      sheet.notesLines.some((note) => note.includes('Класс всех модульных аппаратов — 6 кА'))
+    );
+  });
+
   await test('din: legend and summary boxes stay inside the frame', () => {
     const sheet = buildDinSheetLayout(panel({ lines: [line('a', 'sockets')] }));
     for (const rect of [sheet.legend.rect, sheet.summary.rect, sheet.enclosureRect]) {

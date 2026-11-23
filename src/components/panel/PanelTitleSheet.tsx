@@ -14,6 +14,7 @@ interface PanelTitleSheetProps {
   specification: PanelSpecification;
   rooms: RoomZone[];
   deviceCount: number;
+  frameCount?: number;
   planSheetCounts?: Record<PlanSheetKind, number>;
   onClose: () => void;
 }
@@ -135,6 +136,7 @@ export const PanelTitleSheet: React.FC<PanelTitleSheetProps> = ({
   specification,
   rooms,
   deviceCount,
+  frameCount,
   planSheetCounts,
   onClose,
 }) => {
@@ -145,9 +147,10 @@ export const PanelTitleSheet: React.FC<PanelTitleSheetProps> = ({
         specification,
         rooms,
         deviceCount,
+        frameCount,
         planSheetCounts,
       }),
-    [schematic, specification, rooms, deviceCount, planSheetCounts]
+    [schematic, specification, rooms, deviceCount, frameCount, planSheetCounts]
   );
 
   const { header } = layout;

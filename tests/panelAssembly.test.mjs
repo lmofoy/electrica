@@ -262,6 +262,25 @@ try {
     assert.ok(state().toasts.at(-1)?.message.includes('Своя защита'));
   });
 
+  await test('combined protection keeps one rating and drops without an RCD', () => {
+    fixture({ strategy: 'custom' });
+    const line = () => state().panel.lines.find((candidate) => candidate.id === 'line-a');
+    const light = () => state().panel.lines.find((candidate) => candidate.id === 'line-b');
+
+    state().updatePanelLine('line-a', { combinedProtection: true });
+    assert.equal(line().combinedProtection, true);
+    assert.equal(line().rcd.ratingA, line().breaker.ratingA);
+
+    state().updatePanelLine('line-a', { breaker: makeBreaker(20, 'C') });
+    assert.equal(line().rcd.ratingA, 20, 'RCD follows the breaker rating');
+
+    state().updatePanelLine('line-a', { rcd: null });
+    assert.equal(line().combinedProtection, undefined, 'no RCD — no RCBO');
+
+    state().updatePanelLine('line-b', { combinedProtection: true });
+    assert.equal(light().combinedProtection, undefined);
+  });
+
   await test('load, cable and purpose edits keep the active strategy', () => {
     fixture({ strategy: 'optimal' });
     state().updatePanelLine('line-a', { loadW: 3000 });

@@ -72,7 +72,8 @@ export type CADTool =
   | 'draw_room'      // очерчивание комнат внутри квартиры
   | 'draw_opening'   // установка дверей и окон
   | 'draw_partition' // рисование одиночных перегородок
-  | 'place_device'   // расстановка электроточек
+  | 'place_device'   // расстановка светильников
+  | 'place_frame'    // размещение рамок с механизмами
   | 'place_panel';   // размещение электрощитка
 
 // Режим работы: архитектура (оболочка) или электрика (наполнение)
@@ -84,6 +85,7 @@ export type Selection =
   | { kind: 'opening'; id: string }
   | { kind: 'partition'; id: string }
   | { kind: 'device'; id: string }
+  | { kind: 'frame'; id: string }
   | { kind: 'panel'; id: string };
 
 export type OpeningType = 'door' | 'window';
@@ -123,6 +125,7 @@ export interface ProjectSnapshot {
   openings: Opening[];
   freePartitions: FreePartition[];
   devices?: ElectricalDevice[]; // отсутствует в проектах до этапа «Электрика»
+  frames?: MountingFrame[]; // отсутствует в проектах до появления рамок
   panel?: ElectricalPanel | null; // отсутствует в проектах до этапа «Щиток»
 }
 
@@ -236,6 +239,27 @@ export interface ElectricalDevice {
   shared: boolean; // сквозное устройство: принадлежит двум смежным комнатам
   note?: string; // заметка для печатного плана, с выноской у прибора
   circuitId?: string;
+  // Механизм (розетка, выключатель и т. п.) всегда стоит в рамке:
+  // frameId — рамка, seatIndex — место 0…posts-1.
+  frameId?: string;
+  seatIndex?: number;
+}
+
+// Рамка — только монтажная часть: своих линий и нагрузки не имеет.
+// Каждый механизм в ней остаётся отдельным прибором со своей линией.
+export type FramePosts = 1 | 2 | 3 | 4;
+
+export type FrameAnchor = DeviceRoomEdgeAnchor | DevicePartitionAnchor;
+
+// Встроенная рамка утоплена в стену, накладная стоит поверх отделочного слоя.
+export type FrameMounting = 'flush' | 'surface';
+
+export interface MountingFrame {
+  id: string;
+  anchor: FrameAnchor;
+  heightFromFloorMm: number;
+  posts: FramePosts;
+  mounting: FrameMounting;
 }
 
 // Шаги работы над проектом: один вход на функцию, план всегда на экране.
@@ -290,6 +314,9 @@ export interface RcdSpec {
   selective?: boolean; // тип S: выдержка по времени для селективности
 }
 
+// Класс аппаратов по отключающей способности (Icn, ГОСТ IEC 60898-1).
+export type BreakingCapacityKa = 4.5 | 6 | 10;
+
 export type ManualRouteAnchorKind = 'panel' | 'device' | 'junction';
 
 export interface ManualRouteAnchor {
@@ -331,6 +358,10 @@ export interface CircuitLine {
   cable: CableSpec;
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
+  // Дифавтомат (АВДТ): автомат и УЗО печатаются как один аппарат.
+  // Параметры обеих частей остаются в breaker и rcd; флаг меняет только
+  // документы и DIN-раскладку. Не задан — отдельные аппараты.
+  combinedProtection?: boolean;
   routing?: LineRouting; // способ прокладки; не задан — берётся defaultRouting проекта
   // 'none' — трассу строят только вручную: автотрасса не считается, пока её не проложат.
   // Не задан или 'auto' — прежнее поведение (автотрасса, ручная заменяет её).
@@ -377,6 +408,9 @@ export interface ElectricalPanel {
   supply: PanelSupply;
   strategy: PanelStrategy;
   lines: CircuitLine[];
+  // Класс всех модульных аппаратов щита по отключающей способности.
+  // Не задан — 6 кА. УЗО не имеет этого параметра.
+  breakingCapacityKa?: BreakingCapacityKa;
   dinOrder?: string[]; // ручной порядок аппаратов на DIN-рейках (id из PanelLayoutItem)
   // Не задан — по одному листу на вид со всеми группами (старые проекты).
   planSheets?: PlanSheetSpec[];

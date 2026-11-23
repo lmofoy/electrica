@@ -39,6 +39,10 @@ import type {
   ProjectStep,
   PanelStep,
   PlanSheetSpec,
+  FrameAnchor,
+  FrameMounting,
+  FramePosts,
+  MountingFrame,
 } from '../types';
 import {
   calculateRoomsOverlapAreaM2,
@@ -56,10 +60,16 @@ import {
 } from '../core/geometry/autoLayout';
 import {
   DEVICE_CATALOG,
+  isMechanismType,
   normalizeDeviceNote,
   resolveDevice,
-  sanitizeDevices,
 } from '../core/electrical/devices';
+import {
+  clampFrameOffset,
+  frameSeatAnchor,
+  resolveFramePose,
+  sanitizeElectrical,
+} from '../core/electrical/frames';
 import {
   applyStrategy,
   createEmptyPanel,
@@ -126,6 +136,20 @@ function withDinOrder(
   return next;
 }
 
+// Рамка жила на удаляемой стене/перегородке — убираем её и механизмы в ней.
+function framesAfterHostRemoval(
+  frames: MountingFrame[],
+  devices: ElectricalDevice[],
+  isAlive: (frame: MountingFrame) => boolean
+): { frames: MountingFrame[]; devices: ElectricalDevice[] } {
+  const removed = new Set(frames.filter((frame) => !isAlive(frame)).map((frame) => frame.id));
+  if (removed.size === 0) return { frames, devices };
+  return {
+    frames: frames.filter((frame) => !removed.has(frame.id)),
+    devices: devices.filter((device) => !device.frameId || !removed.has(device.frameId)),
+  };
+}
+
 // 100 мм²: отсекаем погрешность вычислений, но ловим реальное наложение
 const ROOM_OVERLAP_TOLERANCE_M2 = 0.0001;
 
@@ -136,6 +160,7 @@ interface ProjectState {
   openings: Opening[];
   freePartitions: FreePartition[];
   devices: ElectricalDevice[];
+  frames: MountingFrame[];
   panel: ElectricalPanel | null;
   apartment: ApartmentBoundary | null;
   rooms: RoomZone[];
@@ -159,6 +184,12 @@ interface ProjectState {
   designMode: DesignMode;
   activeDeviceType: DeviceType;
   deviceShared: boolean;
+  activeFramePosts: FramePosts;
+  // Конфигурация нового блока: монтаж, состав мест и одна высота на весь блок.
+  // Пустое место (null) закрывается заглушкой и не создаёт прибор.
+  activeFrameMounting: FrameMounting;
+  activeFrameSeatTypes: (DeviceType | null)[];
+  activeFrameHeightMm: number;
 
   // Холст и навигация
   activeTool: CADTool;
@@ -230,6 +261,19 @@ interface ProjectState {
   addDevice: (type: DeviceType, anchor: DeviceAnchor, shared: boolean) => void;
   setDeviceNote: (id: string, note: string) => void;
   deleteDevice: (id: string) => void;
+
+  // Рамки и места механизмов
+  setActiveFramePosts: (posts: FramePosts) => void;
+  setActiveFrameMounting: (mounting: FrameMounting) => void;
+  setActiveFrameSeatType: (seatIndex: number, type: DeviceType | null) => void;
+  setActiveFrameHeight: (heightMm: number) => void;
+  startFramePlacement: () => void;
+  addFrame: (anchor: FrameAnchor) => string | null;
+  setFramePosts: (id: string, posts: FramePosts) => void;
+  setFrameMounting: (id: string, mounting: FrameMounting) => void;
+  setFrameHeight: (id: string, heightMm: number) => void;
+  setFrameSeatType: (id: string, seatIndex: number, type: DeviceType | null) => void;
+  deleteFrame: (id: string) => void;
 
   // Щиток
   setActiveStep: (step: ProjectStep) => void;
@@ -345,6 +389,20 @@ const DEFAULT_SNAP: SnapResult = {
   guideLines: [],
 };
 
+// Состав мест нового блока: по умолчанию одно пустое место (заглушка).
+function seatTypesForPosts(posts: FramePosts): (DeviceType | null)[] {
+  return Array.from({ length: posts }, () => null);
+}
+
+const DEFAULT_FRAME_HEIGHT_MM = 300;
+
+const DEFAULT_FRAME_BLOCK = {
+  activeFramePosts: 1 as FramePosts,
+  activeFrameMounting: 'flush' as FrameMounting,
+  activeFrameSeatTypes: seatTypesForPosts(1),
+  activeFrameHeightMm: DEFAULT_FRAME_HEIGHT_MM,
+};
+
 const ROOM_TYPE_NAMES: Record<RoomType, string> = {
   living: 'Гостиная',
   bedroom: 'Спальня',
@@ -408,6 +466,7 @@ export const useProjectStore = create<ProjectState>()(
       openings: [],
       freePartitions: [],
       devices: [],
+      frames: [],
       panel: null,
       apartment: null,
       rooms: [],
@@ -425,6 +484,7 @@ export const useProjectStore = create<ProjectState>()(
       designMode: 'architecture',
       activeDeviceType: 'socket_single',
       deviceShared: false,
+      ...DEFAULT_FRAME_BLOCK,
 
       activeTool: 'select',
       activeRoomType: 'living',
@@ -485,7 +545,7 @@ export const useProjectStore = create<ProjectState>()(
         // Режим холста следует за инструментом: планировка — проёмы и стены,
         // электрика — приборы и щиток. «Выбор» и «Рука» не меняют режим.
         const toolMode =
-          tool === 'place_device' || tool === 'place_panel'
+          tool === 'place_device' || tool === 'place_frame' || tool === 'place_panel'
             ? ('electrical' as const)
             : tool === 'draw_room' ||
                 tool === 'draw_apartment' ||
@@ -1253,9 +1313,24 @@ export const useProjectStore = create<ProjectState>()(
         const remainingOpenings = state.openings.filter(
           (opening) => !doomedOpeningIds.has(opening.id)
         );
-        const remainingDevices = state.devices.filter(
+        const baseRemainingDevices = state.devices.filter(
           (device) => !doomedDeviceIds.has(device.id)
         );
+        // Рамки на стенах удаляемой комнаты и на её перегородках уходят вместе с механизмами.
+        const cascade = framesAfterHostRemoval(
+          state.frames,
+          baseRemainingDevices,
+          (frame) => {
+            const anchor = frame.anchor;
+            return anchor.kind === 'partition'
+              ? remainingPartitions.some((partition) => partition.id === anchor.partitionId)
+              : anchor.roomId !== id;
+          }
+        );
+        const remainingDevices = cascade.devices;
+        const remainingFrames = cascade.frames;
+        const remainingDeviceIds = new Set(remainingDevices.map((device) => device.id));
+        const remainingFrameIds = new Set(remainingFrames.map((frame) => frame.id));
         const selection = state.selection;
         const selectionRemoved =
           selection !== null &&
@@ -1263,7 +1338,8 @@ export const useProjectStore = create<ProjectState>()(
             (selection.kind === 'opening' && doomedOpeningIds.has(selection.id)) ||
             (selection.kind === 'partition' &&
               elements.partitions.some((partition) => partition.id === selection.id)) ||
-            (selection.kind === 'device' && doomedDeviceIds.has(selection.id)));
+            (selection.kind === 'device' && !remainingDeviceIds.has(selection.id)) ||
+            (selection.kind === 'frame' && !remainingFrameIds.has(selection.id)));
 
         if (state.boundaryMode === 'auto') {
           const remainingRooms = state.rooms.filter((candidate) => candidate.id !== id);
@@ -1284,6 +1360,7 @@ export const useProjectStore = create<ProjectState>()(
               freePartitions: [],
               openings: [],
               devices: [],
+              frames: [],
               panel: null,
               apartment: null,
               nodes: {},
@@ -1314,6 +1391,7 @@ export const useProjectStore = create<ProjectState>()(
           set({
             ...next.state,
             devices: remainingDevices,
+            frames: remainingFrames,
             panel: nextPanel,
             activeStep: nextPanel ? state.activeStep : 'plan',
             highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
@@ -1353,6 +1431,7 @@ export const useProjectStore = create<ProjectState>()(
           freePartitions: remainingPartitions,
           openings: remainingOpenings,
           devices: remainingDevices,
+          frames: remainingFrames,
           panel: nextPanel,
           activeStep: nextPanel ? state.activeStep : 'plan',
           highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
@@ -1398,11 +1477,22 @@ export const useProjectStore = create<ProjectState>()(
         const remainingDevices = state.devices.filter(
           (device) => !doomedDeviceIds.has(device.id)
         );
+        const cascade = framesAfterHostRemoval(
+          state.frames,
+          remainingDevices,
+          (frame) =>
+            frame.anchor.kind !== 'partition' || frame.anchor.partitionId !== id
+        );
+        const frames = cascade.frames;
+        const devices = cascade.devices;
+        const remainingDeviceIds = new Set(devices.map((device) => device.id));
+        const remainingFrameIds = new Set(frames.map((frame) => frame.id));
         const selection = state.selection;
         const selectionRemoved =
           selection !== null &&
           ((selection.kind === 'partition' && selection.id === id) ||
-            (selection.kind === 'device' && doomedDeviceIds.has(selection.id)));
+            (selection.kind === 'device' && !remainingDeviceIds.has(selection.id)) ||
+            (selection.kind === 'frame' && !remainingFrameIds.has(selection.id)));
 
         if (state.boundaryMode === 'auto') {
           const next = computeAutoProjectState(
@@ -1413,12 +1503,13 @@ export const useProjectStore = create<ProjectState>()(
           );
           const nextPanel = prunePanelRefs(
             sanitizePanel(state.panel, state.rooms, remainingPartitions, thickness),
-            remainingDevices.map((device) => device.id),
+            devices.map((device) => device.id),
             state.rooms.map((room) => room.id)
           );
           set({
             ...next.state,
-            devices: remainingDevices,
+            devices,
+            frames,
             panel: nextPanel,
             activeStep: nextPanel ? state.activeStep : 'plan',
             highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
@@ -1430,12 +1521,13 @@ export const useProjectStore = create<ProjectState>()(
         } else {
           const nextPanel = prunePanelRefs(
             sanitizePanel(state.panel, state.rooms, remainingPartitions, thickness),
-            remainingDevices.map((device) => device.id),
+            devices.map((device) => device.id),
             state.rooms.map((room) => room.id)
           );
           set({
             freePartitions: remainingPartitions,
-            devices: remainingDevices,
+            devices,
+            frames,
             panel: nextPanel,
             activeStep: nextPanel ? state.activeStep : 'plan',
             highlightedLineId: keepLineHighlight(nextPanel, state.highlightedLineId),
@@ -1473,6 +1565,30 @@ export const useProjectStore = create<ProjectState>()(
             'Не удалось привязать прибор к комнате. Проверьте план.',
             'error'
           );
+          return;
+        }
+
+        // Механизмы не существуют вне рамки: одиночный прибор получает рамку на 1 место.
+        if (isMechanismType(type) && anchor.kind !== 'room_point') {
+          const frame: MountingFrame = {
+            id: makeEntityId('frame'),
+            anchor,
+            heightFromFloorMm: catalog.defaultHeightMm,
+            posts: 1,
+            mounting: 'flush',
+          };
+          set({
+            frames: [...state.frames, frame],
+            devices: [
+              ...state.devices,
+              {
+                ...candidate,
+                shared: resolved.isShared,
+                frameId: frame.id,
+                seatIndex: 0,
+              },
+            ],
+          });
           return;
         }
 
@@ -1518,6 +1634,324 @@ export const useProjectStore = create<ProjectState>()(
               : state.selection,
         });
         state.addToast('Прибор удалён.', 'success');
+      },
+
+      // ---------------------------------------------------------
+      // Рамки: монтажная часть без своих линий и нагрузки
+      // ---------------------------------------------------------
+      setActiveFramePosts: (posts) => {
+        const state = get();
+        if (state.activeFramePosts === posts) return;
+        set({
+          activeFramePosts: posts,
+          activeFrameSeatTypes: Array.from(
+            { length: posts },
+            (_, seat) => state.activeFrameSeatTypes[seat] ?? null
+          ),
+        });
+      },
+
+      setActiveFrameMounting: (mounting) => set({ activeFrameMounting: mounting }),
+
+      setActiveFrameSeatType: (seatIndex, type) => {
+        const state = get();
+        if (
+          !Number.isSafeInteger(seatIndex) ||
+          seatIndex < 0 ||
+          seatIndex >= state.activeFramePosts
+        ) {
+          return;
+        }
+        if (type !== null && !isMechanismType(type)) return;
+        if (state.activeFrameSeatTypes[seatIndex] === type) return;
+        const wasEmpty = state.activeFrameSeatTypes.every((seat) => seat === null);
+        const seatTypes = state.activeFrameSeatTypes.map((seat, index) =>
+          index === seatIndex ? type : seat
+        );
+        // Первый выбранный механизм задаёт высоту всего блока; дальше её
+        // можно поправить одним полем на все места.
+        const height =
+          wasEmpty && type
+            ? DEVICE_CATALOG[type].defaultHeightMm
+            : state.activeFrameHeightMm;
+        set({
+          activeFrameSeatTypes: seatTypes,
+          activeFrameHeightMm: height,
+        });
+      },
+
+      setActiveFrameHeight: (heightMm) => {
+        const state = get();
+        if (!Number.isFinite(heightMm)) return;
+        set({
+          activeFrameHeightMm: Math.max(
+            0,
+            Math.min(state.settings.ceilingHeightMm, Math.round(heightMm))
+          ),
+        });
+      },
+
+      startFramePlacement: () => {
+        get().setActiveTool('place_frame');
+      },
+
+      addFrame: (anchor) => {
+        const state = get();
+        const frame: MountingFrame = {
+          id: makeEntityId('frame'),
+          anchor,
+          heightFromFloorMm: state.activeFrameHeightMm,
+          posts: state.activeFramePosts,
+          mounting: state.activeFrameMounting,
+        };
+        const pose = resolveFramePose(
+          frame,
+          state.rooms,
+          state.freePartitions,
+          state.settings.defaultWallThicknessMm
+        );
+        if (!pose) {
+          state.addToast('Не удалось привязать подрозетник к стене. Проверьте план.', 'error');
+          return null;
+        }
+        // Блок ставится целиком: рамка и все механизмы в один шаг undo.
+        // Пустые места остаются заглушками и приборов не создают.
+        const created: ElectricalDevice[] = [];
+        for (let seat = 0; seat < frame.posts; seat += 1) {
+          const type = state.activeFrameSeatTypes[seat];
+          if (!type || !isMechanismType(type)) continue;
+          const catalog = DEVICE_CATALOG[type];
+          const sameTypeCount = [...state.devices, ...created].filter(
+            (device) => device.type === type
+          ).length;
+          const candidate: ElectricalDevice = {
+            id: makeEntityId('device'),
+            type,
+            name: `${catalog.label} ${sameTypeCount + 1}`,
+            anchor: frameSeatAnchor(frame, seat),
+            heightFromFloorMm: frame.heightFromFloorMm,
+            powerWatts: catalog.defaultPowerWatts,
+            shared: false,
+            frameId: frame.id,
+            seatIndex: seat,
+          };
+          const resolved = resolveDevice(
+            candidate,
+            state.rooms,
+            state.freePartitions,
+            state.settings.defaultWallThicknessMm
+          );
+          if (resolved) created.push({ ...candidate, shared: resolved.isShared });
+        }
+        set({
+          frames: [...state.frames, frame],
+          devices: [...state.devices, ...created],
+          selection: { kind: 'frame', id: frame.id },
+        });
+        return frame.id;
+      },
+
+      setFrameMounting: (id, mounting) => {
+        const state = get();
+        const frame = state.frames.find((candidate) => candidate.id === id);
+        if (!frame || frame.mounting === mounting) return;
+        set({
+          frames: state.frames.map((candidate) =>
+            candidate.id === id ? { ...candidate, mounting } : candidate
+          ),
+        });
+      },
+
+      setFramePosts: (id, posts) => {
+        const state = get();
+        const frame = state.frames.find((candidate) => candidate.id === id);
+        if (!frame || frame.posts === posts) return;
+        const maxSeat = state.devices
+          .filter((device) => device.frameId === id)
+          .reduce((max, device) => Math.max(max, device.seatIndex ?? -1), -1);
+        if (maxSeat >= posts) {
+          state.addToast(
+            'Сначала освободите места, которые исчезнут при уменьшении подрозетника.',
+            'error'
+          );
+          return;
+        }
+        const nextFrame: MountingFrame = {
+          ...frame,
+          posts,
+          // Плата другого размера не должна свисать с края стены:
+          // центр сдвигается до ближайшего допустимого положения.
+          anchor: {
+            ...frame.anchor,
+            offsetMm: clampFrameOffset(
+              frame.anchor,
+              posts,
+              state.rooms,
+              state.freePartitions
+            ),
+          },
+        };
+        const devices = state.devices.map((device) => {
+          if (device.frameId !== id || !Number.isSafeInteger(device.seatIndex)) return device;
+          const anchor = frameSeatAnchor(nextFrame, device.seatIndex as number);
+          const candidate = { ...device, anchor };
+          const resolved = resolveDevice(
+            candidate,
+            state.rooms,
+            state.freePartitions,
+            state.settings.defaultWallThicknessMm
+          );
+          return resolved ? { ...candidate, shared: resolved.isShared } : candidate;
+        });
+        set({
+          frames: state.frames.map((candidate) =>
+            candidate.id === id ? nextFrame : candidate
+          ),
+          devices,
+        });
+      },
+
+      setFrameHeight: (id, heightMm) => {
+        const state = get();
+        const frame = state.frames.find((candidate) => candidate.id === id);
+        if (!frame || !Number.isFinite(heightMm)) return;
+        const height = Math.max(
+          0,
+          Math.min(
+            state.settings.ceilingHeightMm,
+            Math.round(heightMm)
+          )
+        );
+        if (height === frame.heightFromFloorMm) return;
+        set({
+          frames: state.frames.map((candidate) =>
+            candidate.id === id ? { ...candidate, heightFromFloorMm: height } : candidate
+          ),
+          devices: state.devices.map((device) =>
+            device.frameId === id ? { ...device, heightFromFloorMm: height } : device
+          ),
+        });
+      },
+
+      setFrameSeatType: (id, seatIndex, type) => {
+        const state = get();
+        const frame = state.frames.find((candidate) => candidate.id === id);
+        if (!frame || !Number.isSafeInteger(seatIndex) || seatIndex < 0 || seatIndex >= frame.posts) {
+          return;
+        }
+        const existingIndex = state.devices.findIndex(
+          (device) => device.frameId === id && device.seatIndex === seatIndex
+        );
+        const existing = existingIndex >= 0 ? state.devices[existingIndex] : null;
+
+        if (type === null) {
+          if (!existing) return;
+          const devices = state.devices.filter((device) => device.id !== existing.id);
+          set({
+            devices,
+            panel: prunePanelRefs(
+              state.panel,
+              devices.map((device) => device.id),
+              state.rooms.map((room) => room.id)
+            ),
+            selection:
+              state.selection?.kind === 'device' && state.selection.id === existing.id
+                ? { kind: 'frame', id }
+                : state.selection,
+          });
+          return;
+        }
+
+        if (!isMechanismType(type) || existing?.type === type) return;
+
+        const catalog = DEVICE_CATALOG[type];
+        const thickness = state.settings.defaultWallThicknessMm;
+        const sameTypeCount = state.devices.filter(
+          (device) => device.type === type && device.id !== existing?.id
+        ).length;
+        const occupiedElsewhere = state.devices.some(
+          (device) => device.frameId === id && device.seatIndex !== seatIndex
+        );
+        const height = occupiedElsewhere ? frame.heightFromFloorMm : catalog.defaultHeightMm;
+        const candidate: ElectricalDevice = {
+          id: existing?.id ?? makeEntityId('device'),
+          type,
+          name: `${catalog.label} ${sameTypeCount + 1}`,
+          anchor: frameSeatAnchor(frame, seatIndex),
+          heightFromFloorMm: height,
+          powerWatts: catalog.defaultPowerWatts,
+          shared: existing?.shared ?? false,
+          frameId: id,
+          seatIndex,
+        };
+        const resolved = resolveDevice(candidate, state.rooms, state.freePartitions, thickness);
+        if (!resolved) {
+          state.addToast('Не удалось разместить механизм в подрозетнике. Проверьте план.', 'error');
+          return;
+        }
+        const device: ElectricalDevice = { ...candidate, shared: resolved.isShared };
+        const rawDevices =
+          existingIndex >= 0
+            ? state.devices.map((item, index) => (index === existingIndex ? device : item))
+            : [...state.devices, device];
+        const heightChanged = height !== frame.heightFromFloorMm;
+        const devices = heightChanged
+          ? rawDevices.map((item) =>
+              item.frameId === id ? { ...item, heightFromFloorMm: height } : item
+            )
+          : rawDevices;
+        let panel = state.panel;
+        if (panel && existing) {
+          const line = panel.lines.find((item) => item.deviceIds.includes(existing.id));
+          if (line) {
+            const ctx = {
+              devices,
+              rooms: state.rooms,
+              partitions: state.freePartitions,
+            };
+            panel = unassignDevices(panel, [existing.id], ctx);
+            if (DEVICE_CATALOG[existing.type].group === catalog.group) {
+              panel = assignDevices(panel, line.id, [device.id], ctx);
+            }
+          }
+        }
+        set({
+          devices,
+          panel,
+          frames: heightChanged
+            ? state.frames.map((item) =>
+                item.id === id ? { ...item, heightFromFloorMm: height } : item
+              )
+            : state.frames,
+        });
+      },
+
+      deleteFrame: (id) => {
+        const state = get();
+        const frame = state.frames.find((candidate) => candidate.id === id);
+        if (!frame) return;
+        const doomedDeviceIds = new Set(
+          state.devices
+            .filter((device) => device.frameId === id)
+            .map((device) => device.id)
+        );
+        const devices = state.devices.filter((device) => !doomedDeviceIds.has(device.id));
+        const selection = state.selection;
+        set({
+          frames: state.frames.filter((candidate) => candidate.id !== id),
+          devices,
+          panel: prunePanelRefs(
+            state.panel,
+            devices.map((device) => device.id),
+            state.rooms.map((room) => room.id)
+          ),
+          selection:
+            (selection?.kind === 'frame' && selection.id === id) ||
+            (selection?.kind === 'device' && doomedDeviceIds.has(selection.id))
+              ? null
+              : selection,
+        });
+        state.addToast('Подрозетник удалён.', 'success');
       },
 
       // ---------------------------------------------------------
@@ -1665,15 +2099,26 @@ export const useProjectStore = create<ProjectState>()(
         if (!state.panel) return;
         const lines = state.panel.lines.map((line) => {
           if (line.id !== id) return line;
-          const merged = { ...line, ...updates, id: line.id };
+          let merged = { ...line, ...updates, id: line.id };
           // Смена назначения задаёт пресет защиты; кабель остаётся выбранным.
           if (updates.purpose !== undefined) {
-            return applyPresetProtection(merged);
+            merged = applyPresetProtection(merged);
+          }
+          // У дифавтомата один номинал: УЗО повторяет автомат. Без части
+          // утечки аппарат снова становится обычным автоматом.
+          if (merged.combinedProtection) {
+            if (merged.rcd) {
+              merged.rcd = { ...merged.rcd, ratingA: merged.breaker.ratingA };
+            } else {
+              merged.combinedProtection = undefined;
+            }
           }
           return merged;
         });
         const manualProtection =
-          updates.breaker !== undefined || updates.rcd !== undefined;
+          updates.breaker !== undefined ||
+          updates.rcd !== undefined ||
+          updates.combinedProtection !== undefined;
         const strategy =
           manualProtection && state.panel.strategy !== 'custom'
             ? ('custom' as const)
@@ -2171,6 +2616,7 @@ export const useProjectStore = create<ProjectState>()(
           openings: [],
           freePartitions: [],
           devices: [],
+          frames: [],
           panel: null,
           apartment: null,
           rooms: [],
@@ -2187,6 +2633,7 @@ export const useProjectStore = create<ProjectState>()(
           designMode: 'architecture',
           activeDeviceType: 'socket_single',
           deviceShared: false,
+          ...DEFAULT_FRAME_BLOCK,
           boundaryMode: 'auto',
           drawingStage: 'rooms',
           boundaryLocked: false,
@@ -2215,12 +2662,14 @@ export const useProjectStore = create<ProjectState>()(
             settings.defaultWallThicknessMm
           );
 
-          const devices = sanitizeDevices(
+          const electrical = sanitizeElectrical(
             storedDevices,
+            snapshot.frames ?? [],
             next.state.rooms,
             next.state.freePartitions,
             settings.defaultWallThicknessMm
           );
+          const { devices, frames } = electrical;
           const sanitizedPanel = prunePanelRefs(
             sanitizePanel(
               snapshot.panel ?? null,
@@ -2240,6 +2689,7 @@ export const useProjectStore = create<ProjectState>()(
             boundaryMode: 'auto',
             ...next.state,
             devices,
+            frames,
             panel,
             selection: null,
             activeStep: 'plan',
@@ -2250,6 +2700,7 @@ export const useProjectStore = create<ProjectState>()(
             designMode: 'architecture',
             activeDeviceType: 'socket_single',
             deviceShared: false,
+            ...DEFAULT_FRAME_BLOCK,
             draftVertices: [],
             dynamicInput: DEFAULT_DYNAMIC_INPUT,
             activeSnap: DEFAULT_SNAP,
@@ -2268,12 +2719,14 @@ export const useProjectStore = create<ProjectState>()(
           : null;
         const rooms = snapshot.rooms ?? [];
         const partitions = snapshot.freePartitions ?? [];
-        const devices = sanitizeDevices(
+        const electrical = sanitizeElectrical(
           storedDevices,
+          snapshot.frames ?? [],
           rooms,
           partitions,
           settings.defaultWallThicknessMm
         );
+        const { devices, frames } = electrical;
         const sanitizedPanel = prunePanelRefs(
           sanitizePanel(
             snapshot.panel ?? null,
@@ -2298,6 +2751,7 @@ export const useProjectStore = create<ProjectState>()(
           openings: snapshot.openings ?? [],
           freePartitions: partitions,
           devices,
+          frames,
           panel,
           selection: null,
           activeStep: 'plan',
@@ -2308,6 +2762,7 @@ export const useProjectStore = create<ProjectState>()(
           designMode: 'architecture',
           activeDeviceType: 'socket_single',
           deviceShared: false,
+          ...DEFAULT_FRAME_BLOCK,
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
           activeSnap: DEFAULT_SNAP,
@@ -2332,6 +2787,7 @@ export const useProjectStore = create<ProjectState>()(
         openings: state.openings,
         freePartitions: state.freePartitions,
         devices: state.devices,
+        frames: state.frames,
         panel: state.panel,
       }),
       equality: (pastState, currentState) =>
@@ -2340,6 +2796,7 @@ export const useProjectStore = create<ProjectState>()(
         JSON.stringify(pastState.openings) === JSON.stringify(currentState.openings) &&
         JSON.stringify(pastState.freePartitions) === JSON.stringify(currentState.freePartitions) &&
         JSON.stringify(pastState.devices) === JSON.stringify(currentState.devices) &&
+        JSON.stringify(pastState.frames) === JSON.stringify(currentState.frames) &&
         JSON.stringify(pastState.panel) === JSON.stringify(currentState.panel),
     }
   )
@@ -2364,6 +2821,7 @@ export function getProjectSnapshot(): ProjectSnapshot {
     openings: state.openings,
     freePartitions: state.freePartitions,
     devices: state.devices,
+    frames: state.frames,
     panel: state.panel,
   };
 }

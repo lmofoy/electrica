@@ -56,6 +56,7 @@ export const DocsPanel: React.FC = () => {
     walls,
     openings,
     freePartitions,
+    frames,
     settings,
     setActiveStep,
     setActiveTool,
@@ -85,6 +86,9 @@ export const DocsPanel: React.FC = () => {
       autoLayout,
       routes,
       wallThicknessMm: settings.defaultWallThicknessMm,
+      frames,
+      freePartitions,
+      defaultWallThicknessMm: settings.defaultWallThicknessMm,
     }),
     [
       rooms,
@@ -96,6 +100,7 @@ export const DocsPanel: React.FC = () => {
       panel,
       autoLayout,
       routes,
+      frames,
       settings.defaultWallThicknessMm,
     ]
   );
@@ -302,6 +307,7 @@ export const DocsPanel: React.FC = () => {
           specification={specification}
           rooms={rooms}
           deviceCount={devices.length}
+          frameCount={frames.length}
           planSheetCounts={numbering.counts}
           onClose={() => setTitleOpen(false)}
         />

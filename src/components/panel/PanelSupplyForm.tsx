@@ -1,11 +1,22 @@
 import React from 'react';
-import type { ElectricalPanel, PanelSupply, RcdSpec } from '../../types';
-import { POWER_PRESETS_W, calculateInput, makeRcd } from '../../core/electrical/norms';
+import type { BreakingCapacityKa, ElectricalPanel, PanelSupply, RcdSpec } from '../../types';
+import {
+  BREAKING_CAPACITIES_KA,
+  DEFAULT_BREAKING_CAPACITY_KA,
+  POWER_PRESETS_W,
+  breakingCapacityLabel,
+  calculateInput,
+  makeRcd,
+} from '../../core/electrical/norms';
 
 interface PanelSupplyFormProps {
   panel: ElectricalPanel;
   onSupply: (updates: Partial<PanelSupply>) => void;
-  onPanel: (updates: Partial<Pick<ElectricalPanel, 'mounting' | 'heightFromFloorMm'>>) => void;
+  onPanel: (
+    updates: Partial<
+      Pick<ElectricalPanel, 'mounting' | 'heightFromFloorMm' | 'breakingCapacityKa'>
+    >
+  ) => void;
 }
 
 const Toggle: React.FC<{
@@ -50,6 +61,7 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
   const supply = panel.supply;
   const mainRcd = supply.mainRcd;
   const input = calculateInput(supply.allocatedPowerW, supply.cosPhi);
+  const capacity = panel.breakingCapacityKa ?? DEFAULT_BREAKING_CAPACITY_KA;
 
   const handlePowerChange = (watts: number) => {
     const safe = Math.max(1000, Math.min(30000, Math.round(watts / 100) * 100));
@@ -186,6 +198,29 @@ export const PanelSupplyForm: React.FC<PanelSupplyFormProps> = ({
           </div>
         </div>
       </div>
+
+      <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 block">
+        <span className="text-[9px] text-slate-500 uppercase tracking-wider">
+          Класс аппаратов по отключающей способности
+        </span>
+        <select
+          value={String(capacity)}
+          onChange={(e) =>
+            onPanel({ breakingCapacityKa: Number(e.target.value) as BreakingCapacityKa })
+          }
+          className="mt-1 w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-sky-500"
+        >
+          {BREAKING_CAPACITIES_KA.map((value) => (
+            <option key={value} value={value}>
+              {breakingCapacityLabel(value)}
+            </option>
+          ))}
+        </select>
+        <span className="block text-[9px] text-slate-500 mt-1 leading-snug">
+          Icn автоматов, ГОСТ IEC 60898-1. Для квартирного щита — 6 кА; УЗО класса
+          не имеет.
+        </span>
+      </label>
 
       <div className="grid grid-cols-2 gap-2">
         <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 block">

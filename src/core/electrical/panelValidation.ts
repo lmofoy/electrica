@@ -7,6 +7,7 @@ import {
   inputCurrentA,
   lineDesignCurrentA,
   lineDesignPowerW,
+  normalizeBreakingCapacity,
   panelDesignPowerW,
   panelInstalledPowerW,
   phaseForLine,
@@ -33,6 +34,7 @@ export const REF = {
   ampacity: 'ПУЭ-7, табл. 1.3.4',
   protection: 'ПУЭ-7, гл. 1.3',
   breakerRatings: 'ГОСТ IEC 60898-1',
+  breakingCapacity: 'ГОСТ IEC 60898-1 (отключающая способность Icn)',
   socketsRcd: 'ПУЭ-7, п. 7.1.79',
   fireRcd: 'ПУЭ-7, п. 7.1.84',
   selectivity: 'ГОСТ Р 50571.4.41 (селективность УЗО)',
@@ -104,6 +106,16 @@ export function validatePanel(
       severity: 'warning',
       message: 'В щитке нет ни одной линии. Добавьте линии или соберите черновик из приборов.',
       reference: REF.sections,
+    });
+  }
+
+  if (normalizeBreakingCapacity(panel.breakingCapacityKa) === 4.5) {
+    push({
+      id: 'breaking-capacity-low',
+      severity: 'info',
+      message:
+        'Класс аппаратов 4,5 кА — минимальный. Для квартирного щита в городской сети обычно принимают 6 кА.',
+      reference: REF.breakingCapacity,
     });
   }
 

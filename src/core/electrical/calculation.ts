@@ -10,6 +10,7 @@ import {
   LINE_PRESETS,
   PHASE_LABELS,
   RHO_CU_OHM_MM2_PER_M,
+  breakingCapacityLabel,
   voltageDropLimitPercent,
   voltageDropPercent,
 } from './norms';
@@ -38,6 +39,7 @@ export interface PanelCalculationRow {
   designCurrentA: number;
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
+  combinedProtection: boolean;
   cable: CableSpec;
   cableBrand: string;
   cableLengthMm: number;
@@ -198,6 +200,9 @@ function buildNotes(
     `Вводной кабель: ${supply.cableBrand} ${cableLabel(
       supply.inputCable
     )}; QF1 ${breakerLabel(supply.inputBreaker)}; ${inputRcd}.`,
+    `Класс аппаратов — ${breakingCapacityLabel(
+      supply.breakingCapacityKa
+    )} по отключающей способности (Icn).`,
     `Групповые линии: ${supply.cableBrand}; ${groupRcd}; допустимые токи по ПУЭ-7, табл. 1.3.4.`,
     'Минимальные сечения: освещение 1,5 мм²; розетки и силовые группы 2,5 мм² (СП 256.1325800.2016).',
     'УЗО 30 мА типа A — розеточные и влажные группы (ПУЭ-7, п. 7.1.79; ГОСТ Р 50571.4.41).',
@@ -258,6 +263,7 @@ export function buildPanelCalculation(
       designCurrentA: group.currentA,
       breaker: group.breaker,
       rcd: group.rcd,
+      combinedProtection: group.combinedProtection,
       cable: group.cable,
       cableBrand: supply.cableBrand,
       cableLengthMm: group.cableLengthMm,

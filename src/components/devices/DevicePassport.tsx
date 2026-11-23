@@ -7,7 +7,7 @@ import {
   type ResolvedDevice,
 } from '../../core/electrical/devices';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
-import { Plug, Repeat2, Trash2 } from 'lucide-react';
+import { Plug, Repeat2, SquareDashed, Trash2 } from 'lucide-react';
 
 interface DevicePassportProps {
   deviceId: string;
@@ -56,9 +56,11 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
   const {
     rooms,
     devices,
+    frames,
     freePartitions,
     settings,
     panel,
+    setSelection,
     setHighlightedLine,
     assignDevicesToLine,
     unassignDevicesFromLines,
@@ -94,6 +96,11 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
   const selectedRoomNames = selected.roomIds
     .map((roomId) => rooms.find((room) => room.id === roomId)?.name)
     .filter((name): name is string => Boolean(name));
+
+  const hostFrame =
+    selected.device.frameId != null
+      ? frames.find((frame) => frame.id === selected.device.frameId) ?? null
+      : null;
 
   return (
     <div className="rounded-xl border border-sky-500/40 bg-slate-950/70 p-2.5 space-y-2">
@@ -146,6 +153,21 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
           </strong>
         </span>
       </div>
+
+      {hostFrame && (
+        <button
+          type="button"
+          onClick={() => setSelection({ kind: 'frame', id: hostFrame.id })}
+          className="flex w-full items-center gap-1 rounded-lg border border-sky-500/20 bg-sky-950/40 px-2 py-1 text-left text-[10px] text-sky-200 hover:border-sky-500/40 hover:bg-sky-900/40"
+          title="Открыть паспорт подрозетника"
+        >
+          <SquareDashed size={11} className="shrink-0 text-sky-400" />
+          Подрозетник: {hostFrame.posts}{' '}
+          {hostFrame.posts === 1 ? 'место' : 'места'}, место{' '}
+          {(selected.device.seatIndex ?? 0) + 1}
+          <span className="ml-auto text-sky-400/70">›</span>
+        </button>
+      )}
 
       <DeviceNoteField
         key={`${selected.device.id}:${selected.device.note ?? ''}`}

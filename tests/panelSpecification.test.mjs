@@ -113,6 +113,68 @@ try {
     assert.equal(rcds[0].designation, 'QD2–QD3');
   });
 
+  await test('spec: frames are counted separately by mounting and posts', () => {
+    const frame = (id, posts, mounting) => ({
+      id,
+      anchor: { kind: 'room_edge', roomId: 'room-hall', edgeIndex: 0, offsetMm: 1000 },
+      heightFromFloorMm: 300,
+      posts,
+      mounting,
+    });
+    const specification = specFor(panel(), {
+      frames: [
+        frame('f1', 2, 'flush'),
+        frame('f2', 2, 'flush'),
+        frame('f3', 3, 'flush'),
+        frame('f4', 2, 'surface'),
+      ],
+    });
+    const rows = specification.items.filter((item) => item.id.startsWith('frame-'));
+    assert.equal(rows.length, 3, 'flush 2, flush 3 and surface 2 are three products');
+
+    const flushTwo = rows.find((item) => item.id === 'frame-flush-2');
+    assert.ok(flushTwo, 'flush two-post row exists');
+    assert.equal(flushTwo.quantity, 2);
+    assert.match(flushTwo.name, /2 места \(скрытая\)/);
+    assert.equal(flushTwo.type, 'встраиваемая');
+
+    const surfaceTwo = rows.find((item) => item.id === 'frame-surface-2');
+    assert.ok(surfaceTwo, 'surface two-post row exists');
+    assert.equal(surfaceTwo.quantity, 1);
+    assert.match(surfaceTwo.name, /накладная/);
+    assert.equal(surfaceTwo.type, 'накладная');
+  });
+
+  await test('spec: combined line buys one АВДТ row, class goes into details', () => {
+    const lines = [
+      line('a', 'sockets', { combinedProtection: true }),
+      line('b', 'sockets'),
+    ];
+    const specification = specFor({ ...panel({ lines }), breakingCapacityKa: 10 });
+
+    const rcbos = specification.items.filter((item) => item.id.startsWith('rcbo-'));
+    assert.equal(rcbos.length, 1);
+    assert.equal(rcbos[0].quantity, 1);
+    assert.equal(rcbos[0].designation, 'QF2');
+    assert.equal(rcbos[0].name, 'Дифавтомат (АВДТ)');
+    assert.match(rcbos[0].detail, /16 А/);
+    assert.match(rcbos[0].detail, /30 мА/);
+    assert.match(rcbos[0].detail, /10 кА/);
+    assert.match(rcbos[0].detail, /1P\+N/);
+
+    const breakers = specification.items.filter((item) => item.id.startsWith('breaker-'));
+    assert.equal(breakers.length, 1);
+    assert.equal(breakers[0].designation, 'QF3');
+    assert.match(breakers[0].detail, /10 кА/);
+
+    const rcds = specification.items.filter((item) => item.id.startsWith('rcd-'));
+    assert.equal(rcds.length, 1);
+    assert.equal(rcds[0].designation, 'QD2');
+    assert.ok(
+      specification.notes.some((note) => note.includes('Дифавтомат объединяет автомат и УЗО'))
+    );
+  });
+
   await test('spec: enclosure and input hardware are present with quantities', () => {
     const specification = specFor(panel({ lines: [line('a', 'sockets')] }));
     const ids = specification.items.map((item) => item.id);

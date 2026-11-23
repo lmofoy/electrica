@@ -121,7 +121,18 @@ function device(value: Entity): boolean {
     anchor(value.anchor, true) && nonnegative(value.heightFromFloorMm) &&
     nonnegative(value.powerWatts) && typeof value.shared === 'boolean' &&
     (value.note === undefined || typeof value.note === 'string') &&
-    (value.circuitId === undefined || id(value.circuitId));
+    (value.circuitId === undefined || id(value.circuitId)) &&
+    // Ссылка на место в рамке: либо обе части, либо ни одной (старые проекты).
+    (value.frameId === undefined) === (value.seatIndex === undefined) &&
+    (value.frameId === undefined || id(value.frameId)) &&
+    (value.seatIndex === undefined ||
+      (Number.isSafeInteger(value.seatIndex) && (value.seatIndex as number) >= 0 &&
+        (value.seatIndex as number) <= 3));
+}
+
+function frame(value: Entity): boolean {
+  return anchor(value.anchor, false) && nonnegative(value.heightFromFloorMm) &&
+    oneOf(value.posts, [1, 2, 3, 4]) && oneOf(value.mounting, ['flush', 'surface']);
 }
 
 function cable(value: unknown): boolean {
@@ -180,7 +191,8 @@ export function validateProjectSnapshot(
     (value.boundaryMode !== undefined && !oneOf(value.boundaryMode, ['auto', 'manual'])) ||
     !record(value.nodes) || !entities(value.rooms) || !entities(value.walls) ||
     !entities(value.openings) || !entities(value.freePartitions) ||
-    (value.devices !== undefined && (!entities(value.devices) || !value.devices.every(device)))) {
+    (value.devices !== undefined && (!entities(value.devices) || !value.devices.every(device))) ||
+    (value.frames !== undefined && (!entities(value.frames) || !value.frames.every(frame)))) {
     return false;
   }
 

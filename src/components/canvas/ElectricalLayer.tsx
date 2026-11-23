@@ -1,12 +1,36 @@
 import React from 'react';
 import { Layer, Group, Circle, Line, Shape, Rect, Text } from 'react-konva';
-import type { DeviceType, ElectricalPanel } from '../../types';
+import type {
+  DeviceType,
+  ElectricalPanel,
+  FrameAnchor,
+  FrameMounting,
+  FramePosts,
+  FreePartition,
+  MountingFrame,
+  Point2D,
+  RoomZone,
+} from '../../types';
 import type { ResolvedDevice, DevicePose } from '../../core/electrical/devices';
-import { DEVICE_CATALOG } from '../../core/electrical/devices';
+import { DEVICE_CATALOG, isMechanismType } from '../../core/electrical/devices';
 import {
   PANEL_SYMBOL_DEPTH_MM,
   PANEL_SYMBOL_WIDTH_MM,
 } from '../../core/electrical/panel';
+import {
+  FRAME_PLATE_DEPTH_MM,
+  framePlateWidthMm,
+  frameSeatCenter,
+  resolveFramePose,
+} from '../../core/electrical/frames';
+
+export interface FramePreview {
+  anchor: FrameAnchor;
+  position: Point2D;
+  rotationDeg: number;
+  posts: FramePosts;
+  mounting: FrameMounting;
+}
 
 interface ElectricalLayerProps {
   devices: ResolvedDevice[];
@@ -20,6 +44,12 @@ interface ElectricalLayerProps {
   lineColors: Map<string, string>;
   highlightedLineId: string | null;
   assignLineId: string | null;
+  frames: MountingFrame[];
+  rooms: RoomZone[];
+  partitions: FreePartition[];
+  thickness: number;
+  selectedFrameId: string | null;
+  framePreview: FramePreview | null;
 }
 
 const GROUP_COLORS: Record<'socket' | 'switch' | 'light', string> = {
@@ -456,6 +486,54 @@ const PanelGlyph: React.FC<{ zoom: number; highlighted: boolean }> = ({
   );
 };
 
+// Плата рамки: контур позади механизмов; свободные места — пунктирные окружности.
+// Накладная рамка выделена пунктиром всегда — видно, что она выступает из стены.
+const FramePlate: React.FC<{
+  widthMm: number;
+  zoom: number;
+  selected: boolean;
+  mounting: FrameMounting;
+  emptySeats: number[];
+  posts: FramePosts;
+}> = ({ widthMm, zoom, selected, mounting, emptySeats, posts }) => (
+  <Group>
+    <Rect
+      x={-widthMm / 2}
+      y={-FRAME_PLATE_DEPTH_MM / 2}
+      width={widthMm}
+      height={FRAME_PLATE_DEPTH_MM}
+      cornerRadius={4 / zoom}
+      fill="rgba(15, 23, 42, 0.55)"
+      stroke={selected ? '#38bdf8' : '#475569'}
+      strokeWidth={(selected ? 1.6 : 0.8) / zoom}
+      dash={selected || mounting === 'surface' ? [5 / zoom, 3 / zoom] : undefined}
+      shadowColor="#38bdf8"
+      shadowBlur={selected ? 10 / zoom : 0}
+      listening={false}
+    />
+    {emptySeats.map((seatIndex) => {
+      const center = frameSeatCenter(
+        { position: { x: 0, y: 0 }, rotationDeg: 0, roomId: '', mirrored: false },
+        posts,
+        seatIndex
+      );
+      return (
+        <Circle
+          key={`seat-${seatIndex}`}
+          x={center.x}
+          y={center.y}
+          radius={5.5 / zoom}
+          stroke="#64748b"
+          strokeWidth={1 / zoom}
+          dash={[2.5 / zoom, 2 / zoom]}
+          fill="rgba(148, 163, 184, 0.08)"
+          listening={false}
+        />
+      );
+    })}
+  </Group>
+);
+
 export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
   devices,
   zoom,
@@ -468,10 +546,76 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
   lineColors,
   highlightedLineId,
   assignLineId,
+  frames,
+  rooms,
+  partitions,
+  thickness,
+  selectedFrameId,
+  framePreview,
 }) => {
   const focusLineId = assignLineId ?? highlightedLineId;
+
+  // Поза и занятые места каждой рамки: рамка рисуется до механизмов.
+  const frameEntries = frames.map((frame) => {
+    const occupied = new Set<number>();
+    for (const device of devices) {
+      if (device.device.frameId !== frame.id) continue;
+      if (!isMechanismType(device.device.type)) continue;
+      if (!Number.isSafeInteger(device.device.seatIndex)) continue;
+      occupied.add(device.device.seatIndex as number);
+    }
+    const emptySeats: number[] = [];
+    for (let seat = 0; seat < frame.posts; seat += 1) {
+      if (!occupied.has(seat)) emptySeats.push(seat);
+    }
+    return {
+      frame,
+      pose: resolveFramePose(frame, rooms, partitions, thickness),
+      emptySeats,
+    };
+  });
+
   return (
     <Layer listening={false}>
+      {frameEntries.map(({ frame, pose, emptySeats }) => {
+        if (!pose) return null;
+        return (
+          <Group
+            key={`frame-${frame.id}`}
+            x={pose.position.x}
+            y={pose.position.y}
+            rotation={pose.rotationDeg}
+          >
+            <FramePlate
+              widthMm={framePlateWidthMm(frame.posts)}
+              zoom={zoom}
+              selected={frame.id === selectedFrameId}
+              mounting={frame.mounting}
+              emptySeats={emptySeats}
+              posts={frame.posts}
+            />
+          </Group>
+        );
+      })}
+
+      {framePreview && (
+        <Group
+          x={framePreview.position.x}
+          y={framePreview.position.y}
+          rotation={framePreview.rotationDeg}
+          opacity={0.6}
+        >
+          <FramePlate
+            widthMm={framePlateWidthMm(framePreview.posts)}
+            zoom={zoom}
+            selected
+            mounting={framePreview.mounting}
+            emptySeats={[]}
+            posts={framePreview.posts}
+          />
+        </Group>
+      )}
+
       {devices.map((resolved) => {
         const lineId = deviceLineIds.get(resolved.device.id) ?? null;
         return (

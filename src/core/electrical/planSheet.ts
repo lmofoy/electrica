@@ -2,6 +2,7 @@ import type {
   ElectricalDevice,
   ElectricalPanel,
   FreePartition,
+  MountingFrame,
   Node2D,
   Opening,
   Point2D,
@@ -14,8 +15,9 @@ import {
   calculateNetAreaM2,
   distance,
 } from '../geometry/math';
-import { DEVICE_CATALOG, resolveDevice } from './devices';
+import { DEVICE_CATALOG, isMechanismType, resolveDevice } from './devices';
 import type { DeviceGlyphKind } from './devices';
+import { FRAME_PLATE_DEPTH_MM, framePlateWidthMm, frameSeatCenter, resolveFramePose } from './frames';
 import { resolvePanelPose } from './panel';
 import { buildLineColorMap } from './lineColors';
 import { lineCodes } from './lineOps';
@@ -53,6 +55,11 @@ export interface PlanSheetSource {
   autoLayout: AutoLayout | null;
   routes: Map<string, LineRoute>;
   wallThicknessMm: number;
+  frames?: MountingFrame[];
+  // Необязательные копии для расчёта поз: при вызове из стора они совпадают
+  // с полями выше, а тесты и внешние вызовы могут их не передавать.
+  freePartitions?: FreePartition[];
+  defaultWallThicknessMm?: number;
 }
 
 export interface PlanSheetOptions {
@@ -130,6 +137,26 @@ export interface PlanDeviceSymbol {
   note: PlanNote | null;
   labelX: number;
   labelY: number;
+  frameId: string | null;
+}
+
+export interface PlanFramePlate {
+  id: string;
+  posts: 1 | 2 | 3 | 4;
+  x: number;
+  y: number;
+  rotationDeg: number;
+  width: number; // уже в мм листа (масштаб учтён)
+  depth: number;
+  mounting: 'flush' | 'surface';
+}
+
+export interface PlanFrameSeat {
+  frameId: string;
+  seatIndex: number;
+  x: number;
+  y: number;
+  radius: number;
 }
 
 export interface PlanRoutePath {
@@ -202,6 +229,8 @@ export interface PlanSheetLayout {
   partitionSegments: PlanSegment[];
   rooms: PlanRoomLabel[];
   openings: PlanOpening[];
+  frames: PlanFramePlate[];
+  frameSeats: PlanFrameSeat[];
   devices: PlanDeviceSymbol[];
   routes: PlanRoutePath[];
   panel: { x: number; y: number; rotationDeg: number; label: string } | null;
@@ -571,6 +600,49 @@ export function buildPlanSheet(
   });
 
   const devices: PlanDeviceSymbol[] = [];
+  // Сначала рамки: на листе их платы печатаются под символами механизмов.
+  const frames: PlanFramePlate[] = [];
+  const frameSeats: PlanFrameSeat[] = [];
+  const sheetFrames = source.frames ?? [];
+  const framePartitions = source.freePartitions ?? source.partitions;
+  const frameThickness =
+    source.defaultWallThicknessMm ?? source.wallThicknessMm;
+  for (const frame of sheetFrames) {
+    const mechanismIds = source.devices
+      .filter((device) => device.frameId === frame.id && isMechanismType(device.type))
+      .map((device) => device.id);
+    if (mechanismIds.length === 0) continue;
+    if (allowedDeviceIds && !mechanismIds.some((id) => allowedDeviceIds.has(id))) continue;
+    const pose = resolveFramePose(frame, source.rooms, framePartitions, frameThickness);
+    if (!pose) continue;
+    const point = toSheet(pose.position);
+    frames.push({
+      id: frame.id,
+      posts: frame.posts,
+      x: point.x,
+      y: point.y,
+      rotationDeg: pose.rotationDeg,
+      width: framePlateWidthMm(frame.posts) / scale,
+      depth: FRAME_PLATE_DEPTH_MM / scale,
+      mounting: frame.mounting,
+    });
+    const occupied = new Set(
+      source.devices
+        .filter((device) => device.frameId === frame.id)
+        .map((device) => device.seatIndex)
+    );
+    for (let seatIndex = 0; seatIndex < frame.posts; seatIndex += 1) {
+      if (occupied.has(seatIndex)) continue;
+      const center = toSheet(frameSeatCenter(pose, frame.posts, seatIndex));
+      frameSeats.push({
+        frameId: frame.id,
+        seatIndex,
+        x: center.x,
+        y: center.y,
+        radius: Math.max(0.9, 16 / scale),
+      });
+    }
+  }
   for (const device of source.devices) {
     const entry = DEVICE_CATALOG[device.type];
     if (!groups.includes(entry.group)) continue;
@@ -642,6 +714,7 @@ export function buildPlanSheet(
         note,
         labelX,
         labelY,
+        frameId: device.frameId ?? null,
       });
     }
   }
@@ -896,6 +969,16 @@ export function buildPlanSheet(
   );
   const cableBrand = panel?.supply.cableBrand ?? 'ВВГнг(А)-LS';
   const notesLines = [
+    ...(frames.length > 0
+      ? [
+          `Механизмы объединены в ${frames.length} ${plural(
+            frames.length,
+            'подрозетник',
+            'подрозетника',
+            'подрозетников'
+          )}; пунктирные окружности — свободные места под механизмы.`,
+        ]
+      : []),
     sheetLineIds
       ? 'На листе — приборы только выбранных групп; приборы вне линий на план не выводятся.'
       : 'Подпись прибора — высота и группа: «300 · гр. 2»; «без группы» — прибор не входит в линии.',
@@ -929,6 +1012,8 @@ export function buildPlanSheet(
     partitionSegments,
     rooms,
     openings,
+    frames,
+    frameSeats,
     devices,
     routes,
     panel: panelPoint

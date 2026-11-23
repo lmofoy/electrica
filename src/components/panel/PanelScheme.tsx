@@ -345,6 +345,9 @@ export const PanelScheme: React.FC<PanelSchemeProps> = ({
         <span>УЗИП {toneCounts.spd ?? 0}</span>
         <span>Автоматы линий {toneCounts.line_breaker ?? 0}</span>
         <span>Дифзащита линий {toneCounts.line_rcd ?? 0}</span>
+        {(toneCounts.line_rcbo ?? 0) > 0 && (
+          <span>Дифавтоматы {toneCounts.line_rcbo ?? 0}</span>
+        )}
       </div>
     </div>
   );

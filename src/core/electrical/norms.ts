@@ -1,5 +1,6 @@
 import type {
   BreakerSpec,
+  BreakingCapacityKa,
   CableSpec,
   CircuitLine,
   ElectricalPanel,
@@ -31,6 +32,21 @@ export const CABLE_SECTIONS = [1.5, 2.5, 4, 6, 10, 16] as const;
 export const BREAKER_RATINGS = [6, 10, 16, 20, 25, 32, 40, 50, 63] as const;
 
 export const RCD_SENSITIVITIES = [10, 30, 100, 300] as const;
+
+// Отключающая способность модульных аппаратов. Для квартирного щита
+// в городской сети — 6 кА; 4,5 кА допустимы при малых токах КЗ.
+export const BREAKING_CAPACITIES_KA = [4.5, 6, 10] as const;
+export const DEFAULT_BREAKING_CAPACITY_KA: BreakingCapacityKa = 6;
+
+export function normalizeBreakingCapacity(value: unknown): BreakingCapacityKa {
+  return value === 4.5 || value === 6 || value === 10
+    ? value
+    : DEFAULT_BREAKING_CAPACITY_KA;
+}
+
+export function breakingCapacityLabel(value: BreakingCapacityKa): string {
+  return `${String(value).replace('.', ',')} кА`;
+}
 
 // Значение по умолчанию для линий: нагрузки в квартире преимущественно
 // активные, запас заложен в номиналах автоматов. На вводе по умолчанию

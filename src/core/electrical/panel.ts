@@ -28,6 +28,7 @@ import {
   makeBreaker,
   makeCable,
   makeRcd,
+  normalizeBreakingCapacity,
   normalizeCosPhi,
   normalizeDemandFactor,
 } from './norms';
@@ -106,6 +107,7 @@ export function sanitizePanel(
     ...panel,
     lines,
     supply: sanitizeSupply(panel.supply),
+    breakingCapacityKa: normalizeBreakingCapacity(panel.breakingCapacityKa),
   };
   if (dinOrder) result.dinOrder = dinOrder;
   else delete result.dinOrder;
@@ -131,7 +133,7 @@ function sanitizeDinOrder(order: unknown, lines: CircuitLine[]): string[] | unde
   ]);
   for (const line of lines) {
     allowed.add(`${line.id}-breaker`);
-    if (line.rcd) allowed.add(`${line.id}-rcd`);
+    if (line.rcd && !line.combinedProtection) allowed.add(`${line.id}-rcd`);
   }
   const seen = new Set<string>();
   const result: string[] = [];
@@ -178,28 +180,38 @@ function sanitizeSupply(supply: PanelSupply): PanelSupply {
 function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
   return lines
     .filter((line) => Number.isFinite(line.loadW) && line.loadW >= 0)
-    .map((line) => ({
-      ...line,
-      loadW: Math.max(0, line.loadW),
-      cosPhi: line.cosPhi === undefined ? undefined : normalizeCosPhi(line.cosPhi),
-      demandFactor:
-        line.demandFactor === undefined ? undefined : normalizeDemandFactor(line.demandFactor),
-      phase:
-        line.phase === 'L1' || line.phase === 'L2' || line.phase === 'L3'
-          ? line.phase
-          : undefined,
-      roomIds: line.roomIds ?? [],
-      deviceIds: line.deviceIds ?? [],
-      colorIndex:
-        Number.isInteger(line.colorIndex) && (line.colorIndex as number) >= 0
-          ? line.colorIndex
-          : undefined,
-      routing:
-        line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
-      manualRoute: sanitizeManualRoute(line.manualRoute),
-      waypoints: sanitizeWaypoints(line.waypoints),
-      trace: line.trace === 'none' ? 'none' : line.trace === 'auto' ? 'auto' : undefined,
-    }));
+    .map((line) => {
+      // Дифавтомат без УЗО невозможен: флаг без rcd снимается.
+      const combined = line.combinedProtection === true && Boolean(line.rcd);
+      return {
+        ...line,
+        combinedProtection: combined ? true : undefined,
+        // У АВДТ один номинал: номинал УЗО повторяет автомат.
+        rcd:
+          combined && line.rcd
+            ? { ...line.rcd, ratingA: line.breaker.ratingA }
+            : line.rcd,
+        loadW: Math.max(0, line.loadW),
+        cosPhi: line.cosPhi === undefined ? undefined : normalizeCosPhi(line.cosPhi),
+        demandFactor:
+          line.demandFactor === undefined ? undefined : normalizeDemandFactor(line.demandFactor),
+        phase:
+          line.phase === 'L1' || line.phase === 'L2' || line.phase === 'L3'
+            ? line.phase
+            : undefined,
+        roomIds: line.roomIds ?? [],
+        deviceIds: line.deviceIds ?? [],
+        colorIndex:
+          Number.isInteger(line.colorIndex) && (line.colorIndex as number) >= 0
+            ? line.colorIndex
+            : undefined,
+        routing:
+          line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
+        manualRoute: sanitizeManualRoute(line.manualRoute),
+        waypoints: sanitizeWaypoints(line.waypoints),
+        trace: line.trace === 'none' ? 'none' : line.trace === 'auto' ? 'auto' : undefined,
+      };
+    });
 }
 
 function sanitizeWaypoints(waypoints: CircuitLine['waypoints']): Point2D[] | undefined {

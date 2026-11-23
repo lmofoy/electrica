@@ -348,6 +348,25 @@ try {
     assert.ok(layout.busTop < layout.busBottom);
   });
 
+  await test('sheet: combined line draws one wide breaker box and no RCD box', () => {
+    const layout = sheetFor(
+      panel({
+        lines: [
+          line('a', 'sockets', { combinedProtection: true }),
+          line('b', 'sockets'),
+        ],
+      })
+    );
+    const rcbo = layout.groups[0];
+    const plain = layout.groups[1];
+    assert.equal(rcbo.combined, true);
+    assert.equal(rcbo.rcdRect, null);
+    assert.ok(rcbo.breakerRect.width > plain.breakerRect.width);
+    assert.ok(rcbo.labelX > plain.breakerRect.x + plain.breakerRect.width);
+    assert.equal(rcbo.group.rcdDesignation, null);
+    assert.equal(plain.group.rcdDesignation, 'QD2');
+  });
+
   await test('sheet: status and notes reflect normative findings', () => {
     const source = panel({ lines: [line('a', 'sockets')] });
     const schematic = buildPanelSchematic(source, { rooms: [livingRoom] });
@@ -359,8 +378,8 @@ try {
     assert.equal(layout.status, 'errors');
     assert.equal(layout.statusText, 'Ошибок: 1');
     assert.equal(layout.statusBox.severity, 'errors');
-    assert.match(layout.notesLines[9], /ошибок 1/);
-    assert.match(layout.notesLines[9], /замечаний 1/);
+    assert.match(layout.notesLines[10], /ошибок 1/);
+    assert.match(layout.notesLines[10], /замечаний 1/);
 
     const warningsOnly = {
       ...schematic,
@@ -372,7 +391,7 @@ try {
       'ok'
     );
 
-    assert.equal(layout.notesLines.length, 10);
+    assert.equal(layout.notesLines.length, 11);
     for (const note of layout.notesLines) assert.ok(note.trim().length > 0);
     assert.ok(layout.notesLines.some((note) => note.includes('ПУЭ-7')));
     assert.ok(layout.notesLines.some((note) => note.includes('СП 256')));
@@ -384,7 +403,7 @@ try {
     assert.equal(layout.groups.length, 0);
     assert.equal(layout.status, 'warnings');
     assert.equal(layout.statusText, 'Группы не заданы');
-    assert.match(layout.notesLines[9], /не заданы/);
+    assert.match(layout.notesLines[10], /не заданы/);
   });
 
   await test('sheet: group rows carry power, current and designation', () => {

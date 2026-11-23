@@ -7,7 +7,8 @@ export type PanelItemKind =
   | 'voltage_relay'
   | 'spd'
   | 'line_breaker'
-  | 'line_rcd';
+  | 'line_rcd'
+  | 'line_rcbo';
 
 export interface PanelLayoutItem {
   id: string;
@@ -60,6 +61,8 @@ export interface PanelLayoutOptions {
 }
 
 export const RAIL_MODULES = 12;
+// Дифавтомат 1P+N/2P занимает два модуля независимо от числа полюсов автомата.
+export const RCBO_MODULES = 2;
 export const ENCLOSURE_SERIES = [12, 24, 36, 48, 60, 72];
 export const INPUT_ZONE_ID = 'input';
 export const INPUT_ZONE_NAME = 'Ввод и защита';
@@ -83,6 +86,19 @@ function breakerModules(line: CircuitLine): number {
 }
 
 function lineItems(line: CircuitLine): PanelLayoutItem[] {
+  if (line.combinedProtection && line.rcd) {
+    return [
+      {
+        id: `${line.id}-breaker`,
+        kind: 'line_rcbo',
+        label: `${line.breaker.ratingA} А · ${line.rcd.sensitivityMa} мА`,
+        sublabel: `${line.name} · дифавтомат ${line.breaker.curve}${line.rcd.type}`,
+        modules: RCBO_MODULES,
+        lineId: line.id,
+        tone: 'protection',
+      },
+    ];
+  }
   const items: PanelLayoutItem[] = [
     {
       id: `${line.id}-breaker`,

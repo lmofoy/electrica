@@ -1,5 +1,6 @@
 import type {
   BreakerSpec,
+  BreakingCapacityKa,
   CableSpec,
   ElectricalPanel,
   GroundingSystem,
@@ -10,11 +11,13 @@ import type {
 } from '../../types';
 import {
   LINE_PRESETS,
+  breakingCapacityLabel,
   inputCurrentA,
   lineCosPhi,
   lineDemandFactor,
   lineDesignCurrentA,
   lineDesignPowerW,
+  normalizeBreakingCapacity,
   normalizeCosPhi,
   normalizeDemandFactor,
   panelDesignPowerW,
@@ -55,6 +58,7 @@ export interface SchematicGroup {
   demandFactor: number;
   breaker: BreakerSpec;
   rcd: RcdSpec | null;
+  combinedProtection: boolean; // автомат и УЗО — один дифавтомат
   cable: CableSpec;
   cableLengthMm: number;
   breakerDesignation: string;
@@ -82,6 +86,7 @@ export interface SchematicSupply {
   inputBreaker: BreakerSpec;
   inputCable: CableSpec;
   mainRcd: RcdSpec | null;
+  breakingCapacityKa: BreakingCapacityKa;
   meterEnabled: boolean;
   voltageRelay: boolean;
   surgeProtection: boolean;
@@ -121,13 +126,16 @@ function rcdDetail(rcd: RcdSpec): string {
 
 function inputItems(panel: ElectricalPanel): SchematicInputItem[] {
   const supply = panel.supply;
+  const capacity = normalizeBreakingCapacity(panel.breakingCapacityKa);
   const items: SchematicInputItem[] = [
     {
       id: 'input-breaker',
       designation: 'QF1',
       kind: 'input_breaker',
       title: 'Вводной автомат',
-      detail: `${supply.inputBreaker.ratingA} А · ${supply.inputBreaker.poles}P ${supply.inputBreaker.curve}`,
+      detail: `${supply.inputBreaker.ratingA} А · ${supply.inputBreaker.poles}P ${
+        supply.inputBreaker.curve
+      } · ${breakingCapacityLabel(capacity)}`,
     },
   ];
   if (supply.meter.enabled) {
@@ -183,7 +191,9 @@ export function buildPanelSchematic(
   let rcdCounter = hasMainRcd ? 1 : 0;
   const codes = lineCodes(panel);
   const groups: SchematicGroup[] = panel.lines.map((line, index) => {
-    const rcdDesignation = line.rcd ? `QD${++rcdCounter}` : null;
+    const combinedProtection = Boolean(line.combinedProtection && line.rcd);
+    const rcdDesignation =
+      line.rcd && !combinedProtection ? `QD${++rcdCounter}` : null;
     const code = codes.get(line.id) ?? index + 2;
     return {
       code,
@@ -198,6 +208,7 @@ export function buildPanelSchematic(
       demandFactor: lineDemandFactor(line),
       breaker: line.breaker,
       rcd: line.rcd,
+      combinedProtection,
       cable: line.cable,
       cableLengthMm: cableLengthFor(options.cableLengthsMm, line.id),
       breakerDesignation: `QF${code}`,
@@ -251,6 +262,7 @@ export function buildPanelSchematic(
       inputBreaker: supply.inputBreaker,
       inputCable: supply.inputCable,
       mainRcd: supply.mainRcd,
+      breakingCapacityKa: normalizeBreakingCapacity(panel.breakingCapacityKa),
       meterEnabled: supply.meter.enabled,
       voltageRelay: supply.voltageRelay,
       surgeProtection: supply.surgeProtection,

@@ -1,12 +1,17 @@
 import React from 'react';
 import { Layer, Line, Circle, Rect, Group } from 'react-konva';
-import type { FreePartition, Opening, Selection } from '../../types';
+import type { FreePartition, MountingFrame, Opening, RoomZone, Selection } from '../../types';
 import type { ResolvedDevice } from '../../core/electrical/devices';
 import type { DevicePose } from '../../core/electrical/devices';
 import {
   PANEL_SYMBOL_DEPTH_MM,
   PANEL_SYMBOL_WIDTH_MM,
 } from '../../core/electrical/panel';
+import {
+  FRAME_PLATE_DEPTH_MM,
+  framePlateWidthMm,
+  resolveFramePose,
+} from '../../core/electrical/frames';
 
 interface SelectionLayerProps {
   selection: Selection | null;
@@ -14,6 +19,9 @@ interface SelectionLayerProps {
   openings: Opening[];
   partitions: FreePartition[];
   devices: ResolvedDevice[];
+  frames: MountingFrame[];
+  rooms: RoomZone[];
+  thickness: number;
   panelId: string | null;
   panelPose: DevicePose | null;
   zoom: number;
@@ -26,6 +34,9 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
   openings,
   partitions,
   devices,
+  frames,
+  rooms,
+  thickness,
   panelId,
   panelPose,
   zoom,
@@ -96,6 +107,47 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
               />
             )}
           </React.Fragment>
+        );
+      })}
+
+      {/* Рамки: попадание по плате — до приборов, чтобы механизмы оставались кликабельными */}
+      {frames.map((frame) => {
+        const pose = resolveFramePose(frame, rooms, partitions, thickness);
+        if (!pose) return null;
+        const width = framePlateWidthMm(frame.posts);
+        const selected = isSelected('frame', frame.id);
+        return (
+          <Group
+            key={`frame-${frame.id}`}
+            x={pose.position.x}
+            y={pose.position.y}
+            rotation={pose.rotationDeg}
+          >
+            <Rect
+              x={-width / 2}
+              y={-FRAME_PLATE_DEPTH_MM / 2}
+              width={width}
+              height={FRAME_PLATE_DEPTH_MM}
+              fill="rgba(2, 6, 23, 0.001)"
+              onClick={(e) => {
+                if (e.evt.button !== 0) return;
+                e.cancelBubble = true;
+                onSelect({ kind: 'frame', id: frame.id });
+              }}
+            />
+            {selected && (
+              <Rect
+                x={-width / 2}
+                y={-FRAME_PLATE_DEPTH_MM / 2}
+                width={width}
+                height={FRAME_PLATE_DEPTH_MM}
+                stroke="#38bdf8"
+                strokeWidth={1.6 / zoom}
+                dash={[5 / zoom, 3 / zoom]}
+                listening={false}
+              />
+            )}
+          </Group>
         );
       })}
 

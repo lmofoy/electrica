@@ -45,12 +45,14 @@ function cableLengthLabel(lengthMm: number): string {
 }
 
 const GroupRow: React.FC<{ item: SheetGroup; pitch: number }> = ({ item, pitch }) => {
-  const { group, breakerRect, rcdRect, rowY } = item;
+  const { group, breakerRect, rcdRect, rowY, combined } = item;
   const boxRight = rcdRect ? rcdRect.x + rcdRect.width : breakerRect.x + breakerRect.width;
   const phase = group.phase ?? 'L';
   const detail = `${group.purposeLabel} · ${group.cable.cores}×${group.cable.sectionMm2} мм² · ${
     group.breaker.poles
-  }P ${group.breaker.curve} · ${phase} · ${cableLengthLabel(group.cableLengthMm)}`;
+  }P ${group.breaker.curve} · ${phase} · ${cableLengthLabel(group.cableLengthMm)}${
+    combined ? ' · диф.' : ''
+  }`;
   // В тесном ряду вторая строка не помещается: оставляем одно название.
   const { compact } = item;
   const nameFont = compact ? Math.min(2.4, Math.max(1.2, pitch * 0.5)) : 2.4;
@@ -84,6 +86,18 @@ const GroupRow: React.FC<{ item: SheetGroup; pitch: number }> = ({ item, pitch }
       >
         {group.breaker.ratingA} А
       </text>
+
+      {combined && group.rcd && breakerRect.height >= 6.2 && (
+        <text
+          x={breakerRect.x + breakerRect.width / 2}
+          y={rowY + 2.6}
+          textAnchor="middle"
+          fontSize={1.6}
+          fill={MUTED}
+        >
+          {group.rcd.sensitivityMa} мА {group.rcd.type}
+        </text>
+      )}
 
       {rcdRect && group.rcd && (
         <>
