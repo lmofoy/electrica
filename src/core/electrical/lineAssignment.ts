@@ -1,4 +1,6 @@
 import type { CircuitLine, ElectricalDevice, ElectricalPanel } from '../../types';
+import { LINE_PRESETS } from './norms';
+import { recalculateLine } from './panel';
 
 // Принадлежность прибора линии выводится из panel.lines[].deviceIds,
 // а не дублируется в самом приборе.
@@ -28,19 +30,20 @@ export function collectUnassignedDevices(
 }
 
 // После удаления приборов или комнат чистим ссылки, чтобы в линиях
-// не оставались «висячие» id.
+// не оставались «висячие» id. Вместе с составом пересчитываются нагрузка,
+// автомат и номинал АВДТ — иначе линия хранит мощность удалённых приборов.
 export function prunePanelRefs(
   panel: ElectricalPanel | null,
-  existingDeviceIds: Iterable<string>,
+  devices: ElectricalDevice[],
   existingRoomIds: Iterable<string>
 ): ElectricalPanel | null {
   if (!panel) return null;
-  const deviceIds = new Set(existingDeviceIds);
+  const byId = new Map(devices.map((device) => [device.id, device]));
   const roomIds = new Set(existingRoomIds);
 
   let changed = false;
   const lines = panel.lines.map((line) => {
-    const nextDeviceIds = line.deviceIds.filter((id) => deviceIds.has(id));
+    const nextDeviceIds = line.deviceIds.filter((id) => byId.has(id));
     const nextRoomIds = line.roomIds.filter((id) => roomIds.has(id));
     if (
       nextDeviceIds.length === line.deviceIds.length &&
@@ -49,7 +52,26 @@ export function prunePanelRefs(
       return line;
     }
     changed = true;
-    return { ...line, deviceIds: nextDeviceIds, roomIds: nextRoomIds };
+    const preset = LINE_PRESETS[line.purpose] ?? LINE_PRESETS.other;
+    const loadW =
+      nextDeviceIds.length === 0
+        ? preset.loadW
+        : Math.max(
+            preset.loadW,
+            nextDeviceIds.reduce(
+              (sum, id) => sum + (byId.get(id)?.powerWatts ?? 0),
+              0
+            )
+          );
+    const next = recalculateLine({
+      ...line,
+      deviceIds: nextDeviceIds,
+      roomIds: nextRoomIds,
+      loadW,
+    });
+    return next.combinedProtection && next.rcd
+      ? { ...next, rcd: { ...next.rcd, ratingA: next.breaker.ratingA } }
+      : next;
   });
 
   return changed ? { ...panel, lines } : panel;

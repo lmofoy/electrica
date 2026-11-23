@@ -1384,7 +1384,7 @@ export const useProjectStore = create<ProjectState>()(
 
           const nextPanel = prunePanelRefs(
             sanitizePanel(state.panel, remainingRooms, remainingPartitions, thickness),
-            remainingDevices.map((device) => device.id),
+            remainingDevices,
             remainingRooms.map((candidate) => candidate.id)
           );
 
@@ -1420,7 +1420,7 @@ export const useProjectStore = create<ProjectState>()(
             remainingPartitions,
             thickness
           ),
-          remainingDevices.map((device) => device.id),
+          remainingDevices,
           graph.updatedRooms.map((candidate) => candidate.id)
         );
         set({
@@ -1503,7 +1503,7 @@ export const useProjectStore = create<ProjectState>()(
           );
           const nextPanel = prunePanelRefs(
             sanitizePanel(state.panel, state.rooms, remainingPartitions, thickness),
-            devices.map((device) => device.id),
+            devices,
             state.rooms.map((room) => room.id)
           );
           set({
@@ -1521,7 +1521,7 @@ export const useProjectStore = create<ProjectState>()(
         } else {
           const nextPanel = prunePanelRefs(
             sanitizePanel(state.panel, state.rooms, remainingPartitions, thickness),
-            devices.map((device) => device.id),
+            devices,
             state.rooms.map((room) => room.id)
           );
           set({
@@ -1622,7 +1622,7 @@ export const useProjectStore = create<ProjectState>()(
         const devices = state.devices.filter((device) => device.id !== id);
         const panel = prunePanelRefs(
           state.panel,
-          devices.map((device) => device.id),
+          devices,
           state.rooms.map((room) => room.id)
         );
         set({
@@ -1851,7 +1851,7 @@ export const useProjectStore = create<ProjectState>()(
             devices,
             panel: prunePanelRefs(
               state.panel,
-              devices.map((device) => device.id),
+              devices,
               state.rooms.map((room) => room.id)
             ),
             selection:
@@ -1942,7 +1942,7 @@ export const useProjectStore = create<ProjectState>()(
           devices,
           panel: prunePanelRefs(
             state.panel,
-            devices.map((device) => device.id),
+            devices,
             state.rooms.map((room) => room.id)
           ),
           selection:
@@ -2677,7 +2677,7 @@ export const useProjectStore = create<ProjectState>()(
               next.state.freePartitions,
               settings.defaultWallThicknessMm
             ),
-            devices.map((device) => device.id),
+            devices,
             next.state.rooms.map((room) => room.id)
           );
           const panel = sanitizedPanel
@@ -2734,7 +2734,7 @@ export const useProjectStore = create<ProjectState>()(
             partitions,
             settings.defaultWallThicknessMm
           ),
-          devices.map((device) => device.id),
+          devices,
           rooms.map((room) => room.id)
         );
         const panel = sanitizedPanel

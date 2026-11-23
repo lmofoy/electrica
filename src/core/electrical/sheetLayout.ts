@@ -290,9 +290,9 @@ function buildNotes(schematic: PanelSchematic): string[] {
       supply.inputBreaker.curve
     }.`,
     mainRcd,
-    `Класс аппаратов по отключающей способности — ${breakingCapacityLabel(
+    `Класс автоматов и АВДТ по отключающей способности — ${breakingCapacityLabel(
       supply.breakingCapacityKa
-    )} (Icn).`,
+    )} (Icn); УЗО этим параметром не нормируется.`,
     `Групповые линии: ${supply.cableBrand}; суммарная длина кабелей ${totalCable}.`,
     `Включение: ${sequence}`,
     'Обозначения: QF — автомат или дифавтомат; QD — УЗО; PI — счётчик; KV — реле напряжения; F — УЗИП.',

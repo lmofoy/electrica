@@ -331,7 +331,7 @@ try {
       .filter((item) => item.id.startsWith('a-'));
     assert.equal(aItems.length, 1, 'combined line gets no separate RCD slot');
     assert.ok(
-      sheet.notesLines.some((note) => note.includes('Класс всех модульных аппаратов — 6 кА'))
+      sheet.notesLines.some((note) => note.includes('Класс автоматов и АВДТ — 6 кА'))
     );
   });
 

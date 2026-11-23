@@ -81,18 +81,30 @@ function roomsForDevices(
 
 function applyStrategyProtection(
   line: CircuitLine,
-  strategy: PanelStrategy
+  strategy: PanelStrategy,
+  rooms: RoomZone[]
 ): CircuitLine {
-  if (strategy === 'budget') return { ...line, rcd: null };
+  if (strategy === 'budget') {
+    return { ...line, rcd: null, combinedProtection: undefined };
+  }
   if (strategy === 'optimal') {
-    return line.purpose === 'lighting'
-      ? { ...line, rcd: null }
+    return line.purpose === 'lighting' && !lightingNeedsRcd(line, rooms)
+      ? { ...line, rcd: null, combinedProtection: undefined }
       : { ...line, rcd: makeRcd(30, 'A', line.breaker.ratingA) };
   }
   if (strategy === 'maximum') {
     return { ...line, rcd: makeRcd(30, 'A', line.breaker.ratingA) };
   }
   return line;
+}
+
+// Свет в ванной и санузле — влажная зона: по ГОСТ Р 50571.4.41 ему нужна
+// такая же защита 30 мА, как розеткам.
+function lightingNeedsRcd(line: CircuitLine, rooms: RoomZone[]): boolean {
+  return line.roomIds.some((roomId) => {
+    const room = rooms.find((candidate) => candidate.id === roomId);
+    return room?.type === 'bathroom' || room?.type === 'toilet';
+  });
 }
 
 // Пересобирает состав линии: приборы, комнаты, нагрузку и аппараты защиты.
@@ -395,7 +407,7 @@ export function createLineFromDevices(
 
   let line = withComposition(base, ids, ctx);
   if (options.applyStrategy) {
-    line = applyStrategyProtection(line, panel.strategy);
+    line = applyStrategyProtection(line, panel.strategy, ctx.rooms);
   }
 
   return {

@@ -150,6 +150,10 @@ function sanitizeSupply(supply: PanelSupply): PanelSupply {
     ? Math.max(1000, supply.allocatedPowerW)
     : 10000;
   const phases: 1 | 3 = supply.phases === 3 ? 3 : 1;
+  const inputBreaker =
+    phases === 3
+      ? { ...supply.inputBreaker, poles: 4 as const }
+      : supply.inputBreaker;
   const mainRcd = supply.mainRcd
     ? {
         ...supply.mainRcd,
@@ -162,6 +166,7 @@ function sanitizeSupply(supply: PanelSupply): PanelSupply {
     allocatedPowerW: allocated,
     voltageV: 230,
     phases,
+    inputBreaker,
     system: supply.system === 'TN-C-S' ? 'TN-C-S' : 'TN-S',
     reliabilityCategory:
       supply.reliabilityCategory === 'I' || supply.reliabilityCategory === 'II'
@@ -357,7 +362,11 @@ export function applyStrategy(
         voltageRelay: false,
         surgeProtection: false,
       },
-      lines: lines.map((line) => ({ ...line, rcd: null })),
+      lines: lines.map((line) => ({
+        ...line,
+        rcd: null,
+        combinedProtection: undefined,
+      })),
     };
   }
 
@@ -376,7 +385,7 @@ export function applyStrategy(
       lines: lines.map((line) =>
         needsOwnRcd(line, rooms)
           ? { ...line, rcd: makeRcd(30, 'A', line.breaker.ratingA) }
-          : { ...line, rcd: null }
+          : { ...line, rcd: null, combinedProtection: undefined }
       ),
     };
   }
@@ -445,7 +454,10 @@ export function recalculateSupply(supply: PanelSupply): PanelSupply {
   return {
     ...supply,
     inputCable: makeCable(input.cableSectionMm2, phases === 3 ? 5 : 3),
-    inputBreaker: makeBreaker(input.breakerRatingA, 'C'),
+    inputBreaker:
+      phases === 3
+        ? { ...makeBreaker(input.breakerRatingA, 'C'), poles: 4 as const }
+        : makeBreaker(input.breakerRatingA, 'C'),
     mainRcd: supply.mainRcd
       ? {
           ...supply.mainRcd,

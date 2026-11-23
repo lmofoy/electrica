@@ -329,9 +329,9 @@ export function buildDinSheetLayout(
   const capacity = normalizeBreakingCapacity(panel.breakingCapacityKa);
   const notes = [
     `Занято ${layout.modulesTotal} из ${layout.enclosureModules} модулей, свободно ${layout.freeModules}.`,
-    `Класс всех модульных аппаратов — ${breakingCapacityLabel(
+    `Класс автоматов и АВДТ — ${breakingCapacityLabel(
       capacity
-    )} по отключающей способности (Icn).`,
+    )} по отключающей способности (Icn); УЗО этим параметром не нормируется.`,
     'Обозначения соответствуют схеме ЭС-01, перечень — спецификации ЭС-03.',
     'Один модуль — 17,5 мм; на листе ширина модуля 18 мм, рейка — 216 мм.',
     `Зон раскладки: ${layout.zones.length}. Границы зон показаны цветом и подписями над рейками.`,

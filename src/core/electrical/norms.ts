@@ -405,12 +405,15 @@ export function applyPresetProtection(line: CircuitLine): CircuitLine {
     line.cable.sectionMm2,
     preset.breakerRatingA
   );
+  const rcd = preset.needsRcd
+    ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, breakerRatingA)
+    : null;
   return {
     ...line,
     breaker: makeBreaker(breakerRatingA, preset.curve),
-    rcd: preset.needsRcd
-      ? makeRcd(preset.rcd!.sensitivityMa, preset.rcd!.type, breakerRatingA)
-      : null,
+    rcd,
+    // Дифавтомат без УЗО невозможен: флаг живёт только вместе с rcd.
+    combinedProtection: rcd ? line.combinedProtection : undefined,
   };
 }
 
