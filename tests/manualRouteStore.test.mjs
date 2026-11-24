@@ -532,6 +532,88 @@ try {
     );
   });
 
+  await test('store segment remove: one undo step, panel stays connected, cut device warns', () => {
+    loadFresh(parallelogram);
+    const automatic = clone(storeRoute());
+    const base = baseRoute();
+    const deviceNode = manualRouteAnchorNode(base, 'device', 'test-socket');
+    assert.ok(deviceNode !== null, 'device starts on the route');
+    let target = null;
+    for (let pathIndex = 0; pathIndex < base.paths.length; pathIndex++) {
+      const path = base.paths[pathIndex];
+      if (path.length < 3) continue;
+      if (path[path.length - 1] === deviceNode) {
+        target = { pathIndex, segmentIndex: path.length - 2 };
+        break;
+      }
+      if (path[0] === deviceNode) {
+        target = { pathIndex, segmentIndex: 0 };
+        break;
+      }
+    }
+    assert.ok(target, 'device is an endpoint of a multi-segment path');
+    const path = base.paths[target.pathIndex];
+    const removedSpan = span(
+      base.nodes[path[target.segmentIndex]],
+      base.nodes[path[target.segmentIndex + 1]]
+    );
+    const counts = historySize();
+    assert.equal(
+      state().removeLineRouteSegment(LINE_ID, target.pathIndex, target.segmentIndex),
+      true
+    );
+    assert.equal(history().pastStates.length, counts[0] + 1, 'removal is one undo step');
+    assert.match(lastToast()?.message ?? '', /Участок трассы удалён/);
+    const manual = line().manualRoute;
+    assert.ok(manual);
+    assert.equal(validateManualRoute(manual), null);
+    assert.ok(manualRouteAnchorNode(manual, 'panel') !== null, 'panel stays on the route');
+    near(
+      manualRouteLength(manual),
+      manualRouteLength(base) - removedSpan,
+      'only the removed span disappeared',
+      1e-3
+    );
+    const routed = storeRoute();
+    assert.match(routed.warning ?? '', /не подключён к щитку/);
+    history().undo();
+    assert.equal(line().manualRoute, undefined, 'undo returns to the auto route');
+    assert.deepEqual(storeRoute(), automatic, 'auto geometry is restored exactly');
+  });
+
+  await test('store segment remove: panel cut-off, last segment and bad ids are refused without history', () => {
+    loadFresh(rectangle);
+    const base = baseRoute();
+    const panelNode = manualRouteAnchorNode(base, 'panel');
+    assert.ok(panelNode !== null);
+    let panelEdge = null;
+    for (let pathIndex = 0; pathIndex < base.paths.length; pathIndex++) {
+      const path = base.paths[pathIndex];
+      if (path.length < 2) continue;
+      if (path[0] === panelNode) panelEdge = { pathIndex, segmentIndex: 0 };
+      else if (path[path.length - 1] === panelNode) {
+        panelEdge = { pathIndex, segmentIndex: path.length - 2 };
+      }
+      if (panelEdge) break;
+    }
+    assert.ok(panelEdge);
+    const counts = historySize();
+    const panelCopy = clone(state().panel);
+    assert.equal(
+      state().removeLineRouteSegment(LINE_ID, panelEdge.pathIndex, panelEdge.segmentIndex),
+      false
+    );
+    assert.match(lastToast()?.message ?? '', /щиток|последний участок/);
+    assert.deepEqual(state().panel, panelCopy, 'panel is untouched');
+    assert.deepEqual(historySize(), counts, 'refusal creates no undo step');
+
+    assert.equal(state().removeLineRouteSegment(LINE_ID, 99, 0), false);
+    assert.match(lastToast()?.message ?? '', /Участок не найден/);
+    assert.equal(state().removeLineRouteSegment(LINE_ID, 0, 99), false);
+    assert.match(lastToast()?.message ?? '', /Сегмент не найден/);
+    assert.deepEqual(historySize(), counts, 'bad ids create no undo step');
+  });
+
   await test('store reset: manual route and legacy waypoints return to auto with undo', () => {
     loadFresh(rectangle);
     const automatic = storeRoute();

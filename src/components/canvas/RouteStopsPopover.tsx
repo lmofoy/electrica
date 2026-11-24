@@ -5,12 +5,13 @@ import {
   ChevronUp,
   GitFork,
   GripVertical,
+  Link2,
   ListOrdered,
   Lock,
   MapPin,
-  PenLine,
   Plug,
   RotateCcw,
+  Scissors,
   Square,
   Trash2,
   X,
@@ -23,6 +24,8 @@ import type {
 import { DEVICE_CATALOG } from '../../core/electrical/devices';
 import {
   manualRouteBranches,
+  manualRouteConnectedDeviceIds,
+  manualRouteHasPanelAnchor,
   type ManualRouteStop,
 } from '../../core/electrical/manualRoute';
 import { deviceIcon } from './deviceIcon';
@@ -40,8 +43,10 @@ interface RouteStopsPopoverProps {
   onReorder: (branchIndex: number, fromIndex: number, toIndex: number) => void;
   onRemoveNode: (nodeIndex: number) => void;
   onReset: () => void;
-  onBeginManualDraw: () => void;
+  onBeginRouteLink: (tool: 'link' | 'junction') => void;
   onClose: () => void;
+  segmentMode: boolean;
+  onToggleSegmentMode: () => void;
 }
 
 interface DragSource {
@@ -78,7 +83,7 @@ function stopMeta(
   }
   if (stop.kind === 'junction') {
     return {
-      title: 'Стык (ветвление)',
+      title: 'Узел (распред. коробка)',
       subtitle: 'здесь кабель расходится на ветви',
       tone: '#fbbf24',
       Icon: GitFork,
@@ -111,25 +116,24 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
   onReorder,
   onRemoveNode,
   onReset,
-  onBeginManualDraw,
+  onBeginRouteLink,
   onClose,
+  segmentMode,
+  onToggleSegmentMode,
 }) => {
   const branches = useMemo(() => manualRouteBranches(route), [route]);
   const deviceById = useMemo(
     () => new Map(devices.map((device) => [device.id, device] as const)),
     [devices]
   );
-  // Прибор может быть в линии, но ещё не на трассе: список показывает и его,
-  // отдельной группой, чтобы состав линии всегда был виден целиком.
-  const connectedDeviceIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const branch of branches) {
-      for (const stop of branch.stops) {
-        if (stop.kind === 'device' && stop.deviceId) ids.add(stop.deviceId);
-      }
-    }
-    return ids;
-  }, [branches]);
+  // Прибор может быть в линии, но ещё не подключён к щитку: список показывает
+  // и его, отдельной группой, чтобы состав линии всегда был виден целиком.
+  const connectedDeviceIds = useMemo(
+    () => manualRouteConnectedDeviceIds(route),
+    [route]
+  );
+  const panelConnected = useMemo(() => manualRouteHasPanelAnchor(route), [route]);
+  const looseJunctions = line.routeJunctions ?? [];
   const unconnectedDevices = useMemo(
     () =>
       line.deviceIds
@@ -141,6 +145,15 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
   const connectedCount = line.deviceIds.filter((id) =>
     connectedDeviceIds.has(id)
   ).length;
+  const unconnectedLabel =
+    unconnectedDevices.length > 0
+      ? `${unconnectedDevices
+          .slice(0, 4)
+          .map((device) => device.name)
+          .join(', ')}${unconnectedDevices.length > 4 ? ` и ещё ${unconnectedDevices.length - 4}` : ''}`
+      : null;
+  const allConnected =
+    panelConnected && connectedCount === line.deviceIds.length;
   const panelDragRef = useRef<{
     clientX: number;
     clientY: number;
@@ -282,11 +295,70 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
       {!collapsed && (
         <>
           <div className="route-stops-scroll flex-1 overflow-y-auto px-2 py-2 space-y-2.5">
+            {line.deviceIds.length > 0 && (
+              <div
+                data-route-panel-status={
+                  allConnected ? 'connected' : panelConnected ? 'partial' : 'disconnected'
+                }
+                className={`flex items-start gap-1.5 rounded-lg border px-2 py-1.5 ${
+                  allConnected
+                    ? 'border-emerald-500/25 bg-emerald-500/5'
+                    : 'border-amber-500/30 bg-amber-500/5'
+                }`}
+              >
+                <span
+                  className={`mt-0.5 shrink-0 ${
+                    allConnected ? 'text-emerald-400' : 'text-amber-400'
+                  }`}
+                >
+                  {allConnected ? <Plug size={12} /> : <AlertTriangle size={12} />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span
+                    className={`block text-[10px] font-bold leading-tight ${
+                      allConnected ? 'text-emerald-200' : 'text-amber-200'
+                    }`}
+                  >
+                    {!panelConnected
+                      ? 'Трасса не подключена к щитку'
+                      : `Подключено к щитку: ${connectedCount} из ${line.deviceIds.length}`}
+                  </span>
+                  <span className="block text-[9px] text-slate-400 leading-snug">
+                    {!panelConnected
+                      ? 'Нажмите «Соединять» и соедините щиток с трассой или прибором.'
+                      : unconnectedLabel
+                        ? `Не подключены: ${unconnectedLabel}`
+                        : 'Все приборы линии подключены к щитку.'}
+                  </span>
+                </span>
+              </div>
+            )}
+
+            {looseJunctions.length > 0 && (
+              <div
+                data-route-loose-junctions={looseJunctions.length}
+                className="flex items-start gap-1.5 rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-2 py-1.5"
+                title="Узел поставлен, но ещё не соединён с трассой"
+              >
+                <span className="mt-0.5 shrink-0 text-amber-400">
+                  <GitFork size={12} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[10px] font-bold text-amber-200 leading-tight">
+                    Узлы без связи: {looseJunctions.length}
+                  </span>
+                  <span className="block text-[9px] text-slate-400 leading-snug">
+                    Соедините узел с трассой или прибором кнопкой «Соединять».
+                  </span>
+                </span>
+              </div>
+            )}
+
             {branches.length === 0 && (
               <p className="text-[10px] text-slate-400 px-1 py-3 text-center leading-snug">
                 {line.deviceIds.length === 0
                   ? 'В линии пока нет приборов — добавьте их на шаге «Приборы по линиям».'
-                  : 'Трасса не проложена — приборы линии перечислены ниже. Проведите кабель вручную или нажмите «Проложить автоматически».'}
+                  : 'Трасса не проложена — приборы линии перечислены ниже. Нажмите «Соединять» и соедините щиток с приборами в любом порядке.'}
               </p>
             )}
 
@@ -505,7 +577,7 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
                     <AlertTriangle size={9} />
                   </span>
                   <span className="text-[10px] font-bold text-amber-200 truncate">
-                    Не на трассе
+                    Не подключено к щитку
                   </span>
                   <span className="ml-auto shrink-0 text-[9px] font-mono text-slate-500">
                     {unconnectedDevices.length} приб.
@@ -520,7 +592,7 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
                         key={device.id}
                         data-route-unconnected-device={device.id}
                         className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 px-1.5 py-1"
-                        title="Прибор в линии, но кабель к нему ещё не проложен: «Проложить автоматически» или «Проложить вручную» добавят его в трассу"
+                        title="Прибор в линии, но не подключён к щитку: соедините его с трассой кнопкой «Соединять» или проложите трассу автоматически"
                       >
                         <span className="flex items-center justify-center w-5 h-5 rounded-md shrink-0 text-[9px] font-bold text-amber-300/80 bg-amber-500/10">
                           ·
@@ -538,7 +610,7 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
                           <span className="block text-[9px] text-slate-500 truncate leading-tight">
                             {catalog.label}
                             {device.powerWatts > 0 ? ` · ${device.powerWatts} Вт` : ''} · в
-                            линии, нет в трассе
+                            линии, нет связи со щитком
                           </span>
                         </span>
                       </div>
@@ -555,12 +627,33 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
             )}
             <div className="flex flex-wrap items-center gap-1.5">
               <button
-                onClick={onBeginManualDraw}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
-                title="Провести трассу по плану вручную"
+                onClick={() => onBeginRouteLink('link')}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-[10px] font-bold transition"
+                title="Соединить щиток, приборы и узлы отрезками трассы в любом порядке"
               >
-                <PenLine size={11} />
-                Проложить вручную
+                <Link2 size={11} />
+                Соединять
+              </button>
+              <button
+                onClick={() => onBeginRouteLink('junction')}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-bold transition"
+                title="Поставить узел (распределительную коробку) внутри комнаты"
+              >
+                <GitFork size={11} />
+                Узел
+              </button>
+              <button
+                onClick={onToggleSegmentMode}
+                disabled={route.paths.length === 0}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-bold transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                  segmentMode
+                    ? 'bg-rose-500 hover:bg-rose-400 border-rose-400 text-slate-950'
+                    : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                }`}
+                title="Удалить отдельный отрезок между точками: остальные участки трассы остаются"
+              >
+                <Scissors size={11} />
+                Убрать участок
               </button>
               <button
                 onClick={onReset}
@@ -579,7 +672,9 @@ export const RouteStopsPopover: React.FC<RouteStopsPopoverProps> = ({
               </button>
             </div>
             <p className="text-[9px] text-slate-500 leading-snug">
-              Трассу удобнее провести вручную; автоматическая — запасной вариант. Перетащите строку — кабель пойдёт строго в этом порядке, перестроится только эта ветвь. Клик по линии — вставить точку, Delete — удалить, Esc — выйти. Приборы и щиток на плане не двигаются. Стык — место ветвления, не распределительная коробка.
+              {segmentMode
+                ? 'Режим «Убрать участок»: наведите на отрезок трассы — он подсветится красным, клик удалит только этот участок, остальное останется. Esc — выйти из режима.'
+                : '«Соединять»: кликните щиток, прибор или узел, затем второй конец — отрезок ляжет под 90°. Порядок любой, кольца не нужны. «Узел» ставит распределительную коробку в комнате. Перетащите строку — кабель пойдёт в этом порядке. Клик по линии — вставить точку, Delete — удалить, Esc — выйти.'}
             </p>
           </div>
         </>

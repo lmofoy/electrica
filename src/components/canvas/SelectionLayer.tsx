@@ -1,6 +1,14 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Layer, Line, Circle, Rect, Group } from 'react-konva';
-import type { FreePartition, MountingFrame, Opening, RoomZone, Selection } from '../../types';
+import type Konva from 'konva';
+import type {
+  FreePartition,
+  MountingFrame,
+  Opening,
+  Point2D,
+  RoomZone,
+  Selection,
+} from '../../types';
 import type { ResolvedDevice } from '../../core/electrical/devices';
 import type { DevicePose } from '../../core/electrical/devices';
 import {
@@ -26,7 +34,13 @@ interface SelectionLayerProps {
   panelPose: DevicePose | null;
   zoom: number;
   onSelect: (selection: Selection) => void;
+  /** Включает перетаскивание рамок и приборов (колбэки должны быть переданы). */
+  canDrag?: boolean;
+  onFrameDrag?: (id: string, point: Point2D, phase: 'move' | 'end') => void;
+  onDeviceDrag?: (id: string, point: Point2D, phase: 'move' | 'end') => void;
 }
+
+type LayerDragEvent = Konva.KonvaEventObject<DragEvent>;
 
 export const SelectionLayer: React.FC<SelectionLayerProps> = ({
   selection,
@@ -41,9 +55,89 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
   panelPose,
   zoom,
   onSelect,
+  canDrag = false,
+  onFrameDrag,
+  onDeviceDrag,
 }) => {
   const isSelected = (kind: Selection['kind'], id: string) =>
     selection?.kind === kind && selection.id === id;
+
+  // Konva dragstart срабатывает только после порога движения; флаг нужен,
+  // чтобы клик, завершающий перетаскивание, не менял выделение.
+  const draggingRef = useRef(false);
+
+  const frameDraggable = Boolean(canDrag && onFrameDrag);
+  const deviceDraggable = Boolean(canDrag && onDeviceDrag);
+
+  // Мировая точка курсора в мм (не позиция узла: узлы двигаются вместе с указателем).
+  const pointerMm = (e: LayerDragEvent): Point2D | null => {
+    const stage = e.target.getStage();
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return null;
+    return {
+      x: (pointer.x - stage.x()) / stage.scaleX(),
+      y: (pointer.y - stage.y()) / stage.scaleY(),
+    };
+  };
+
+  const handleDragStart = (e: LayerDragEvent) => {
+    draggingRef.current = true;
+    e.cancelBubble = true;
+    const container = e.target.getStage()?.container();
+    if (container) container.style.cursor = 'grabbing';
+  };
+
+  const handleDragMove = (
+    e: LayerDragEvent,
+    id: string,
+    callback?: (id: string, point: Point2D, phase: 'move' | 'end') => void
+  ) => {
+    e.cancelBubble = true;
+    const point = pointerMm(e);
+    if (point) callback?.(id, point, 'move');
+  };
+
+  const handleDragEnd = (
+    e: LayerDragEvent,
+    id: string,
+    restore: () => void,
+    callback?: (id: string, point: Point2D, phase: 'move' | 'end') => void
+  ) => {
+    e.cancelBubble = true;
+    const point = pointerMm(e);
+    if (point) callback?.(id, point, 'end');
+    // Hit-зоны прозрачные, поэтому возврат узла незаметен; превью рисует другой слой.
+    restore();
+    const container = e.target.getStage()?.container();
+    if (container) container.style.cursor = '';
+    // Сбрасываем флаг после того, как клик текущего жеста уже обработан.
+    setTimeout(() => {
+      draggingRef.current = false;
+    }, 0);
+  };
+
+  const handleHitClick = (
+    e: Konva.KonvaEventObject<MouseEvent>,
+    next: Selection
+  ) => {
+    if (draggingRef.current) return;
+    if (e.evt.button !== 0) return;
+    e.cancelBubble = true;
+    onSelect(next);
+  };
+
+  const handleHitEnter = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (!canDrag || draggingRef.current) return;
+    const container = e.target.getStage()?.container();
+    if (container) container.style.cursor = 'move';
+  };
+
+  const handleHitLeave = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Во время перетаскивания курсор не трогаем: его сбросит dragend.
+    if (draggingRef.current) return;
+    const container = e.target.getStage()?.container();
+    if (container) container.style.cursor = '';
+  };
 
   return (
     <Layer listening={listening}>
@@ -129,11 +223,32 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
               width={width}
               height={FRAME_PLATE_DEPTH_MM}
               fill="rgba(2, 6, 23, 0.001)"
-              onClick={(e) => {
-                if (e.evt.button !== 0) return;
-                e.cancelBubble = true;
-                onSelect({ kind: 'frame', id: frame.id });
-              }}
+              draggable={frameDraggable}
+              onClick={(e) => handleHitClick(e, { kind: 'frame', id: frame.id })}
+              onMouseEnter={frameDraggable ? handleHitEnter : undefined}
+              onMouseLeave={frameDraggable ? handleHitLeave : undefined}
+              onDragStart={frameDraggable ? handleDragStart : undefined}
+              onDragMove={
+                frameDraggable
+                  ? (e) => handleDragMove(e, frame.id, onFrameDrag)
+                  : undefined
+              }
+              onDragEnd={
+                frameDraggable
+                  ? (e) =>
+                      handleDragEnd(
+                        e,
+                        frame.id,
+                        () => {
+                          e.target.setAttrs({
+                            x: -width / 2,
+                            y: -FRAME_PLATE_DEPTH_MM / 2,
+                          });
+                        },
+                        onFrameDrag
+                      )
+                  : undefined
+              }
             />
             {selected && (
               <Rect
@@ -161,11 +276,34 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
               y={pose.position.y}
               radius={14 / zoom}
               fill="rgba(2, 6, 23, 0.001)"
-              onClick={(e) => {
-                if (e.evt.button !== 0) return;
-                e.cancelBubble = true;
-                onSelect({ kind: 'device', id: resolved.device.id });
-              }}
+              draggable={deviceDraggable}
+              onClick={(e) =>
+                handleHitClick(e, { kind: 'device', id: resolved.device.id })
+              }
+              onMouseEnter={deviceDraggable ? handleHitEnter : undefined}
+              onMouseLeave={deviceDraggable ? handleHitLeave : undefined}
+              onDragStart={deviceDraggable ? handleDragStart : undefined}
+              onDragMove={
+                deviceDraggable
+                  ? (e) => handleDragMove(e, resolved.device.id, onDeviceDrag)
+                  : undefined
+              }
+              onDragEnd={
+                deviceDraggable
+                  ? (e) =>
+                      handleDragEnd(
+                        e,
+                        resolved.device.id,
+                        () => {
+                          e.target.setAttrs({
+                            x: pose.position.x,
+                            y: pose.position.y,
+                          });
+                        },
+                        onDeviceDrag
+                      )
+                  : undefined
+              }
             />
           ))}
         </React.Fragment>

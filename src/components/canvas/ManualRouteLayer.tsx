@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Circle, Group, Layer, Rect } from 'react-konva';
+import { Circle, Group, Layer, Line, Rect } from 'react-konva';
 import Konva from 'konva';
 import type { ManualRoute, Point2D } from '../../types';
 import {
@@ -23,6 +23,8 @@ interface ManualRouteLayerProps {
   onPreview: (nodeIndex: number, point: Point2D) => Point2D | null;
   onMove: (nodeIndex: number, point: Point2D) => void;
   onCancelPreview: () => void;
+  eraseMode: boolean;
+  onRemoveSegment: (pathIndex: number, segmentIndex: number) => void;
 }
 
 interface HoverSegment {
@@ -91,6 +93,8 @@ export const ManualRouteLayer: React.FC<ManualRouteLayerProps> = ({
   onPreview,
   onMove,
   onCancelPreview,
+  eraseMode,
+  onRemoveSegment,
 }) => {
   const [hover, setHover] = useState<HoverSegment | null>(null);
   // На время жеста маркеры рисуются по исходной трассе: превью может
@@ -116,6 +120,31 @@ export const ManualRouteLayer: React.FC<ManualRouteLayerProps> = ({
   const snapPoint = (point: Point2D): Point2D =>
     gridSnap ? snapToGrid(point, gridStepMm) : point;
 
+  const handleGroundClick = (
+    event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
+  ) => {
+    event.cancelBubble = true;
+    const point = pointerMm(event);
+    if (!point) return;
+    const hit = nearestSegment(route, point, toleranceMm);
+    if (hit) {
+      if (eraseMode) onRemoveSegment(hit.pathIndex, hit.segmentIndex);
+      else onInsert(hit.pathIndex, hit.segmentIndex, point);
+      setHover(null);
+      return;
+    }
+    onSelectNode(null);
+  };
+
+  const hoverPath = hover ? route.paths[hover.pathIndex] : null;
+  const hoverEdge =
+    hover && hoverPath && hover.segmentIndex + 1 < hoverPath.length
+      ? {
+          start: route.nodes[hoverPath[hover.segmentIndex]],
+          end: route.nodes[hoverPath[hover.segmentIndex + 1]],
+        }
+      : null;
+
   const anchorsByNode = new Map(
     displayRoute.anchors.map((anchor) => [anchor.nodeIndex, anchor] as const)
   );
@@ -132,30 +161,10 @@ export const ManualRouteLayer: React.FC<ManualRouteLayerProps> = ({
         height={height / zoom}
         fill="rgba(0, 0, 0, 0)"
         onClick={(e) => {
-          e.cancelBubble = true;
           if (e.evt.button !== 0) return;
-          const point = pointerMm(e);
-          if (!point) return;
-          const hit = nearestSegment(route, point, toleranceMm);
-          if (hit) {
-            onInsert(hit.pathIndex, hit.segmentIndex, point);
-            setHover(null);
-            return;
-          }
-          onSelectNode(null);
+          handleGroundClick(e);
         }}
-        onTap={(e) => {
-          e.cancelBubble = true;
-          const point = pointerMm(e);
-          if (!point) return;
-          const hit = nearestSegment(route, point, toleranceMm);
-          if (hit) {
-            onInsert(hit.pathIndex, hit.segmentIndex, point);
-            setHover(null);
-            return;
-          }
-          onSelectNode(null);
-        }}
+        onTap={handleGroundClick}
         onMouseMove={(e) => {
           const point = pointerMm(e);
           setHover(point ? nearestSegment(route, point, toleranceMm) : null);
@@ -163,7 +172,35 @@ export const ManualRouteLayer: React.FC<ManualRouteLayerProps> = ({
         onMouseLeave={() => setHover(null)}
       />
 
-      {hover && (
+      {hoverEdge && eraseMode && (
+        <>
+          <Line
+            points={[
+              hoverEdge.start.x,
+              hoverEdge.start.y,
+              hoverEdge.end.x,
+              hoverEdge.end.y,
+            ]}
+            stroke="#f87171"
+            strokeWidth={6 / zoom}
+            opacity={0.6}
+            lineCap="round"
+            listening={false}
+          />
+          <Circle
+            x={hover!.point.x}
+            y={hover!.point.y}
+            radius={5 / zoom}
+            fill="#f87171"
+            opacity={0.85}
+            stroke="#ffffff"
+            strokeWidth={1 / zoom}
+            listening={false}
+          />
+        </>
+      )}
+
+      {hover && !eraseMode && (
         <Circle
           x={hover.point.x}
           y={hover.point.y}
@@ -189,7 +226,8 @@ export const ManualRouteLayer: React.FC<ManualRouteLayerProps> = ({
             key={`node-${index}`}
             x={point.x}
             y={point.y}
-            draggable={draggable}
+            draggable={!eraseMode && draggable}
+            listening={!eraseMode}
             onMouseDown={(e) => {
               e.cancelBubble = true;
             }}

@@ -636,6 +636,14 @@ export type ManualRouteMoveResult =
   | { ok: true; route: ManualRoute; nodeIndex: number }
   | ManualRouteError;
 
+export type ManualRouteAnchorMove =
+  | { kind: 'panel'; point: Point2D }
+  | { kind: 'device'; deviceId: string; point: Point2D };
+
+export type ManualRouteAnchorsMoveResult =
+  | { ok: true; route: ManualRoute }
+  | ManualRouteError;
+
 // Закреплены только физические точки подключения. Стык (junction) — обычная
 // геометрическая вершина, его можно двигать.
 function isPhysicalAnchorNode(route: ManualRoute, nodeIndex: number): boolean {
@@ -888,6 +896,279 @@ export function moveManualRouteNode(
     return { ok: false, error: 'Не удалось сохранить перемещённую вершину.' };
   }
   return { ok: true, route: moved, nodeIndex: movedIndex };
+}
+
+/**
+ * Сдвигает физические якоря (щиток и приборы) вслед за их элементами.
+ * Остальные вершины не двигаются: каждый примыкающий участок возвращается
+ * к соседу ступенькой под 90°, как при перемещении обычной точки. Пакет
+ * нужен для подрозетника: все его механизмы переезжают одним шагом.
+ */
+export function moveManualRouteAnchors(
+  route: ManualRoute,
+  moves: ManualRouteAnchorMove[]
+): ManualRouteAnchorsMoveResult {
+  const clean = sanitizeManualRoute(route);
+  if (!clean) {
+    return { ok: false, error: 'Ручная трасса повреждена и не может быть изменена.' };
+  }
+  if (!Array.isArray(moves) || moves.length === 0) {
+    return { ok: true, route: clean };
+  }
+
+  const bends = bendNodeSet(clean);
+  const targets = new Map<number, Point2D>();
+  const moving = new Set<number>();
+
+  for (const move of moves) {
+    if (!finitePoint(move.point)) {
+      return { ok: false, error: 'Некорректная координата перемещения.' };
+    }
+    let nodeIndex: number | null = null;
+    if (move.kind === 'panel') {
+      nodeIndex = manualRouteAnchorNode(clean, 'panel');
+    } else {
+      if (!move.deviceId) {
+        return { ok: false, error: 'У прибора не задан идентификатор для трассы.' };
+      }
+      nodeIndex = manualRouteAnchorNode(clean, 'device', move.deviceId);
+    }
+    if (nodeIndex === null) continue;
+    if (!isPhysicalAnchorNode(clean, nodeIndex)) continue;
+
+    const point = { x: move.point.x, y: move.point.y };
+    const existing = targets.get(nodeIndex);
+    if (existing) {
+      if (!samePoint(existing, point)) {
+        return { ok: false, error: 'Один якорь трассы получил две разные позиции.' };
+      }
+      continue;
+    }
+    if (samePoint(clean.nodes[nodeIndex], point)) continue;
+    targets.set(nodeIndex, point);
+    moving.add(nodeIndex);
+  }
+
+  if (targets.size === 0) return { ok: true, route: clean };
+
+  const entries = [...targets.entries()];
+  for (let index = 0; index < entries.length; index += 1) {
+    const [nodeIndex, to] = entries[index];
+    for (let i = 0; i < clean.nodes.length; i += 1) {
+      if (i === nodeIndex || moving.has(i) || bends.has(i)) continue;
+      if (samePoint(to, clean.nodes[i])) {
+        return {
+          ok: false,
+          error: 'Якорь совпал бы с другой вершиной трассы. Выберите другое положение.',
+        };
+      }
+    }
+    for (let other = index + 1; other < entries.length; other += 1) {
+      if (samePoint(to, entries[other][1])) {
+        return { ok: false, error: 'Два якоря трассы оказались в одной точке.' };
+      }
+    }
+    const incidents = incidentEdges(clean, nodeIndex);
+    if (incidents.length === 0) {
+      return { ok: false, error: 'Якорь не принадлежит ни одному участку трассы.' };
+    }
+    if (incidents.some((edge) => edge.orientation === 'slanted')) {
+      return {
+        ok: false,
+        error: 'Наклонный участок нельзя переподключить к переехавшему элементу.',
+      };
+    }
+    for (const path of clean.paths) {
+      let occurrences = 0;
+      for (const pathIndex of path) if (pathIndex === nodeIndex) occurrences += 1;
+      if (occurrences > 1) {
+        return {
+          ok: false,
+          error: 'Участок проходит через якорь дважды — перемещение невозможно.',
+        };
+      }
+    }
+  }
+
+  const next = cloneRoute(clean);
+  for (const [nodeIndex, to] of targets) {
+    next.nodes[nodeIndex] = { x: to.x, y: to.y };
+  }
+  let nextPaths = clean.paths.map((path) => [...path]);
+  let nextBends = new Set(bends);
+  const orientationByNode = new Map<number, Map<number, SegmentOrientation>>();
+  for (const nodeIndex of moving) {
+    orientationByNode.set(
+      nodeIndex,
+      new Map(
+        incidentEdges(clean, nodeIndex).map(
+          (edge) => [edge.neighbor, edge.orientation] as const
+        )
+      )
+    );
+  }
+
+  const rebuildAround = (nodeIndex: number): ManualRouteError | null => {
+    const orientationByNeighbor = orientationByNode.get(nodeIndex) ?? new Map();
+
+    const partnerOfBend = (bendIndex: number): number | null => {
+      let partner: number | null = null;
+      for (const path of nextPaths) {
+        for (let i = 0; i < path.length; i += 1) {
+          if (path[i] !== bendIndex) continue;
+          for (const side of [i - 1, i + 1]) {
+            if (side < 0 || side >= path.length) continue;
+            const neighbor = path[side];
+            if (neighbor === nodeIndex || neighbor === bendIndex) continue;
+            if (partner !== null && partner !== neighbor) return null;
+            partner = neighbor;
+          }
+        }
+      }
+      return partner;
+    };
+
+    const sideNeighbor = (
+      path: number[],
+      position: number,
+      direction: -1 | 1
+    ): {
+      index: number | null;
+      neighborPos: number;
+      kind: SegmentOrientation | null;
+    } => {
+      const rawPos = position + direction;
+      if (rawPos < 0 || rawPos >= path.length) {
+        return { index: null, neighborPos: rawPos, kind: null };
+      }
+      const raw = path[rawPos];
+      if (nextBends.has(raw)) {
+        const partner = partnerOfBend(raw);
+        if (partner !== null && partner !== nodeIndex) {
+          return {
+            index: partner,
+            neighborPos: rawPos + direction,
+            kind: orientation(clean.nodes[nodeIndex], clean.nodes[raw]),
+          };
+        }
+      }
+      return { index: raw, neighborPos: rawPos, kind: null };
+    };
+
+    const elbowCache = new Map<string, number | null>();
+    const elbowFor = (
+      neighborIndex: number,
+      kindOverride: SegmentOrientation | null
+    ): number | null => {
+      const kind =
+        kindOverride ??
+        orientationByNeighbor.get(neighborIndex) ??
+        orientation(clean.nodes[nodeIndex], clean.nodes[neighborIndex]);
+      const cacheKey = `${neighborIndex}:${kind}`;
+      if (elbowCache.has(cacheKey)) return elbowCache.get(cacheKey) ?? null;
+      if (kind === 'slanted') {
+        elbowCache.set(cacheKey, null);
+        return null;
+      }
+      const neighbor = next.nodes[neighborIndex];
+      const to = next.nodes[nodeIndex];
+      const elbowPoint =
+        kind === 'h'
+          ? { x: neighbor.x, y: to.y }
+          : { x: to.x, y: neighbor.y };
+      if (samePoint(elbowPoint, to) || samePoint(elbowPoint, neighbor)) {
+        elbowCache.set(cacheKey, null);
+        return null;
+      }
+      const index = next.nodes.length;
+      next.nodes.push({ x: elbowPoint.x, y: elbowPoint.y });
+      nextBends.add(index);
+      elbowCache.set(cacheKey, index);
+      return index;
+    };
+
+    const rebuiltPaths: number[][] = [];
+    for (const path of nextPaths) {
+      const position = path.indexOf(nodeIndex);
+      if (position < 0) {
+        rebuiltPaths.push([...path]);
+        continue;
+      }
+      const previous = sideNeighbor(path, position, -1);
+      const following = sideNeighbor(path, position, 1);
+      const result: number[] =
+        previous.index !== null
+          ? path.slice(0, previous.neighborPos)
+          : path.slice(0, position);
+      if (previous.index !== null) {
+        result.push(previous.index);
+        const elbow = elbowFor(previous.index, previous.kind);
+        if (elbow !== null) result.push(elbow);
+      }
+      result.push(nodeIndex);
+      if (following.index !== null) {
+        const elbow = elbowFor(following.index, following.kind);
+        if (elbow !== null) result.push(elbow);
+        result.push(following.index);
+      }
+      result.push(
+        ...(following.index !== null
+          ? path.slice(following.neighborPos + 1)
+          : path.slice(position + 1))
+      );
+      rebuiltPaths.push(result);
+    }
+    nextPaths = rebuiltPaths;
+    nextBends.delete(nodeIndex);
+    return null;
+  };
+
+  for (const nodeIndex of targets.keys()) {
+    const error = rebuildAround(nodeIndex);
+    if (error) return error;
+  }
+
+  const moved = compactRoute(
+    {
+      nodes: next.nodes,
+      paths: nextPaths,
+      anchors: next.anchors,
+      bendNodes: [...nextBends],
+    },
+    { removeCollinear: true }
+  );
+  if (!moved) {
+    return { ok: false, error: 'Не удалось сохранить трассу: она схлопнулась.' };
+  }
+  const invalid = validateRoute(moved);
+  if (invalid) return invalid;
+  if (!isManualRouteOrthogonal(moved)) {
+    return {
+      ok: false,
+      error: 'После перемещения в трассе появился наклонный участок.',
+    };
+  }
+
+  for (const [nodeIndex, to] of targets) {
+    const originalAnchor = clean.anchors.find(
+      (anchor) => anchor.nodeIndex === nodeIndex
+    );
+    if (!originalAnchor) {
+      return { ok: false, error: 'Якорь трассы не найден после перемещения.' };
+    }
+    const movedIndex =
+      originalAnchor.kind === 'device'
+        ? manualRouteAnchorNode(moved, 'device', originalAnchor.deviceId)
+        : manualRouteAnchorNode(moved, originalAnchor.kind);
+    if (movedIndex === null || !samePoint(moved.nodes[movedIndex], to)) {
+      return {
+        ok: false,
+        error: 'Не удалось закрепить якорь трассы на новом месте.',
+      };
+    }
+  }
+
+  return { ok: true, route: moved };
 }
 
 export function insertManualRouteNode(
@@ -1196,6 +1477,90 @@ export function removeManualRouteNode(
   return resultWithRoute(compacted);
 }
 
+/**
+ * Удаляет отдельный сегмент (ребро между соседними вершинами) из трассы.
+ * Ребро убирается из всех путей, где оно встречается, и каждый путь в этом
+ * месте расщепляется. Вершины, точки и приборы на удалённом ребре остаются
+ * сами по себе: прибор, к которому вёл отрезанный участок, просто переходит
+ * в «Не на трассе». Отрезать щиток от трассы целиком нельзя.
+ */
+export function removeManualRouteSegment(
+  route: ManualRoute,
+  pathIndex: number,
+  segmentIndex: number
+): ManualRouteResult {
+  const clean = sanitizeManualRoute(route);
+  if (!clean) {
+    return { ok: false, error: 'Ручная трасса повреждена и не может быть изменена.' };
+  }
+  if (
+    !Number.isInteger(pathIndex) ||
+    pathIndex < 0 ||
+    pathIndex >= clean.paths.length
+  ) {
+    return { ok: false, error: 'Участок не найден.' };
+  }
+  const path = clean.paths[pathIndex];
+  if (
+    !Number.isInteger(segmentIndex) ||
+    segmentIndex < 0 ||
+    segmentIndex >= path.length - 1
+  ) {
+    return { ok: false, error: 'Сегмент не найден.' };
+  }
+
+  const edgeStart = path[segmentIndex];
+  const edgeEnd = path[segmentIndex + 1];
+  const panelNode = manualRouteAnchorNode(clean, 'panel');
+  const next = cloneRoute(clean);
+  const nextPaths: number[][] = [];
+  let removed = 0;
+
+  for (const candidate of clean.paths) {
+    let run: number[] = [candidate[0]];
+    for (let i = 1; i < candidate.length; i++) {
+      const a = candidate[i - 1];
+      const b = candidate[i];
+      const target =
+        (a === edgeStart && b === edgeEnd) || (a === edgeEnd && b === edgeStart);
+      if (!target) {
+        run.push(b);
+        continue;
+      }
+      removed += 1;
+      if (run.length >= 2) nextPaths.push(run);
+      run = [b];
+    }
+    if (run.length >= 2) nextPaths.push(run);
+  }
+
+  if (removed === 0) {
+    return { ok: false, error: 'Сегмент не найден в трассе.' };
+  }
+  if (nextPaths.length === 0) {
+    return {
+      ok: false,
+      error: 'Это последний участок трассы. Сбросьте трассу к авто или начните заново.',
+    };
+  }
+  if (panelNode !== null && !nextPaths.some((candidate) => candidate.includes(panelNode))) {
+    return {
+      ok: false,
+      error: 'Нельзя отрезать щиток от трассы: оставьте хотя бы один участок от щитка.',
+    };
+  }
+
+  next.paths = nextPaths;
+  const compacted = compactRoute(next, { removeCollinear: true });
+  if (!compacted) {
+    return {
+      ok: false,
+      error: 'Это последний участок трассы. Сбросьте трассу к авто или начните заново.',
+    };
+  }
+  return resultWithRoute(compacted);
+}
+
 // ---------------------------------------------------------------------------
 // Порядок остановок: список точек и приборов по ветвям
 // ---------------------------------------------------------------------------
@@ -1379,20 +1744,91 @@ function routeStopList(
  * остановки: щиток, приборы, стыки и точки пользователя. Служебные изгибы
  * под 90° в список не входят — они не точки и не переставляются.
  */
+function nodeAdjacency(route: ManualRoute): Map<number, Set<number>> {
+  const adjacency = new Map<number, Set<number>>();
+  const link = (a: number, b: number) => {
+    const set = adjacency.get(a) ?? new Set<number>();
+    set.add(b);
+    adjacency.set(a, set);
+  };
+  for (const path of route.paths) {
+    for (let i = 1; i < path.length; i++) {
+      link(path[i - 1], path[i]);
+      link(path[i], path[i - 1]);
+    }
+  }
+  return adjacency;
+}
+
+// Достижимость считается от щитка: отрезанный участок остаётся на плане,
+// но приборы на нём не считаются подключёнными к линии.
+function reachableNodeIndexes(route: ManualRoute): Set<number> | null {
+  const panelNode = route.anchors.find(
+    (anchor) => anchor.kind === 'panel'
+  )?.nodeIndex;
+  if (panelNode === undefined) return null;
+  const adjacency = nodeAdjacency(route);
+  const reachable = new Set<number>([panelNode]);
+  const queue = [panelNode];
+  while (queue.length > 0) {
+    const node = queue.pop() as number;
+    for (const neighbor of adjacency.get(node) ?? []) {
+      if (reachable.has(neighbor)) continue;
+      reachable.add(neighbor);
+      queue.push(neighbor);
+    }
+  }
+  return reachable;
+}
+
+export function manualRouteReachableNodeIndexes(
+  route: ManualRoute
+): Set<number> {
+  const clean = sanitizeManualRoute(route);
+  return clean ? reachableNodeIndexes(clean) ?? new Set() : new Set();
+}
+
+export function manualRouteHasPanelAnchor(route: ManualRoute): boolean {
+  const clean = sanitizeManualRoute(route);
+  return Boolean(clean?.anchors.some((anchor) => anchor.kind === 'panel'));
+}
+
+// Приборы, до которых кабель доходит от щитка по целой трассе.
+export function manualRouteConnectedDeviceIds(
+  route: ManualRoute
+): Set<string> {
+  const clean = sanitizeManualRoute(route);
+  if (!clean) return new Set();
+  const reachable = reachableNodeIndexes(clean);
+  if (!reachable) return new Set();
+  const ids = new Set<string>();
+  for (const anchor of clean.anchors) {
+    if (anchor.kind !== 'device' || !anchor.deviceId) continue;
+    if (reachable.has(anchor.nodeIndex)) ids.add(anchor.deviceId);
+  }
+  return ids;
+}
+
 export function manualRouteBranches(route: ManualRoute): ManualRouteBranch[] {
   const clean = sanitizeManualRoute(route);
   if (!clean) return [];
-  return routeBranchWalks(clean).map((walk) => {
-    let lengthMm = 0;
-    for (const [a, b] of walk.edges) {
-      lengthMm += distance(clean.nodes[a], clean.nodes[b]);
-    }
-    return {
-      nodes: walk.nodes,
-      stops: routeStopList(clean, walk.nodes),
-      lengthMm,
-    };
-  });
+  const reachable = reachableNodeIndexes(clean);
+  return routeBranchWalks(clean)
+    .filter(
+      (walk) =>
+        reachable === null || walk.nodes.some((node) => reachable.has(node))
+    )
+    .map((walk) => {
+      let lengthMm = 0;
+      for (const [a, b] of walk.edges) {
+        lengthMm += distance(clean.nodes[a], clean.nodes[b]);
+      }
+      return {
+        nodes: walk.nodes,
+        stops: routeStopList(clean, walk.nodes),
+        lengthMm,
+      };
+    });
 }
 
 /**

@@ -16,6 +16,7 @@ import { DEVICE_CATALOG, resolveDevice, type ResolvedDevice } from './devices';
 import {
   MANUAL_ROUTE_ANCHOR_TOLERANCE_MM,
   manualRouteAnchorNode,
+  manualRouteConnectedDeviceIds,
   manualRouteLength,
   materializeManualRoute,
   sanitizeManualRoute,
@@ -562,28 +563,39 @@ function manualRouteWarnings(
   }
 
   const panelNode = manualRouteAnchorNode(route, 'panel');
-  if (
-    panelNode === null ||
+  if (panelNode === null) {
+    warnings.push(
+      'Ручная трасса не подключена к щитку — соедините её со щитком.'
+    );
+  } else if (
     distance(route.nodes[panelNode], panelPoint) >
-      MANUAL_ROUTE_ANCHOR_TOLERANCE_MM
+    MANUAL_ROUTE_ANCHOR_TOLERANCE_MM
   ) {
     warnings.push(
-      'Ручная трасса не привязана к текущему положению щитка — сбросьте трассу.'
+      'Ручная трасса не привязана к текущему положению щитка — соедините её со щитком заново.'
     );
   }
 
+  const connected = manualRouteConnectedDeviceIds(route);
+  const disconnectedNames: string[] = [];
   let deviceMismatch = false;
   for (const resolved of lineDevices) {
     const pose = resolved.poses[0];
     const node = manualRouteAnchorNode(route, 'device', resolved.device.id);
+    if (node === null) {
+      disconnectedNames.push(resolved.device.name);
+      continue;
+    }
     if (
-      node === null ||
       !pose ||
       distance(route.nodes[node], pose.position) >
         MANUAL_ROUTE_ANCHOR_TOLERANCE_MM
     ) {
       deviceMismatch = true;
-      break;
+      continue;
+    }
+    if (!connected.has(resolved.device.id)) {
+      disconnectedNames.push(resolved.device.name);
     }
   }
   if (!deviceMismatch) {
@@ -598,7 +610,14 @@ function manualRouteWarnings(
   }
   if (deviceMismatch) {
     warnings.push(
-      'Ручная трасса не привязана к приборам линии — сбросьте трассу.'
+      'Ручная трасса не привязана к приборам линии — соедините прибор с трассой заново.'
+    );
+  }
+  if (disconnectedNames.length > 0) {
+    warnings.push(
+      disconnectedNames.length === 1
+        ? `Прибор не подключён к щитку: ${disconnectedNames[0]}.`
+        : `Приборы не подключены к щитку: ${disconnectedNames.join(', ')}.`
     );
   }
 
@@ -696,10 +715,14 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
         );
       } else {
         const manualPlanLengthMm = manualRouteLength(manual);
+        const connectedDeviceIds = manualRouteConnectedDeviceIds(manual);
         let manualVerticalMm = Math.abs(
           panel.heightFromFloorMm - runHeightMm
         );
+        // Отрезанный участок выводит прибор из трассы: вертикального
+        // спуска к нему уже нет, иначе кабель считался бы к несоединённому.
         for (const resolved of lineDevices) {
+          if (!connectedDeviceIds.has(resolved.device.id)) continue;
           manualVerticalMm += Math.abs(
             deviceMountHeightMm(resolved, settings) - runHeightMm
           );

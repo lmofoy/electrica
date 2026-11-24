@@ -50,6 +50,8 @@ interface ElectricalLayerProps {
   thickness: number;
   selectedFrameId: string | null;
   framePreview: FramePreview | null;
+  frameDragPreview?: FramePreview | null;
+  deviceDragPreview?: ResolvedDevice | null;
 }
 
 const GROUP_COLORS: Record<'socket' | 'switch' | 'light', string> = {
@@ -552,6 +554,8 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
   thickness,
   selectedFrameId,
   framePreview,
+  frameDragPreview = null,
+  deviceDragPreview = null,
 }) => {
   const focusLineId = assignLineId ?? highlightedLineId;
 
@@ -615,6 +619,48 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
           />
         </Group>
       )}
+
+      {frameDragPreview && (
+        <Group
+          x={frameDragPreview.position.x}
+          y={frameDragPreview.position.y}
+          rotation={frameDragPreview.rotationDeg}
+          opacity={0.7}
+        >
+          <FramePlate
+            widthMm={framePlateWidthMm(frameDragPreview.posts)}
+            zoom={zoom}
+            selected
+            mounting={frameDragPreview.mounting}
+            emptySeats={[]}
+            posts={frameDragPreview.posts}
+          />
+        </Group>
+      )}
+
+      {deviceDragPreview &&
+        deviceDragPreview.poses.map((pose, index) => (
+          <Group
+            key={`drag-${index}`}
+            x={pose.position.x}
+            y={pose.position.y}
+            rotation={pose.rotationDeg}
+            opacity={0.75}
+          >
+            <Circle
+              radius={12 / zoom}
+              stroke="#38bdf8"
+              strokeWidth={1.5 / zoom}
+              dash={[5 / zoom, 4 / zoom]}
+            />
+            <DeviceGlyph
+              type={deviceDragPreview.device.type}
+              zoom={zoom}
+              color={deviceColor(deviceDragPreview.device.type)}
+              highlighted={false}
+            />
+          </Group>
+        ))}
 
       {devices.map((resolved) => {
         const lineId = deviceLineIds.get(resolved.device.id) ?? null;

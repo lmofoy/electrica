@@ -60,6 +60,19 @@ function assertOrthogonal(route, label) {
     }
   }
 }
+function slantedSegmentKeys(route) {
+  const keys = new Set();
+  for (const path of route.paths) {
+    for (let i = 1; i < path.length; i++) {
+      const a = route.nodes[path[i - 1]];
+      const b = route.nodes[path[i]];
+      if (Math.abs(a.x - b.x) <= 0.5 || Math.abs(a.y - b.y) <= 0.5) continue;
+      const ends = [a, b].map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`);
+      keys.add(ends.sort().join('|'));
+    }
+  }
+  return keys;
+}
 function findNode(route, point) {
   return route.nodes.findIndex(
     (candidate) => Math.abs(candidate.x - point.x) < 0.5 && Math.abs(candidate.y - point.y) < 0.5
@@ -138,6 +151,7 @@ try {
     materializeManualRoute,
     moveManualRouteNode,
     removeManualRouteNode,
+    removeManualRouteSegment,
     sanitizeManualRoute,
     validateManualRoute,
   } = await server.ssrLoadModule('/src/core/electrical/manualRoute.ts');
@@ -932,6 +946,169 @@ try {
     }, 2);
     assert.equal(result.ok, false);
     assert.match(result.error, /схлопнется/);
+  });
+
+  // ---------------------------------------------------------------
+  // Удаление участка (ребра)
+  // ---------------------------------------------------------------
+  await test('segment remove: middle edge splits its path, other branch keeps its device', () => {
+    const route = {
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 1000, y: 0 },
+        { x: 2000, y: 0 },
+        { x: 1000, y: 1000 },
+        { x: 1000, y: 2000 },
+      ],
+      paths: [[0, 1, 2], [1, 3, 4]],
+      anchors: [
+        { nodeIndex: 0, kind: 'panel' },
+        { nodeIndex: 2, kind: 'device', deviceId: 'device-a' },
+        { nodeIndex: 4, kind: 'device', deviceId: 'device-b' },
+      ],
+    };
+    const result = removeManualRouteSegment(route, 0, 1);
+    assert.equal(result.ok, true, result.ok ? '' : result.error);
+    const cut = result.route;
+    assert.equal(cut.paths.length, 2);
+    assert.deepEqual(
+      cut.paths[1].map((index) => cut.nodes[index]),
+      [{ x: 1000, y: 0 }, { x: 1000, y: 1000 }, { x: 1000, y: 2000 }],
+      'the untouched branch is preserved exactly'
+    );
+    assert.ok(manualRouteAnchorNode(cut, 'panel') !== null, 'panel stays on the route');
+    assert.ok(
+      manualRouteAnchorNode(cut, 'device', 'device-b') !== null,
+      'device on the untouched branch is still connected'
+    );
+    assert.equal(
+      manualRouteAnchorNode(cut, 'device', 'device-a'),
+      null,
+      'cut-off device leaves the route'
+    );
+    near(manualRouteLength(cut), 3000, 'only the removed span is gone');
+    assert.equal(validateManualRoute(cut), null);
+    assertOrthogonal(cut, 'branch cut');
+  });
+
+  await test('segment remove: shared edge disappears from both paths at once', () => {
+    const route = {
+      nodes: [
+        { x: 0, y: 0 },
+        { x: 1000, y: 0 },
+        { x: 2000, y: 0 },
+        { x: 2000, y: 1000 },
+      ],
+      paths: [[0, 1, 2], [0, 1, 2, 3]],
+      anchors: [
+        { nodeIndex: 0, kind: 'panel' },
+        { nodeIndex: 3, kind: 'device', deviceId: 'device-a' },
+      ],
+    };
+    const result = removeManualRouteSegment(route, 0, 1);
+    assert.equal(result.ok, true, result.ok ? '' : result.error);
+    const cut = result.route;
+    assert.equal(cut.paths.length, 3, 'both occurrences split into surviving runs');
+    assert.deepEqual(
+      cut.paths.map((path) => path.map((index) => cut.nodes[index])),
+      [
+        [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+        [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+        [{ x: 2000, y: 0 }, { x: 2000, y: 1000 }],
+      ],
+      'the shared edge is gone from every path, the rest is intact'
+    );
+    assert.ok(manualRouteAnchorNode(cut, 'panel') !== null);
+    assert.ok(manualRouteAnchorNode(cut, 'device', 'device-a') !== null);
+    near(manualRouteLength(cut), 3000, 'two panel stubs plus the device-side span');
+    assert.equal(validateManualRoute(cut), null);
+  });
+
+  await test('segment remove: last segment, panel cut-off and bad indices are refused', () => {
+    const last = removeManualRouteSegment({
+      nodes: [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+      paths: [[0, 1]],
+      anchors: [
+        { nodeIndex: 0, kind: 'panel' },
+        { nodeIndex: 1, kind: 'device', deviceId: 'device-a' },
+      ],
+    }, 0, 0);
+    assert.equal(last.ok, false);
+    assert.match(last.error, /последний участок/);
+
+    const panelCut = removeManualRouteSegment(straightRoute(), 0, 0);
+    assert.equal(panelCut.ok, false);
+    assert.match(panelCut.error, /щиток/);
+
+    const badPath = removeManualRouteSegment(straightRoute(), 9, 0);
+    assert.equal(badPath.ok, false);
+    assert.match(badPath.error, /Участок не найден/);
+
+    const badSegment = removeManualRouteSegment(straightRoute(), 0, 9);
+    assert.equal(badSegment.ok, false);
+    assert.match(badSegment.error, /Сегмент не найден/);
+  });
+
+  await test('segment remove: source route is untouched and result survives JSON', () => {
+    const source = cornerRoute();
+    const before = clone(source);
+    const result = removeManualRouteSegment(source, 0, 1);
+    assert.equal(result.ok, true, result.ok ? '' : result.error);
+    assert.deepEqual(source, before, 'input route is not mutated');
+    const cut = result.route;
+    assert.deepEqual(
+      cut.paths.map((path) => path.map((index) => cut.nodes[index])),
+      [
+        [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+        [{ x: 1000, y: 1000 }, { x: 2000, y: 1000 }],
+      ],
+      'the corner route is split at the removed vertical edge'
+    );
+    assertOrthogonal(cut, 'corner segment cut');
+    assert.equal(validateManualRoute(cut), null);
+    assert.deepEqual(sanitizeManualRoute(jsonClone(cut)), cut);
+  });
+
+  await test('segment remove: cut before a device keeps a valid route and warns it is off-route (acute/obtuse plan)', () => {
+    const { input } = parallelogramFixture(1500);
+    const manual = manualFromAuto(input);
+    const deviceNode = manualRouteAnchorNode(manual, 'device', 'socket-a');
+    assert.ok(deviceNode !== null, 'device starts on the materialized route');
+    let target = null;
+    for (let pathIndex = 0; pathIndex < manual.paths.length; pathIndex++) {
+      const path = manual.paths[pathIndex];
+      if (path.length < 3) continue;
+      if (path[path.length - 1] === deviceNode) {
+        target = { pathIndex, segmentIndex: path.length - 2 };
+        break;
+      }
+      if (path[0] === deviceNode) {
+        target = { pathIndex, segmentIndex: 0 };
+        break;
+      }
+    }
+    assert.ok(target, 'device is an endpoint of a path with several segments');
+    const result = removeManualRouteSegment(manual, target.pathIndex, target.segmentIndex);
+    assert.equal(result.ok, true, result.ok ? '' : result.error);
+    const cut = result.route;
+    assert.ok(manualRouteLength(cut) < manualRouteLength(manual), 'the cut shortens the route');
+    assert.ok(manualRouteAnchorNode(cut, 'panel') !== null, 'panel is still on the route');
+    const slantsBefore = slantedSegmentKeys(manual);
+    const slantsAfter = slantedSegmentKeys(cut);
+    for (const key of slantsAfter) {
+      assert.ok(slantsBefore.has(key), `cut introduced a new diagonal ${key}`);
+    }
+    assert.equal(validateManualRoute(cut), null);
+
+    const routed = computeLineRoutes(withManual(input, cut)).get(LINE_ID);
+    assert.ok(routed);
+    near(routed.planLengthMm, manualRouteLength(cut), 'plan length follows the remaining spans');
+    near(
+      routed.verticalMm,
+      Math.abs(input.panel.heightFromFloorMm - settings.ceilingHeightMm),
+      'cut-off device contributes no vertical drop'
+    );
+    assert.match(routed.warning, /не подключён к щитку/);
   });
 
   // ---------------------------------------------------------------

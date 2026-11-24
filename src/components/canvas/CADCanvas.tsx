@@ -10,7 +10,7 @@ import { RoutingLayer } from './RoutingLayer';
 import { ElectricalLayer, type FramePreview } from './ElectricalLayer';
 import { DraftingLayer } from './DraftingLayer';
 import { ManualRouteLayer } from './ManualRouteLayer';
-import { ManualDrawLayer, type ManualDrawHover } from './ManualDrawLayer';
+import { RouteLinkLayer } from './RouteLinkLayer';
 import { RouteStopsPopover } from './RouteStopsPopover';
 import { LineCompositionCard } from './LineCompositionCard';
 import { CadFloatingInput } from './CadFloatingInput';
@@ -30,29 +30,22 @@ import { findFramePlacement } from '../../core/electrical/frames';
 import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { computeLineRoutes, materializeRouteForLine } from '../../core/electrical/routing';
-import { moveManualRouteNode } from '../../core/electrical/manualRoute';
 import {
-  addManualDrawJunction,
-  appendManualDrawDevice,
-  appendManualDrawPoint,
-  cancelManualDrawChain,
-  createManualDrawSession,
-  fixManualDrawChain,
-  manualDrawConnectedDevices,
-  manualDrawJunctionSnap,
-  manualDrawRoute,
-  popManualDrawPoint,
-  removeLastManualDrawChain,
-  startManualDrawChain,
-  type ManualDrawAxis,
-  type ManualDrawSession,
-} from '../../core/electrical/manualDraw';
+  manualRouteConnectedDeviceIds,
+  moveManualRouteNode,
+} from '../../core/electrical/manualRoute';
+import {
+  routeJunctionPlacementError,
+  type RouteLinkAxis,
+  type RouteLinkEndpoint,
+} from '../../core/electrical/routeLink';
 import { collectRoomElements, formatRoomDeletionPrompt } from '../../core/model/roomElements';
 import type {
   DevicePartitionAnchor,
   DeviceRoomEdgeAnchor,
   ElectricalDevice,
   ManualRoute,
+  MountingFrame,
   Point2D,
 } from '../../types';
 import { Home, PenTool, CircuitBoard } from 'lucide-react';
@@ -61,6 +54,21 @@ Konva.dragButtons = [0];
 
 // Пустая линия: трассы ещё нет, но редактор монтажа должен открываться.
 const EMPTY_ROUTE: ManualRoute = { nodes: [], paths: [], anchors: [] };
+
+type RouteLinkTool = 'link' | 'junction';
+
+interface RouteLinkSession {
+  lineId: string;
+  tool: RouteLinkTool;
+  from: RouteLinkEndpoint | null;
+  axisFirst: RouteLinkAxis;
+}
+
+interface RouteLinkHover {
+  point: Point2D;
+  endpoint: RouteLinkEndpoint | null;
+  label: string;
+}
 
 export const CADCanvas: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -124,6 +132,8 @@ export const CADCanvas: React.FC = () => {
     startRoomDrawing,
     addDevice,
     addFrame,
+    moveFrame,
+    moveDevice,
     placePanel,
     addToast,
     drawingStage,
@@ -134,9 +144,11 @@ export const CADCanvas: React.FC = () => {
     moveLineRouteNode,
     insertLineRouteNode,
     removeLineRouteNode,
+    removeLineRouteSegment,
     reorderLineRouteStops,
     resetLineRoute,
-    setLineManualRoute,
+    addLineRouteJunction,
+    linkLineRoute,
   } = useProjectStore();
 
   const autoLayout = useMemo(() => {
@@ -180,16 +192,15 @@ export const CADCanvas: React.FC = () => {
     lineId: string;
     index: number;
   } | null>(null);
-  // Черновик ручной трассировки живёт только в компоненте: в проект и историю
-  // он попадает одним действием на «Готово».
-  const [manualDraw, setManualDraw] = useState<{
+  const [routeSegmentMode, setRouteSegmentMode] = useState<{
     lineId: string;
-    session: ManualDrawSession;
-    axisFirst: ManualDrawAxis;
-    tool: 'line' | 'junction';
-    hover: ManualDrawHover | null;
   } | null>(null);
-  const [manualDrawConfirm, setManualDrawConfirm] = useState(false);
+  // Каждое соединение и узел сохраняются сразу: отдельного черновика,
+  // который заменил бы трассу, больше нет.
+  const [routeLink, setRouteLink] = useState<RouteLinkSession | null>(null);
+  const [routeLinkHover, setRouteLinkHover] = useState<RouteLinkHover | null>(
+    null
+  );
   // Перенос прибора чужой линии: мини-карточка у места клика, не модальное окно.
   const [transferPrompt, setTransferPrompt] = useState<{
     deviceId: string;
@@ -214,6 +225,8 @@ export const CADCanvas: React.FC = () => {
     routeNodeSelection && routeNodeSelection.lineId === routeEditLineId
       ? routeNodeSelection.index
       : null;
+  const routeSegmentModeActive =
+    routeSegmentMode !== null && routeSegmentMode.lineId === routeEditLineId;
 
   const previewPanel = useMemo(() => {
     if (!panel || !routePreviewRoute || !routeEditing || !routeEditLineId) return panel;
@@ -264,13 +277,13 @@ export const CADCanvas: React.FC = () => {
     [panel, routeEditLineId, routeEditing]
   );
 
-  const activeManualDraw =
-    manualDraw && routeEditLine && manualDraw.lineId === routeEditLine.id
-      ? manualDraw
+  const activeRouteLink =
+    routeLink && routeEditLine && routeLink.lineId === routeEditLine.id
+      ? routeLink
       : null;
 
   const routeEditRoute = useMemo(() => {
-    if (!routeEditLine || !panel || activeManualDraw) return null;
+    if (!routeEditLine || !panel) return null;
     if (routePreviewRoute) return routePreviewRoute;
     return materializeRouteForLine(
       {
@@ -294,7 +307,6 @@ export const CADCanvas: React.FC = () => {
     nodes,
     walls,
     settings,
-    activeManualDraw,
   ]);
 
   // База перетаскивания фиксируется на весь жест: превью считается от неё,
@@ -376,6 +388,7 @@ export const CADCanvas: React.FC = () => {
     routeDragBaseRef.current = null;
     setRoutePreview(null);
     setRouteNodeSelection(null);
+    setRouteSegmentMode(null);
     resetLineRoute(routeEditLine.id);
   }, [routeEditLine, resetLineRoute]);
 
@@ -403,7 +416,29 @@ export const CADCanvas: React.FC = () => {
     [routeEditLine, removeLineRouteNode]
   );
 
+  const removeRouteSegment = useCallback(
+    (pathIndex: number, segmentIndex: number) => {
+      if (!routeEditLine) return;
+      routeDragBaseRef.current = null;
+      setRoutePreview(null);
+      setRouteNodeSelection(null);
+      removeLineRouteSegment(routeEditLine.id, pathIndex, segmentIndex);
+    },
+    [routeEditLine, removeLineRouteSegment]
+  );
+
+  const toggleRouteSegmentMode = useCallback(() => {
+    if (!routeEditLine) return;
+    routeDragBaseRef.current = null;
+    setRoutePreview(null);
+    setRouteNodeSelection(null);
+    setRouteSegmentMode((prev) =>
+      prev && prev.lineId === routeEditLine.id ? null : { lineId: routeEditLine.id }
+    );
+  }, [routeEditLine]);
+
   const closeRouteEditor = useCallback(() => {
+    setRouteSegmentMode(null);
     setRouteEditLine(null);
   }, [setRouteEditLine]);
 
@@ -535,6 +570,125 @@ export const CADCanvas: React.FC = () => {
     .map((type) => (type ? DEVICE_CATALOG[type].shortLabel : 'заглушка'))
     .join(' · ')}`;
 
+  // Перетаскивание с плана: превью на новом месте, фиксация — на отпускании.
+  const [elementDrag, setElementDrag] = useState<{
+    frame: FramePreview | null;
+    device: ResolvedDevice | null;
+  }>({ frame: null, device: null });
+
+  const handleElementDrag = useCallback(
+    (
+      target: { kind: 'frame' | 'device'; id: string },
+      point: Point2D,
+      phase: 'move' | 'end'
+    ) => {
+      const thickness = settings.defaultWallThicknessMm;
+      const placeFrame = (frame: MountingFrame) => {
+        const placement = findFramePlacement(
+          point,
+          frame.posts,
+          rooms,
+          freePartitions,
+          thickness
+        );
+        const preview: FramePreview | null = placement.ok
+          ? {
+              anchor: placement.anchor,
+              position: placement.position,
+              rotationDeg: placement.rotationDeg,
+              posts: frame.posts,
+              mounting: frame.mounting,
+            }
+          : null;
+        return {
+          preview,
+          devicePreview: null as ResolvedDevice | null,
+          commit: () => {
+            if (!placement.ok) {
+              addToast(placement.error, 'error');
+              return false;
+            }
+            setSelection({ kind: 'frame', id: frame.id });
+            return moveFrame(frame.id, placement.anchor);
+          },
+        };
+      };
+
+      let result: {
+        preview: FramePreview | null;
+        devicePreview: ResolvedDevice | null;
+        commit: () => boolean;
+      } | null = null;
+
+      if (target.kind === 'frame') {
+        const frame = frames.find((candidate) => candidate.id === target.id);
+        if (frame) result = placeFrame(frame);
+      } else {
+        const device = devices.find((candidate) => candidate.id === target.id);
+        if (device) {
+          // Механизм не двигается отдельно: тянем его подрозетник целиком.
+          const frame = device.frameId
+            ? frames.find((candidate) => candidate.id === device.frameId)
+            : undefined;
+          if (frame) {
+            result = placeFrame(frame);
+          } else {
+            const placement = findDevicePlacement(
+              device.type,
+              point,
+              rooms,
+              freePartitions,
+              thickness,
+              device.shared
+            );
+            const preview = placement.ok
+              ? resolveDevice(
+                  { ...device, anchor: placement.anchor },
+                  rooms,
+                  freePartitions,
+                  thickness
+                )
+              : null;
+            result = {
+              preview: null,
+              devicePreview: preview,
+              commit: () => {
+                if (!placement.ok) {
+                  addToast(placement.error, 'error');
+                  return false;
+                }
+                setSelection({ kind: 'device', id: device.id });
+                return moveDevice(device.id, placement.anchor);
+              },
+            };
+          }
+        }
+      }
+
+      if (!result) return;
+      if (phase === 'end') {
+        setElementDrag({ frame: null, device: null });
+        result.commit();
+        return;
+      }
+      setElementDrag({ frame: result.preview, device: result.devicePreview });
+    },
+    [
+      frames,
+      devices,
+      rooms,
+      freePartitions,
+      settings.defaultWallThicknessMm,
+      moveFrame,
+      moveDevice,
+      addToast,
+      setSelection,
+    ]
+  );
+
+  const canDragElements =
+    activeTool === 'select' && !routeEditLine && !assignLine;
+
   const placementDims = useMemo(() => {
     if (activeTool !== 'place_device' || !devicePreview.resolved) return [];
     return buildPlacementDimensions(
@@ -567,312 +721,216 @@ export const CADCanvas: React.FC = () => {
     [panel, rooms, freePartitions, settings.defaultWallThicknessMm]
   );
 
-  const manualDrawDeviceNames = useMemo(() => {
-    const names: Record<string, string> = {};
-    if (!routeEditLine) return names;
-    for (const deviceId of routeEditLine.deviceIds) {
-      const device = devices.find((candidate) => candidate.id === deviceId);
-      if (device) names[deviceId] = device.name;
-    }
-    return names;
-  }, [routeEditLine, devices]);
-
-  const updateManualDrawSession = useCallback((session: ManualDrawSession) => {
-    setManualDraw((prev) => (prev ? { ...prev, session } : prev));
-  }, []);
-
-  const beginManualDraw = useCallback(() => {
-    setManualDrawConfirm(false);
-    if (!routeEditLine) return;
-    if (!panelPose) {
-      addToast('Щиток не размещён на плане: ручную трассу начать нельзя.', 'error');
-      return;
-    }
-    if (routeEditLine.deviceIds.length === 0) {
-      addToast('В линии нет приборов — соединять нечего.', 'error');
-      return;
-    }
-    const devicePoints: { deviceId: string; point: Point2D }[] = [];
+  const routeLinkDevicePoints = useMemo(() => {
+    if (!routeEditLine) return [];
+    const points: Array<{ deviceId: string; name: string; point: Point2D }> = [];
     for (const deviceId of routeEditLine.deviceIds) {
       const resolved = resolvedDevices.find(
         (entry) => entry.device.id === deviceId
       );
       const pose = resolved?.poses[0];
-      if (!pose) {
-        addToast('Часть приборов линии не найдена на плане.', 'error');
-        return;
+      if (pose) {
+        points.push({ deviceId, name: resolved.device.name, point: pose.position });
       }
-      devicePoints.push({ deviceId, point: pose.position });
     }
-    setLineManualRoute(routeEditLine.id, undefined);
-    setManualDraw({
-      lineId: routeEditLine.id,
-      session: createManualDrawSession(panelPose.position, devicePoints),
-      axisFirst: 'h',
-      tool: 'line',
-      hover: null,
-    });
-  }, [routeEditLine, panelPose, resolvedDevices, setLineManualRoute, addToast]);
+    return points;
+  }, [routeEditLine, resolvedDevices]);
 
-  const exitManualDraw = useCallback(() => {
-    if (!activeManualDraw) return;
-    const hasWork =
-      activeManualDraw.session.chains.length > 0 ||
-      activeManualDraw.session.active !== null;
-    if (
-      hasWork &&
-      !window.confirm('Выйти из ручной трассировки? Черновик будет потерян.')
-    ) {
-      return;
-    }
-    setManualDraw(null);
-  }, [activeManualDraw]);
+  const beginRouteLink = useCallback(
+    (tool: RouteLinkTool) => {
+      if (!routeEditLine) return;
+      routeDragBaseRef.current = null;
+      setRoutePreview(null);
+      setRouteSegmentMode(null);
+      setRouteNodeSelection(null);
+      setRouteLinkHover(null);
+      setRouteLink({
+        lineId: routeEditLine.id,
+        tool,
+        from: null,
+        axisFirst: 'h',
+      });
+    },
+    [routeEditLine]
+  );
 
-  const snapManualDraw = useCallback(
-    (raw: Point2D): ManualDrawHover => {
-      if (!activeManualDraw) return { point: raw, kind: 'grid' };
-      const session = activeManualDraw.session;
+  const exitRouteLink = useCallback(() => {
+    setRouteLink(null);
+    setRouteLinkHover(null);
+  }, []);
+
+  const snapRouteLink = useCallback(
+    (raw: Point2D): RouteLinkHover => {
       const tolerance = 16 / zoom;
-      if (activeManualDraw.tool === 'junction') {
-        const snap = manualDrawJunctionSnap(session, raw, tolerance);
-        if (snap) return { point: snap.point, kind: 'segment' };
-      }
-      if (distance(raw, session.panelPoint) <= tolerance) {
-        return { point: session.panelPoint, kind: 'panel' };
-      }
-      let bestDevice: {
-        deviceId: string;
-        point: Point2D;
+      const candidates: Array<{
         distance: number;
-      } | null = null;
-      for (const device of session.devices) {
-        const span = distance(raw, device.point);
-        if (span <= tolerance && (!bestDevice || span < bestDevice.distance)) {
-          bestDevice = { deviceId: device.deviceId, point: device.point, distance: span };
+        priority: number;
+        endpoint: RouteLinkEndpoint;
+        label: string;
+      }> = [];
+      const push = (
+        point: Point2D,
+        endpoint: RouteLinkEndpoint,
+        label: string,
+        priority: number
+      ) => {
+        const span = distance(raw, point);
+        if (span <= tolerance) {
+          candidates.push({ distance: span, priority, endpoint, label });
         }
+      };
+
+      if (panelPose) {
+        push(panelPose.position, { kind: 'panel', point: panelPose.position }, 'щиток', 0);
       }
-      if (bestDevice) {
+      for (const device of routeLinkDevicePoints) {
+        push(
+          device.point,
+          { kind: 'device', point: device.point, deviceId: device.deviceId },
+          device.name,
+          1
+        );
+      }
+      for (const junction of routeEditLine?.routeJunctions ?? []) {
+        push(junction, { kind: 'junction', point: junction }, 'узел', 2);
+      }
+      if (routeEditRoute) {
+        const anchorsByNode = new Map(
+          routeEditRoute.anchors.map((anchor) => [anchor.nodeIndex, anchor] as const)
+        );
+        routeEditRoute.nodes.forEach((point, index) => {
+          const anchor = anchorsByNode.get(index);
+          // Щиток и приборы берутся из живого положения, а не из снимка трассы.
+          if (anchor?.kind === 'panel' || anchor?.kind === 'device') return;
+          if (anchor?.kind === 'junction') {
+            push(point, { kind: 'junction', point }, 'узел', 2);
+          } else {
+            push(point, { kind: 'point', point }, 'точка трассы', 3);
+          }
+        });
+      }
+
+      candidates.sort(
+        (a, b) => a.distance - b.distance || a.priority - b.priority
+      );
+      const best = candidates[0];
+      if (best) {
         return {
-          point: bestDevice.point,
-          kind: 'device',
-          deviceId: bestDevice.deviceId,
-          connected: manualDrawConnectedDevices(session).has(bestDevice.deviceId),
+          point: best.endpoint.point,
+          endpoint: best.endpoint,
+          label: best.label,
         };
-      }
-      for (const junction of session.junctions) {
-        if (distance(raw, junction) <= tolerance) {
-          return { point: junction, kind: 'junction' };
-        }
       }
       return {
         point: gridSnap ? snapToGrid(raw, gridStepMm) : raw,
-        kind: 'grid',
+        endpoint: null,
+        label: activeRouteLink?.tool === 'junction' ? 'новый узел' : 'свободная точка',
       };
     },
-    [activeManualDraw, zoom, gridSnap, gridStepMm]
+    [
+      activeRouteLink,
+      panelPose,
+      routeLinkDevicePoints,
+      routeEditLine,
+      routeEditRoute,
+      zoom,
+      gridSnap,
+      gridStepMm,
+    ]
   );
 
-  const toggleManualDrawTool = useCallback(() => {
-    setManualDraw((prev) =>
-      prev
-        ? {
-            ...prev,
-            tool: prev.tool === 'line' ? 'junction' : 'line',
-            hover: null,
-          }
-        : prev
-    );
-  }, []);
-
-  const handleManualDrawClick = useCallback(
-    (snap: ManualDrawHover) => {
-      if (!activeManualDraw) return;
-      const { session, tool, axisFirst } = activeManualDraw;
-
-      if (tool === 'junction') {
-        const result = addManualDrawJunction(session, snap.point, 16 / zoom);
-        if (!result.ok) {
-          addToast(result.error, 'error');
+  const handleRouteLinkClick = useCallback(
+    (hover: RouteLinkHover) => {
+      if (!activeRouteLink || !routeEditLine) return;
+      if (activeRouteLink.tool === 'junction') {
+        if (hover.endpoint) {
+          addToast('Узел ставится в свободной точке комнаты.', 'info');
           return;
         }
-        updateManualDrawSession(result.session);
-        addToast('Узел поставлен: от него можно вести ветвь.', 'success');
+        const placementError = routeJunctionPlacementError(
+          hover.point,
+          rooms,
+          freePartitions
+        );
+        if (placementError) {
+          addToast(placementError, 'error');
+          return;
+        }
+        addLineRouteJunction(routeEditLine.id, hover.point);
         return;
       }
 
-      if (!session.active) {
-        if (
-          snap.kind !== 'panel' &&
-          snap.kind !== 'device' &&
-          snap.kind !== 'junction'
-        ) {
-          addToast('Начните цепь от щитка, подключённого прибора или узла.', 'info');
-          return;
-        }
-        const result = startManualDrawChain(session, {
-          kind: snap.kind,
-          point: snap.point,
-          deviceId: snap.deviceId,
-        });
-        if (!result.ok) {
-          addToast(result.error, 'error');
-          return;
-        }
-        updateManualDrawSession(result.session);
-        return;
-      }
-
-      if (
-        snap.kind === 'panel' ||
-        snap.kind === 'junction' ||
-        (snap.kind === 'device' && snap.connected)
-      ) {
+      if (!hover.endpoint) {
         addToast(
-          'Вершина уже используется: цепь заканчивается на приборе, а ветвь начинайте от узла.',
-          'error'
+          activeRouteLink.from
+            ? 'Выберите второй конец: щиток, прибор или узел.'
+            : 'Начните связь со щитка, прибора или узла.',
+          'info'
         );
         return;
       }
-
-      if (snap.kind === 'device' && snap.deviceId) {
-        const result = appendManualDrawDevice(session, snap.deviceId, axisFirst);
-        if (!result.ok) {
-          addToast(result.error, 'error');
-          return;
-        }
-        updateManualDrawSession(result.session);
+      const endpoint = hover.endpoint;
+      if (!activeRouteLink.from) {
+        setRouteLink((prev) => (prev ? { ...prev, from: endpoint } : prev));
         return;
       }
-
-      const result = appendManualDrawPoint(session, snap.point, axisFirst);
-      if (!result.ok) {
+      if (distance(activeRouteLink.from.point, endpoint.point) < 0.5) {
+        setRouteLink((prev) => (prev ? { ...prev, from: null } : prev));
+        return;
+      }
+      const result = linkLineRoute(
+        routeEditLine.id,
+        activeRouteLink.from,
+        endpoint,
+        activeRouteLink.axisFirst
+      );
+      if (result.ok) {
+        setRouteLink((prev) => (prev ? { ...prev, from: null } : prev));
+      } else {
         addToast(result.error, 'error');
-        return;
       }
-      updateManualDrawSession(result.session);
     },
-    [activeManualDraw, zoom, addToast, updateManualDrawSession]
+    [
+      activeRouteLink,
+      routeEditLine,
+      rooms,
+      freePartitions,
+      addLineRouteJunction,
+      linkLineRoute,
+      addToast,
+    ]
   );
 
-  const fixManualDrawActiveChain = useCallback(() => {
-    if (!activeManualDraw) return;
-    const result = fixManualDrawChain(activeManualDraw.session);
-    if (!result.ok) {
-      addToast(result.error, 'error');
-      return;
-    }
-    updateManualDrawSession(result.session);
-    addToast('Цепь зафиксирована. Начните следующую от прибора, узла или щитка.', 'success');
-  }, [activeManualDraw, updateManualDrawSession, addToast]);
-
-  const removeManualDrawLastChain = useCallback(() => {
-    if (!activeManualDraw) return;
-    if (activeManualDraw.session.active) {
-      addToast('Сначала зафиксируйте или отмените текущую цепь.', 'info');
-      return;
-    }
-    const result = removeLastManualDrawChain(activeManualDraw.session);
-    if (!result.ok) {
-      addToast(result.error, 'error');
-      return;
-    }
-    updateManualDrawSession(result.session);
-  }, [activeManualDraw, updateManualDrawSession, addToast]);
-
-  const saveManualDrawRoute = useCallback(() => {
-    if (!activeManualDraw) return;
-    const result = manualDrawRoute(activeManualDraw.session, {
-      deviceNames: manualDrawDeviceNames,
-    });
-    if (!result.ok) {
-      addToast(result.error, 'error');
-      return;
-    }
-    setLineManualRoute(activeManualDraw.lineId, result.route);
-    setManualDraw(null);
-    addToast(
-      result.warnings.length > 0
-        ? `Ручная трасса сохранена. ${result.warnings.join(' ')}`
-        : 'Ручная трасса сохранена.',
-      result.warnings.length > 0 ? 'info' : 'success'
-    );
-  }, [activeManualDraw, manualDrawDeviceNames, setLineManualRoute, addToast]);
-
-  const handleManualDrawKeyDown = useCallback(
+  const handleRouteLinkKeyDown = useCallback(
     (e: KeyboardEvent): boolean => {
-      if (!activeManualDraw) return false;
-
-      if (e.ctrlKey || e.metaKey) {
-        if (e.code !== 'KeyZ') return false;
-        e.preventDefault();
-        if (activeManualDraw.session.active) {
-          const result = popManualDrawPoint(activeManualDraw.session);
-          if (result.ok) updateManualDrawSession(result.session);
-        } else {
-          const result = removeLastManualDrawChain(activeManualDraw.session);
-          if (result.ok) updateManualDrawSession(result.session);
-          else addToast('Убирать нечего: цепей ещё нет.', 'info');
-        }
-        return true;
-      }
-
+      if (!activeRouteLink) return false;
+      if (e.ctrlKey || e.metaKey) return false;
       if (e.key === 'Escape') {
         e.preventDefault();
-        if (activeManualDraw.tool === 'junction') {
-          setManualDraw((prev) =>
-            prev ? { ...prev, tool: 'line', hover: null } : prev
-          );
-          return true;
+        if (activeRouteLink.from) {
+          setRouteLink((prev) => (prev ? { ...prev, from: null } : prev));
+        } else {
+          exitRouteLink();
         }
-        if (activeManualDraw.session.active) {
-          const result = cancelManualDrawChain(activeManualDraw.session);
-          if (result.ok) updateManualDrawSession(result.session);
-          return true;
-        }
-        exitManualDraw();
         return true;
       }
-
       if (e.key === 'Enter') {
         e.preventDefault();
-        fixManualDrawActiveChain();
+        exitRouteLink();
         return true;
       }
-
       if (e.key === 'Tab') {
         e.preventDefault();
-        setManualDraw((prev) =>
+        setRouteLink((prev) =>
           prev
             ? { ...prev, axisFirst: prev.axisFirst === 'h' ? 'v' : 'h' }
             : prev
         );
         return true;
       }
-
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        e.preventDefault();
-        if (!activeManualDraw.session.active) {
-          addToast('Нет активной цепи: начните её от щитка, прибора или узла.', 'info');
-          return true;
-        }
-        const result = popManualDrawPoint(activeManualDraw.session);
-        if (!result.ok) {
-          addToast(result.error, 'error');
-          return true;
-        }
-        updateManualDrawSession(result.session);
-        return true;
-      }
-
       return false;
     },
-    [
-      activeManualDraw,
-      updateManualDrawSession,
-      exitManualDraw,
-      fixManualDrawActiveChain,
-      addToast,
-    ]
+    [activeRouteLink, exitRouteLink]
   );
 
   useEffect(() => {
@@ -1036,22 +1094,20 @@ export const CADCanvas: React.FC = () => {
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
 
-    if (activeManualDraw) {
-      const snapped = snapManualDraw(screenToWorld(pointer.x, pointer.y));
+    if (activeRouteLink) {
+      const snapped = snapRouteLink(screenToWorld(pointer.x, pointer.y));
       setCursorPosMm(snapped.point);
-      setManualDraw((prev) => {
-        if (!prev) return prev;
-        const current = prev.hover;
+      setRouteLinkHover((current) => {
         if (
           current &&
-          current.kind === snapped.kind &&
-          current.deviceId === snapped.deviceId &&
-          current.connected === snapped.connected &&
+          current.label === snapped.label &&
+          current.endpoint?.kind === snapped.endpoint?.kind &&
+          current.endpoint?.deviceId === snapped.endpoint?.deviceId &&
           distance(current.point, snapped.point) < 0.01
         ) {
-          return prev;
+          return current;
         }
-        return { ...prev, hover: snapped };
+        return snapped;
       });
       return;
     }
@@ -1114,10 +1170,12 @@ export const CADCanvas: React.FC = () => {
     const stage = stageRef.current;
     if (!stage) return;
 
-    if (activeManualDraw) {
+    if (activeRouteLink) {
       const pointer = stage.getPointerPosition();
       if (!pointer) return;
-      handleManualDrawClick(snapManualDraw(screenToWorld(pointer.x, pointer.y)));
+      handleRouteLinkClick(
+        routeLinkHover ?? snapRouteLink(screenToWorld(pointer.x, pointer.y))
+      );
       return;
     }
 
@@ -1270,10 +1328,6 @@ export const CADCanvas: React.FC = () => {
     addDraftVertex(snappedVertex);
   };
 
-  const handleStageDoubleClick = () => {
-    if (activeManualDraw) fixManualDrawActiveChain();
-  };
-
   // Горячие клавиши
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1281,7 +1335,7 @@ export const CADCanvas: React.FC = () => {
       const target = e.target;
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select'))) return;
 
-      if (handleManualDrawKeyDown(e)) return;
+      if (handleRouteLinkKeyDown(e)) return;
 
       if (e.ctrlKey || e.metaKey) {
         if (e.code === 'KeyZ' || e.code === 'KeyY') {
@@ -1318,7 +1372,12 @@ export const CADCanvas: React.FC = () => {
           setTransferPrompt(null);
           return;
         }
+        if (routeEditLineId && routeSegmentModeActive) {
+          setRouteSegmentMode(null);
+          return;
+        }
         if (routeEditLineId) {
+          setRouteSegmentMode(null);
           setRouteEditLine(null);
           return;
         }
@@ -1457,24 +1516,45 @@ export const CADCanvas: React.FC = () => {
     addToast,
     routeEditLineId,
     setRouteEditLine,
+    routeSegmentModeActive,
     routeNodeSelectionIndex,
     removeLineRouteNode,
-    handleManualDrawKeyDown,
+    handleRouteLinkKeyDown,
     activeFramePosts,
   ]);
 
   const lastVertex = draftVertices.length > 0 ? draftVertices[draftVertices.length - 1] : null;
   const activeDeviceCatalog = DEVICE_CATALOG[activeDeviceType];
-  const manualDrawConnectedCount = activeManualDraw
-    ? manualDrawConnectedDevices(activeManualDraw.session).size
+  const routeLinkConnectedCount = routeEditRoute
+    ? manualRouteConnectedDeviceIds(routeEditRoute).size
     : 0;
-  const manualDrawHint = !activeManualDraw
+  const routeLinkAnchoredJunctions =
+    routeEditRoute?.anchors.filter((anchor) => anchor.kind === 'junction').length ?? 0;
+  const routeLinkJunctionCount =
+    routeLinkAnchoredJunctions + (routeEditLine?.routeJunctions?.length ?? 0);
+  const routeLinkHint = !activeRouteLink
     ? ''
-    : activeManualDraw.tool === 'junction'
-      ? 'Клик по проложенной линии — поставить узел. Его можно ставить сколько угодно; Esc — вернуться к рисованию.'
-      : activeManualDraw.session.active
-        ? 'Клик — следующая точка или прибор. Enter или двойной клик — зафиксировать цепь. Tab — ось ступеньки. Backspace — убрать точку. Esc — отменить цепь.'
-        : 'Клик — старт цепи: щиток, подключённый прибор или узел. За каждый клик добавляется точка со ступенькой под 90°. Esc — выйти.';
+    : activeRouteLink.tool === 'junction'
+      ? 'Клик внутри комнаты — поставить узел. В стены и перегородки ставить нельзя; Esc — выйти.'
+      : activeRouteLink.from
+        ? 'Первый конец выбран. Кликните второй конец: щиток, прибор или узел. Tab — сторона ступеньки, Esc — отменить связь.'
+        : 'Кликните щиток, прибор или узел — начало связи. Связи можно добавлять в любом порядке; Tab — сторона ступеньки, Esc — выйти.';
+  const routeLinkHoverTone: 'valid' | 'neutral' | 'invalid' = !activeRouteLink
+    ? 'neutral'
+    : activeRouteLink.tool === 'junction'
+      ? routeLinkHover?.endpoint
+        ? 'invalid'
+        : routeLinkHover &&
+            routeJunctionPlacementError(
+              routeLinkHover.point,
+              rooms,
+              freePartitions
+            )
+          ? 'invalid'
+          : 'valid'
+      : routeLinkHover?.endpoint
+        ? 'valid'
+        : 'neutral';
 
   return (
     <div
@@ -1500,7 +1580,6 @@ export const CADCanvas: React.FC = () => {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onClick={handleStageClick}
-        onDblClick={handleStageDoubleClick}
         scaleX={zoom}
         scaleY={zoom}
         x={stagePos.x}
@@ -1541,7 +1620,7 @@ export const CADCanvas: React.FC = () => {
           panel={panel}
           routes={lineRoutes}
           highlightedLineId={highlightedLineId}
-          hiddenLineId={activeManualDraw?.lineId ?? null}
+          hiddenLineId={null}
           zoom={zoom}
           onSelectLine={setHighlightedLine}
         />
@@ -1558,6 +1637,13 @@ export const CADCanvas: React.FC = () => {
           panelId={panel?.id ?? null}
           panelPose={panelPose}
           zoom={zoom}
+          canDrag={canDragElements}
+          onFrameDrag={(id, point, phase) =>
+            handleElementDrag({ kind: 'frame', id }, point, phase)
+          }
+          onDeviceDrag={(id, point, phase) =>
+            handleElementDrag({ kind: 'device', id }, point, phase)
+          }
           onSelect={(next) => {
             if (assignLine && next.kind === 'device') {
               toggleDeviceAssignment(next.id);
@@ -1584,6 +1670,8 @@ export const CADCanvas: React.FC = () => {
           thickness={settings.defaultWallThicknessMm}
           selectedFrameId={selection?.kind === 'frame' ? selection.id : null}
           framePreview={framePreview.preview}
+          frameDragPreview={elementDrag.frame}
+          deviceDragPreview={elementDrag.device}
           panelPreview={
             panelPreview && !panelPreview.error
               ? { position: panelPreview.position, rotationDeg: panelPreview.rotationDeg }
@@ -1602,7 +1690,7 @@ export const CADCanvas: React.FC = () => {
           isPartitionTool={activeTool === 'draw_partition'}
           placementDims={placementDims}
         />
-        {routeEditLine && routeEditRoute && (
+        {routeEditLine && routeEditRoute && !activeRouteLink && (
           <ManualRouteLayer
             key={routeEditLine.id}
             route={routeEditRoute}
@@ -1619,21 +1707,25 @@ export const CADCanvas: React.FC = () => {
             onPreview={previewRouteNode}
             onMove={commitRouteNode}
             onCancelPreview={cancelRoutePreview}
+            eraseMode={routeSegmentModeActive}
+            onRemoveSegment={removeRouteSegment}
           />
         )}
-        {activeManualDraw && routeEditLine && (
-          <ManualDrawLayer
-            session={activeManualDraw.session}
+        {activeRouteLink && routeEditLine && (
+          <RouteLinkLayer
+            route={routeEditRoute}
+            looseJunctions={routeEditLine.routeJunctions ?? []}
+            from={activeRouteLink.from?.point ?? null}
+            hover={routeLinkHover?.point ?? null}
+            hoverTone={routeLinkHoverTone}
+            axisFirst={activeRouteLink.axisFirst}
             color={lineColorMap.get(routeEditLine.id) ?? '#38bdf8'}
             zoom={zoom}
-            hover={activeManualDraw.hover}
-            axisFirst={activeManualDraw.axisFirst}
-            tool={activeManualDraw.tool}
           />
         )}
       </Stage>
 
-      {assignLine && panel && !routeEditLine && !activeManualDraw && (
+      {assignLine && panel && !routeEditLine && !activeRouteLink && (
         <LineCompositionCard
           line={assignLine}
           panel={panel}
@@ -1686,7 +1778,7 @@ export const CADCanvas: React.FC = () => {
         </div>
       )}
 
-      {activeManualDraw && routeEditLine && (
+      {activeRouteLink && routeEditLine && (
         <div
           className="absolute top-9 left-9 right-3 z-30 flex flex-wrap items-start gap-2.5 px-3 py-2 rounded-xl border bg-slate-900/95 shadow-2xl backdrop-blur-md"
           style={{ borderColor: lineColorMap.get(routeEditLine.id) ?? '#38bdf8' }}
@@ -1697,106 +1789,55 @@ export const CADCanvas: React.FC = () => {
           />
           <div className="min-w-0">
             <div className="text-[11px] font-bold text-white truncate max-w-[320px]">
-              Ручная трассировка: {routeEditLine.name}
+              Соединение трассы: {routeEditLine.name}
             </div>
             <div className="text-[9px] text-slate-300">
-              Приборы: {manualDrawConnectedCount} / {activeManualDraw.session.devices.length}
-              {' · '}цепей: {activeManualDraw.session.chains.length}
-              {activeManualDraw.session.active ? ' · текущая цепь не зафиксирована' : ''}
-              {' · '}ступенька: {activeManualDraw.axisFirst === 'h' ? 'сначала горизонталь' : 'сначала вертикаль'}
-              {activeManualDraw.session.overlaps.length > 0 && (
-                <span className="text-amber-300">
-                  {' · '}наложений: {activeManualDraw.session.overlaps.length}
-                </span>
-              )}
+              Подключено к щитку: {routeLinkConnectedCount} /{' '}
+              {routeEditLine.deviceIds.length}
+              {' · '}узлов: {routeLinkJunctionCount}
+              {' · '}ступенька:{' '}
+              {activeRouteLink.axisFirst === 'h'
+                ? 'сначала горизонталь'
+                : 'сначала вертикаль'}
             </div>
             <div className="text-[9px] text-slate-400 max-w-[760px]">
-              {manualDrawHint}
+              {routeLinkHint}
             </div>
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
             <button
-              onClick={toggleManualDrawTool}
+              onClick={() => beginRouteLink('link')}
               className={`shrink-0 px-2 py-1 rounded-lg border text-[10px] font-bold transition ${
-                activeManualDraw.tool === 'junction'
+                activeRouteLink.tool === 'link'
+                  ? 'bg-sky-500/20 border-sky-400/60 text-sky-200'
+                  : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="Соединить две точки: щиток, прибор или узел"
+            >
+              Связь
+            </button>
+            <button
+              onClick={() => beginRouteLink('junction')}
+              className={`shrink-0 px-2 py-1 rounded-lg border text-[10px] font-bold transition ${
+                activeRouteLink.tool === 'junction'
                   ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
                   : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
               }`}
-              title="Поставить узел на уже проложенной линии"
+              title="Поставить узел в любой свободной точке комнаты"
             >
               Узел
             </button>
             <button
-              onClick={fixManualDrawActiveChain}
-              disabled={!activeManualDraw.session.active}
-              className="shrink-0 px-2 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold transition"
-            >
-              Зафиксировать цепь
-            </button>
-            <button
-              onClick={removeManualDrawLastChain}
-              disabled={
-                activeManualDraw.session.active !== null ||
-                activeManualDraw.session.chains.length === 0
-              }
-              className="shrink-0 px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 text-[10px] font-bold transition"
-            >
-              Убрать цепь
-            </button>
-            <button
-              onClick={saveManualDrawRoute}
-              disabled={activeManualDraw.session.chains.length === 0}
-              className="shrink-0 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-[10px] font-bold transition"
+              onClick={exitRouteLink}
+              className="shrink-0 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold transition"
             >
               Готово
             </button>
-            <button
-              onClick={exitManualDraw}
-              className="shrink-0 px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold transition"
-            >
-              Отмена
-            </button>
           </div>
         </div>
       )}
 
-      {manualDrawConfirm && routeEditLine && (
-        <div
-          className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm px-6"
-          onClick={() => setManualDrawConfirm(false)}
-        >
-          <div
-            className="w-full max-w-[440px] rounded-2xl border border-amber-500/40 bg-slate-900 p-5 shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="text-sm font-bold text-white mb-2">
-              Проложить трассу вручную?
-            </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              Текущая трасса линии «{routeEditLine.name}» будет удалена вместе с её
-              точками и узлами. Приборы останутся в линии. После сохранения линия
-              будет прокладываться только вручную; вернуть автотрассу можно кнопкой
-              «Сбросить к авто».
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setManualDrawConfirm(false)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold transition"
-              >
-                Отмена
-              </button>
-              <button
-                onClick={beginManualDraw}
-                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-bold transition"
-              >
-                Удалить и начать
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {routeEditLine && !activeManualDraw && (
+      {routeEditLine && !activeRouteLink && (
         <RouteStopsPopover
           line={routeEditLine}
           route={routeEditRoute ?? EMPTY_ROUTE}
@@ -1810,10 +1851,10 @@ export const CADCanvas: React.FC = () => {
           onReorder={reorderRouteStops}
           onRemoveNode={removeRouteNode}
           onReset={resetRoute}
-          onBeginManualDraw={() =>
-            routeEditRoute ? setManualDrawConfirm(true) : beginManualDraw()
-          }
+          onBeginRouteLink={beginRouteLink}
           onClose={closeRouteEditor}
+          segmentMode={routeSegmentModeActive}
+          onToggleSegmentMode={toggleRouteSegmentMode}
         />
       )}
 

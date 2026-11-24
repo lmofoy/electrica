@@ -83,14 +83,25 @@ import { buildPanelLayout } from '../core/electrical/panelLayout';
 import { prunePanelRefs } from '../core/electrical/lineAssignment';
 import {
   insertManualRouteNode,
+  moveManualRouteAnchors,
   moveManualRouteNode,
   removeManualRouteNode,
+  removeManualRouteSegment,
   reorderManualRouteStops,
+  type ManualRouteAnchorMove,
 } from '../core/electrical/manualRoute';
 import {
   materializeRouteForLine,
   type LineRouteInput,
 } from '../core/electrical/routing';
+import {
+  ROUTE_LINK_EPS_MM,
+  insertJunctionIntoRoute,
+  linkManualRoute,
+  routeJunctionPlacementError,
+  type RouteLinkAxis,
+  type RouteLinkEndpoint,
+} from '../core/electrical/routeLink';
 import {
   appendUnassignedDevices as appendUnassignedDevicesOp,
   assignDevices,
@@ -261,6 +272,7 @@ interface ProjectState {
   addDevice: (type: DeviceType, anchor: DeviceAnchor, shared: boolean) => void;
   setDeviceNote: (id: string, note: string) => void;
   deleteDevice: (id: string) => void;
+  moveDevice: (id: string, anchor: DeviceAnchor) => boolean;
 
   // Рамки и места механизмов
   setActiveFramePosts: (posts: FramePosts) => void;
@@ -269,6 +281,7 @@ interface ProjectState {
   setActiveFrameHeight: (heightMm: number) => void;
   startFramePlacement: () => void;
   addFrame: (anchor: FrameAnchor) => string | null;
+  moveFrame: (id: string, anchor: FrameAnchor) => boolean;
   setFramePosts: (id: string, posts: FramePosts) => void;
   setFrameMounting: (id: string, mounting: FrameMounting) => void;
   setFrameHeight: (id: string, heightMm: number) => void;
@@ -321,12 +334,27 @@ interface ProjectState {
     maxDistanceMm?: number
   ) => void;
   removeLineRouteNode: (lineId: string, nodeIndex: number) => boolean;
+  removeLineRouteSegment: (
+    lineId: string,
+    pathIndex: number,
+    segmentIndex: number
+  ) => boolean;
   reorderLineRouteStops: (
     lineId: string,
     branchIndex: number,
     fromIndex: number,
     toIndex: number
   ) => boolean;
+  addLineRouteJunction: (
+    lineId: string,
+    point: Point2D
+  ) => { ok: true } | { ok: false; error: string };
+  linkLineRoute: (
+    lineId: string,
+    from: RouteLinkEndpoint,
+    to: RouteLinkEndpoint,
+    axisFirst: RouteLinkAxis
+  ) => { ok: true } | { ok: false; error: string };
   setLineManualRoute: (lineId: string, manualRoute: ManualRoute | undefined) => void;
   resetLineRoute: (lineId: string) => void;
   addLineWaypoint: (lineId: string, point: Point2D) => void;
@@ -360,6 +388,61 @@ function withLineManualRoute(
     lines: panel.lines.map((line) =>
       line.id === lineId ? { ...line, manualRoute, waypoints: undefined } : line
     ),
+  };
+}
+
+function sameAnchor(a: DeviceAnchor | FrameAnchor, b: DeviceAnchor | FrameAnchor): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'room_point' && b.kind === 'room_point') {
+    return a.roomId === b.roomId && a.x === b.x && a.y === b.y;
+  }
+  if (a.kind === 'room_edge' && b.kind === 'room_edge') {
+    return (
+      a.roomId === b.roomId &&
+      a.edgeIndex === b.edgeIndex &&
+      a.offsetMm === b.offsetMm
+    );
+  }
+  if (a.kind === 'partition' && b.kind === 'partition') {
+    return (
+      a.partitionId === b.partitionId &&
+      a.offsetMm === b.offsetMm &&
+      a.side === b.side
+    );
+  }
+  return false;
+}
+
+/** Переподключает ручные трассы линий к переехавшим приборам. */
+function reconnectManualRoutes(
+  panel: ElectricalPanel | null,
+  moves: ManualRouteAnchorMove[]
+): { panel: ElectricalPanel | null; failed: string[] } {
+  if (!panel || moves.length === 0) return { panel, failed: [] };
+  const failed: string[] = [];
+  let changed = false;
+  const lines = panel.lines.map((line) => {
+    const route = line.manualRoute;
+    if (!route) return line;
+    const applicable = moves.filter(
+      (move) =>
+        move.kind === 'device' &&
+        route.anchors.some(
+          (anchor) => anchor.kind === 'device' && anchor.deviceId === move.deviceId
+        )
+    );
+    if (applicable.length === 0) return line;
+    const result = moveManualRouteAnchors(route, applicable);
+    if (!result.ok) {
+      failed.push(line.name);
+      return line;
+    }
+    changed = true;
+    return { ...line, manualRoute: result.route, waypoints: undefined };
+  });
+  return {
+    panel: changed ? { ...panel, lines } : panel,
+    failed,
   };
 }
 
@@ -1636,6 +1719,50 @@ export const useProjectStore = create<ProjectState>()(
         state.addToast('Прибор удалён.', 'success');
       },
 
+      moveDevice: (id, anchor) => {
+        const state = get();
+        const current = state.devices.find((device) => device.id === id);
+        if (!current) return false;
+        if (current.frameId) {
+          state.addToast(
+            'Механизм перемещается только вместе с подрозетником. Потяните сам подрозетник.',
+            'info'
+          );
+          return false;
+        }
+        if (sameAnchor(current.anchor, anchor)) return true;
+        const candidate: ElectricalDevice = { ...current, anchor };
+        const resolved = resolveDevice(
+          candidate,
+          state.rooms,
+          state.freePartitions,
+          state.settings.defaultWallThicknessMm
+        );
+        const point = resolved?.poses[0]?.position;
+        if (!resolved || !point) {
+          state.addToast(
+            'Прибор не помещается в этом месте. Выберите точку на стене или в комнате.',
+            'error'
+          );
+          return false;
+        }
+        const device: ElectricalDevice = { ...candidate, shared: resolved.isShared };
+        const { panel, failed } = reconnectManualRoutes(state.panel, [
+          { kind: 'device', deviceId: id, point },
+        ]);
+        set({
+          devices: state.devices.map((item) => (item.id === id ? device : item)),
+          panel,
+        });
+        if (failed.length > 0) {
+          state.addToast(
+            `Трассы линий «${failed.join('», «')}» не удалось переподключить. Сбросьте их в «Трассировке».`,
+            'error'
+          );
+        }
+        return true;
+      },
+
       // ---------------------------------------------------------
       // Рамки: монтажная часть без своих линий и нагрузки
       // ---------------------------------------------------------
@@ -1749,6 +1876,88 @@ export const useProjectStore = create<ProjectState>()(
           selection: { kind: 'frame', id: frame.id },
         });
         return frame.id;
+      },
+
+      moveFrame: (id, anchor) => {
+        const state = get();
+        const frame = state.frames.find((candidate) => candidate.id === id);
+        if (!frame) return false;
+        const nextAnchor: FrameAnchor = {
+          ...anchor,
+          // Плата не должна свисать с края стены: как при смене числа мест.
+          offsetMm: clampFrameOffset(
+            anchor,
+            frame.posts,
+            state.rooms,
+            state.freePartitions
+          ),
+        };
+        if (sameAnchor(frame.anchor, nextAnchor)) return true;
+        const nextFrame: MountingFrame = { ...frame, anchor: nextAnchor };
+        const pose = resolveFramePose(
+          nextFrame,
+          state.rooms,
+          state.freePartitions,
+          state.settings.defaultWallThicknessMm
+        );
+        if (!pose) {
+          state.addToast(
+            'Подрозетник не помещается на этой стене. Сдвиньте его вдоль стены.',
+            'error'
+          );
+          return false;
+        }
+
+        const thickness = state.settings.defaultWallThicknessMm;
+        const moves: ManualRouteAnchorMove[] = [];
+        const nextDevices: ElectricalDevice[] = [];
+        for (const device of state.devices) {
+          if (device.frameId !== id) {
+            nextDevices.push(device);
+            continue;
+          }
+          const seat = Number.isSafeInteger(device.seatIndex)
+            ? (device.seatIndex as number)
+            : 0;
+          const anchored: ElectricalDevice = {
+            ...device,
+            anchor: frameSeatAnchor(nextFrame, seat),
+          };
+          const resolved = resolveDevice(
+            anchored,
+            state.rooms,
+            state.freePartitions,
+            thickness
+          );
+          if (!resolved) {
+            state.addToast(
+              'Подрозетник не помещается здесь: механизмы выходят за стену.',
+              'error'
+            );
+            return false;
+          }
+          const point = resolved.poses[0]?.position;
+          if (point) {
+            moves.push({ kind: 'device', deviceId: device.id, point });
+          }
+          nextDevices.push({ ...anchored, shared: resolved.isShared });
+        }
+
+        const { panel, failed } = reconnectManualRoutes(state.panel, moves);
+        set({
+          frames: state.frames.map((candidate) =>
+            candidate.id === id ? nextFrame : candidate
+          ),
+          devices: nextDevices,
+          panel,
+        });
+        if (failed.length > 0) {
+          state.addToast(
+            `Трассы линий «${failed.join('», «')}» не удалось переподключить. Сбросьте их в «Трассировке».`,
+            'error'
+          );
+        }
+        return true;
       },
 
       setFrameMounting: (id, mounting) => {
@@ -2548,6 +2757,29 @@ export const useProjectStore = create<ProjectState>()(
         return true;
       },
 
+      removeLineRouteSegment: (lineId, pathIndex, segmentIndex) => {
+        const state = get();
+        if (!state.panel) return false;
+        const base = materializeRouteForLine(lineRouteInput(state), lineId);
+        if (!base) {
+          state.addToast('Не удалось построить ручную трассу для линии.', 'error');
+          return false;
+        }
+        const result = removeManualRouteSegment(base, pathIndex, segmentIndex);
+        if (!result.ok) {
+          state.addToast(result.error, 'error');
+          return false;
+        }
+        set({
+          panel: withLineManualRoute(state.panel, lineId, result.route),
+        });
+        state.addToast(
+          'Участок трассы удалён — остальные участки сохранены.',
+          'info'
+        );
+        return true;
+      },
+
       reorderLineRouteStops: (lineId, branchIndex, fromIndex, toIndex) => {
         const state = get();
         if (!state.panel) return false;
@@ -2568,6 +2800,154 @@ export const useProjectStore = create<ProjectState>()(
         return true;
       },
 
+      addLineRouteJunction: (lineId, point) => {
+        const state = get();
+        if (!state.panel) {
+          return { ok: false, error: 'Сначала разместите щиток на плане.' };
+        }
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        if (!line) {
+          return { ok: false, error: 'Линия не найдена.' };
+        }
+        const placementError = routeJunctionPlacementError(
+          point,
+          state.rooms,
+          state.freePartitions
+        );
+        if (placementError) return { ok: false, error: placementError };
+
+        const loose = (line.routeJunctions ?? []).map((item) => ({ ...item }));
+        if (
+          loose.some((item) => distance(item, point) <= ROUTE_LINK_EPS_MM)
+        ) {
+          return { ok: false, error: 'Узел уже стоит в этой точке.' };
+        }
+
+        let nextRoute = line.manualRoute
+          ? materializeRouteForLine(lineRouteInput(state), lineId)
+          : null;
+        let anchored = false;
+        if (nextRoute) {
+          const nodeIndex = nextRoute.nodes.findIndex(
+            (node) => distance(node, point) <= ROUTE_LINK_EPS_MM
+          );
+          if (nodeIndex >= 0) {
+            const physical = nextRoute.anchors.find(
+              (anchor) =>
+                anchor.nodeIndex === nodeIndex &&
+                (anchor.kind === 'panel' || anchor.kind === 'device')
+            );
+            if (physical) {
+              return {
+                ok: false,
+                error: 'В этой точке уже подключён щиток или прибор.',
+              };
+            }
+            if (
+              nextRoute.anchors.some(
+                (anchor) =>
+                  anchor.kind === 'junction' &&
+                  anchor.nodeIndex === nodeIndex
+              )
+            ) {
+              return { ok: false, error: 'Узел уже стоит в этой точке.' };
+            }
+          }
+          const inserted = insertJunctionIntoRoute(nextRoute, point);
+          if (inserted.ok) {
+            nextRoute = inserted.route;
+            anchored = true;
+          } else if (inserted.reason === 'invalid') {
+            return { ok: false, error: inserted.error };
+          }
+        }
+        if (!anchored) loose.push({ x: point.x, y: point.y });
+
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId
+                ? {
+                    ...candidate,
+                    manualRoute: nextRoute ?? candidate.manualRoute,
+                    routeJunctions: loose.length > 0 ? loose : undefined,
+                  }
+                : candidate
+            ),
+          },
+        });
+        state.addToast(
+          anchored
+            ? 'Узел стоит на трассе — от него можно вести ветвь.'
+            : 'Узел поставлен. Соедините его с приборами или щитком.',
+          'success'
+        );
+        return { ok: true };
+      },
+
+      linkLineRoute: (lineId, from, to, axisFirst) => {
+        const state = get();
+        if (!state.panel) {
+          return { ok: false, error: 'Сначала разместите щиток на плане.' };
+        }
+        const line = state.panel.lines.find((candidate) => candidate.id === lineId);
+        if (!line) {
+          return { ok: false, error: 'Линия не найдена.' };
+        }
+        for (const endpoint of [from, to]) {
+          if (endpoint.kind === 'panel' && !state.panel) {
+            return { ok: false, error: 'Щиток не размещён на плане.' };
+          }
+          if (
+            endpoint.kind === 'device' &&
+            (!endpoint.deviceId || !line.deviceIds.includes(endpoint.deviceId))
+          ) {
+            return {
+              ok: false,
+              error: 'Этот прибор не входит в состав линии.',
+            };
+          }
+        }
+        const base = materializeRouteForLine(lineRouteInput(state), lineId);
+        const result = linkManualRoute(base, from, to, axisFirst);
+        if (!result.ok) return result;
+
+        const usedLoose = (line.routeJunctions ?? []).filter((point) =>
+          [from, to].some(
+            (endpoint) =>
+              endpoint.kind === 'junction' &&
+              distance(endpoint.point, point) <= ROUTE_LINK_EPS_MM
+          )
+        );
+        const keptLoose = (line.routeJunctions ?? []).filter(
+          (point) => !usedLoose.includes(point)
+        );
+        set({
+          panel: {
+            ...state.panel,
+            lines: state.panel.lines.map((candidate) =>
+              candidate.id === lineId
+                ? {
+                    ...candidate,
+                    manualRoute: result.route,
+                    routeJunctions:
+                      keptLoose.length > 0 ? keptLoose : undefined,
+                    waypoints: undefined,
+                  }
+                : candidate
+            ),
+          },
+        });
+        state.addToast(
+          result.warnings.length > 0
+            ? `Связь добавлена. ${result.warnings.join(' ')}`
+            : 'Связь добавлена — можно продолжать в любом порядке.',
+          result.warnings.length > 0 ? 'info' : 'success'
+        );
+        return { ok: true };
+      },
+
       setLineManualRoute: (lineId, manualRoute) => {
         const state = get();
         if (!state.panel) return;
@@ -2584,7 +2964,11 @@ export const useProjectStore = create<ProjectState>()(
         if (!state.panel) return;
         const line = state.panel.lines.find((candidate) => candidate.id === lineId);
         if (!line) return;
-        const hasManual = Boolean(line.manualRoute || line.waypoints?.length);
+        const hasManual = Boolean(
+          line.manualRoute ||
+            line.waypoints?.length ||
+            line.routeJunctions?.length
+        );
         if (!hasManual && line.trace !== 'none') return;
         set({
           panel: {
@@ -2594,6 +2978,7 @@ export const useProjectStore = create<ProjectState>()(
                 ? {
                     ...candidate,
                     manualRoute: undefined,
+                    routeJunctions: undefined,
                     waypoints: undefined,
                     trace: 'auto',
                   }

@@ -213,6 +213,7 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
         routing:
           line.routing === 'ceiling' || line.routing === 'floor' ? line.routing : undefined,
         manualRoute: sanitizeManualRoute(line.manualRoute),
+        routeJunctions: sanitizeRouteJunctions(line.routeJunctions),
         waypoints: sanitizeWaypoints(line.waypoints),
         trace: line.trace === 'none' ? 'none' : line.trace === 'auto' ? 'auto' : undefined,
       };
@@ -226,6 +227,18 @@ function sanitizeWaypoints(waypoints: CircuitLine['waypoints']): Point2D[] | und
       point && Number.isFinite(point.x) && Number.isFinite(point.y)
   );
   return valid.length > 0 ? valid.map((point) => ({ x: point.x, y: point.y })) : undefined;
+}
+
+function sanitizeRouteJunctions(
+  junctions: CircuitLine['routeJunctions']
+): Point2D[] | undefined {
+  if (!Array.isArray(junctions)) return undefined;
+  const valid = junctions.filter(
+    (point) => point && Number.isFinite(point.x) && Number.isFinite(point.y)
+  );
+  return valid.length > 0
+    ? valid.map((point) => ({ x: point.x, y: point.y }))
+    : undefined;
 }
 
 // -------------------------------------------------------------
