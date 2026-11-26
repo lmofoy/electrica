@@ -1111,6 +1111,26 @@ try {
     assert.match(routed.warning, /не подключён к щитку/);
   });
 
+  await test('частичная линия без якоря клавиши называет её номер', () => {
+    const fixture = buildFixture({
+      vertices: [{ x: 0, y: 0 }, { x: 4000, y: 0 }, { x: 4000, y: 3000 }, { x: 0, y: 3000 }],
+      panelEdge: 3,
+      panelFraction: 0.37,
+      deviceSpecs: [{ id: 'swkey', type: 'switch_2k', edge: 1, fraction: 0.61, power: 1000 }],
+    });
+    const input = clone(fixture.input);
+    // Только клавиша 1 входит в линию; её клемма осталась без якоря на трассе.
+    input.panel.lines[0].slotMembers = { swkey: [0] };
+    const route = autoRoute(input);
+    const manual = materializeManualRoute(route.paths, { panelPoint: poses(input).panelPoint });
+    assert.ok(manual, 'manual route materializes from auto paths');
+    const routed = computeLineRoutes(withManual(input, manual)).get(LINE_ID);
+    assert.ok(routed?.warning, 'warning is present');
+    assert.match(routed.warning, /не подключён к щитку/);
+    assert.match(routed.warning, /клавиша 1/, 'names the disconnected key');
+    assert.doesNotMatch(routed.warning, /клавиша 2/, 'the in-line key 2 is not blamed');
+  });
+
   // ---------------------------------------------------------------
   // Sanitization
   // ---------------------------------------------------------------

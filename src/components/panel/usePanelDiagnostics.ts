@@ -5,8 +5,9 @@ import { buildAutoLayout } from '../../core/geometry/autoLayout';
 import { buildPanelCalculation } from '../../core/electrical/calculation';
 import { buildPanelSchematic } from '../../core/electrical/schematic';
 import { buildPanelSpecification } from '../../core/electrical/specification';
-import { collectUnassignedDevices } from '../../core/electrical/lineAssignment';
+import { collectUnassignedDevices, collectDevicesWithFreeSlots } from '../../core/electrical/lineAssignment';
 import { collectLineCompositionWarnings } from '../../core/electrical/lineOps';
+import { deviceSlotLabel } from '../../core/electrical/devices';
 import { computeLineRoutes } from '../../core/electrical/routing';
 import type { NormativeFinding } from '../../core/electrical/panelValidation';
 import type { PanelStep } from '../../types';
@@ -21,6 +22,8 @@ export interface PanelCheckItem {
   message: string;
   reference?: string;
   lineId?: string;
+  deviceId?: string;
+  slot?: number;
 }
 
 export const CHECK_GROUP_LABELS: Record<CheckGroup, string> = {
@@ -109,6 +112,10 @@ export function usePanelDiagnostics() {
     () => collectUnassignedDevices(devices, panel),
     [devices, panel]
   );
+  const devicesWithFreeSlots = useMemo(
+    () => collectDevicesWithFreeSlots(devices, panel),
+    [devices, panel]
+  );
   const compositionWarnings = useMemo(
     () => (panel ? collectLineCompositionWarnings(panel, devices) : []),
     [panel, devices]
@@ -187,6 +194,25 @@ export function usePanelDiagnostics() {
         lineId: line.id,
       }));
 
+    const freeSlotChecks: PanelCheckItem[] = devicesWithFreeSlots.map(
+      ({ device, slots }) => {
+        const labels = slots
+          .map((slot) => deviceSlotLabel(device, slot))
+          .join(', ');
+        return {
+          id: `free-slots-${device.id}`,
+          group: 'lines',
+          step: 'devices',
+          severity: 'warning',
+          message: `«${device.name}»: ${
+            slots.length === 1 ? `${labels} не назначена` : `${labels} не назначены`
+          } ни в одну линию — клавиша без кабеля не попадёт в трассу.`,
+          deviceId: device.id,
+          slot: slots[0],
+        };
+      }
+    );
+
     return [
       ...layout.warnings.map((warning) => ({
         ...warning,
@@ -211,6 +237,8 @@ export function usePanelDiagnostics() {
         severity: warning.severity,
         message: warning.message,
         lineId: warning.lineId,
+        deviceId: warning.deviceId,
+        slot: warning.slot,
       })),
       ...(unassignedDevices.length
         ? [
@@ -226,6 +254,7 @@ export function usePanelDiagnostics() {
           ]
         : []),
       ...emptyLines,
+      ...freeSlotChecks,
       ...missingTrace,
       ...routingWarnings,
     ];
@@ -235,6 +264,7 @@ export function usePanelDiagnostics() {
     schematic,
     compositionWarnings,
     unassignedDevices,
+    devicesWithFreeSlots,
     routes,
   ]);
 

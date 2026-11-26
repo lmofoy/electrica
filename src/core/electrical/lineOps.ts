@@ -18,14 +18,28 @@ import {
   linePurposeFor,
   recalculateLine,
 } from './panel';
-import { DEVICE_CATALOG } from './devices';
+import {
+  DEVICE_CATALOG,
+  deviceLineSlotCount,
+  deviceSlotLabel,
+  deviceSlotsPowerW,
+  deviceWholeSlots,
+} from './devices';
+import { linesOfDevice } from './lineAssignment';
 
-// Операции над составом линий. Прибор принадлежит ровно одной линии,
-// единственный источник истины — panel.lines[].deviceIds.
+// Операции над составом линий. Прибор входит в линию целиком или
+// отдельными слотами (`slotMembers`); единственный источник истины —
+// panel.lines[].deviceIds + slotMembers.
 export interface LineOpsContext {
   devices: ElectricalDevice[];
   rooms: RoomZone[];
   partitions: FreePartition[];
+}
+
+// Слоты прибора, которые переходят в линию. `slots` не задано — весь прибор.
+export interface DeviceSlotRef {
+  deviceId: string;
+  slots?: number[];
 }
 
 export interface LineCreateOptions {
@@ -107,36 +121,215 @@ function lightingNeedsRcd(line: CircuitLine, rooms: RoomZone[]): boolean {
   });
 }
 
-// Пересобирает состав линии: приборы, комнаты, нагрузку и аппараты защиты.
+function cleanSlots(device: ElectricalDevice, slots: number[]): number[] {
+  const count = deviceLineSlotCount(device);
+  if (count <= 0) return [];
+  const result = new Set<number>();
+  for (const slot of slots) {
+    if (Number.isSafeInteger(slot) && slot >= 0 && slot < count) result.add(slot);
+  }
+  return [...result].sort((a, b) => a - b);
+}
+
+// null — вклад пуст и прибор в линию не попадает; undefined в slots — весь прибор.
+function normalizeRef(
+  device: ElectricalDevice,
+  ref: DeviceSlotRef
+): DeviceSlotRef | null {
+  const count = deviceLineSlotCount(device);
+  if (count <= 0 || ref.slots === undefined) return { deviceId: ref.deviceId };
+  const slots = cleanSlots(device, ref.slots);
+  if (slots.length === 0) return null;
+  if (slots.length === count) return { deviceId: ref.deviceId };
+  return { deviceId: ref.deviceId, slots };
+}
+
+// Слияние ссылок одного прибора: весь прибор поглощает слоты, а полный
+// набор слотов снова становится целым прибором.
+function normalizeRefs(
+  refs: DeviceSlotRef[],
+  byId: Map<string, ElectricalDevice>
+): DeviceSlotRef[] {
+  const merged = new Map<string, DeviceSlotRef>();
+  for (const ref of refs) {
+    const device = byId.get(ref.deviceId);
+    if (!device) continue;
+    const normalized = normalizeRef(device, ref);
+    if (!normalized) continue;
+    const existing = merged.get(ref.deviceId);
+    if (!existing) {
+      merged.set(ref.deviceId, normalized);
+      continue;
+    }
+    if (existing.slots === undefined || normalized.slots === undefined) {
+      merged.set(ref.deviceId, { deviceId: ref.deviceId });
+      continue;
+    }
+    const slots = [...new Set([...existing.slots, ...normalized.slots])].sort(
+      (a, b) => a - b
+    );
+    merged.set(ref.deviceId, { deviceId: ref.deviceId, slots });
+  }
+
+  const result: DeviceSlotRef[] = [];
+  for (const ref of merged.values()) {
+    const device = byId.get(ref.deviceId)!;
+    const normalized = normalizeRef(device, ref);
+    if (normalized) result.push(normalized);
+  }
+  return result;
+}
+
+function sameRefs(a: DeviceSlotRef[], b: DeviceSlotRef[]): boolean {
+  if (a.length !== b.length) return false;
+  const right = new Map(b.map((ref) => [ref.deviceId, ref]));
+  return a.every((ref) => {
+    const other = right.get(ref.deviceId);
+    if (!other) return false;
+    if (ref.slots === undefined || other.slots === undefined) {
+      return ref.slots === other.slots;
+    }
+    return (
+      ref.slots.length === other.slots.length &&
+      ref.slots.every((slot, index) => slot === other.slots![index])
+    );
+  });
+}
+
+function membershipOfLine(
+  line: CircuitLine,
+  byId: Map<string, ElectricalDevice>
+): DeviceSlotRef[] {
+  const refs: DeviceSlotRef[] = [];
+  const seen = new Set<string>();
+  for (const deviceId of line.deviceIds) {
+    if (seen.has(deviceId)) continue;
+    seen.add(deviceId);
+    const device = byId.get(deviceId);
+    if (!device) continue;
+    const explicit = line.slotMembers?.[deviceId];
+    if (explicit === undefined) {
+      refs.push({ deviceId });
+      continue;
+    }
+    const slots = cleanSlots(device, explicit);
+    refs.push(slots.length > 0 ? { deviceId, slots } : { deviceId });
+  }
+  return normalizeRefs(refs, byId);
+}
+
+// Убрать из текущего состава линии выбранные слоты. Если у линии был весь
+// прибор, а забирают одну клавишу, оставшиеся слоты становятся явными.
+function withoutRefs(
+  current: DeviceSlotRef[],
+  moving: DeviceSlotRef[],
+  byId: Map<string, ElectricalDevice>
+): { refs: DeviceSlotRef[]; changed: boolean } {
+  const byDevice = new Map(moving.map((ref) => [ref.deviceId, ref]));
+  let changed = false;
+  const refs: DeviceSlotRef[] = [];
+
+  for (const ref of current) {
+    const take = byDevice.get(ref.deviceId);
+    if (!take) {
+      refs.push(ref);
+      continue;
+    }
+    const device = byId.get(ref.deviceId)!;
+    // Закладная слотов не имеет: она либо в линии целиком, либо вне её.
+    if (deviceLineSlotCount(device) <= 0) {
+      changed = true;
+      continue;
+    }
+    const currentSlots = ref.slots ?? deviceWholeSlots(device);
+    const takeSlots = take.slots ?? deviceWholeSlots(device);
+    const remaining = currentSlots.filter((slot) => !takeSlots.includes(slot));
+    if (remaining.length === currentSlots.length) {
+      refs.push(ref);
+      continue;
+    }
+    changed = true;
+    if (remaining.length > 0) refs.push({ deviceId: ref.deviceId, slots: remaining });
+  }
+
+  return changed
+    ? { refs: normalizeRefs(refs, byId), changed: true }
+    : { refs: current, changed: false };
+}
+
+function intersectRefs(
+  current: DeviceSlotRef[],
+  wanted: DeviceSlotRef[],
+  byId: Map<string, ElectricalDevice>
+): DeviceSlotRef[] {
+  const byDevice = new Map(wanted.map((ref) => [ref.deviceId, ref]));
+  const refs: DeviceSlotRef[] = [];
+  for (const ref of current) {
+    const take = byDevice.get(ref.deviceId);
+    if (!take) continue;
+    const device = byId.get(ref.deviceId)!;
+    if (deviceLineSlotCount(device) <= 0) {
+      refs.push({ deviceId: ref.deviceId });
+      continue;
+    }
+    const currentSlots = ref.slots ?? deviceWholeSlots(device);
+    const takeSlots = take.slots ?? deviceWholeSlots(device);
+    const slots = currentSlots.filter((slot) => takeSlots.includes(slot));
+    if (slots.length > 0) refs.push({ deviceId: ref.deviceId, slots });
+  }
+  return normalizeRefs(refs, byId);
+}
+
+function syncCombinedRating(line: CircuitLine): CircuitLine {
+  return line.combinedProtection && line.rcd
+    ? { ...line, rcd: { ...line.rcd, ratingA: line.breaker.ratingA } }
+    : line;
+}
+
+// Пересобирает состав линии: приборы/слоты, комнаты, нагрузку и аппараты
+// защиты. Мощность прибора делится между его слотами без двойного счёта.
 function withComposition(
   line: CircuitLine,
-  deviceIds: string[],
+  refs: DeviceSlotRef[],
   ctx: LineOpsContext
 ): CircuitLine {
   const byId = new Map(ctx.devices.map((device) => [device.id, device]));
-  const ids = unique(deviceIds.filter((deviceId) => byId.has(deviceId)));
+  const members = normalizeRefs(refs, byId);
+  const deviceIds = members.map((ref) => ref.deviceId);
   const preset = LINE_PRESETS[line.purpose];
 
-  if (ids.length === 0) {
-    return recalculateLine({
+  if (deviceIds.length === 0) {
+    const next = recalculateLine({
       ...line,
       deviceIds: [],
       loadW: preset.loadW,
     });
+    delete next.slotMembers;
+    return syncCombinedRating(next);
   }
 
-  const loadW = Math.max(
-    preset.loadW,
-    ids.reduce((sum, deviceId) => sum + (byId.get(deviceId)?.powerWatts ?? 0), 0)
-  );
-  const roomIds = roomsForDevices(ids, ctx);
+  const slotMembers: Record<string, number[]> = {};
+  let powerW = 0;
+  for (const ref of members) {
+    const device = byId.get(ref.deviceId)!;
+    if (ref.slots === undefined) {
+      powerW += device.powerWatts;
+      continue;
+    }
+    slotMembers[ref.deviceId] = ref.slots;
+    powerW += deviceSlotsPowerW(device, ref.slots);
+  }
+  const roomIds = roomsForDevices(deviceIds, ctx);
 
-  return recalculateLine({
+  const next: CircuitLine = {
     ...line,
-    deviceIds: ids,
+    deviceIds,
     roomIds: roomIds.length > 0 ? roomIds : line.roomIds,
-    loadW,
-  });
+    loadW: Math.max(preset.loadW, powerW),
+  };
+  if (Object.keys(slotMembers).length > 0) next.slotMembers = slotMembers;
+  else delete next.slotMembers;
+  return syncCombinedRating(recalculateLine(next));
 }
 
 function nextLineId(panel: ElectricalPanel): string {
@@ -214,10 +407,40 @@ export function lineCodes(panel: ElectricalPanel): Map<string, number> {
   return stored;
 }
 
-// Нормализация: прибор не может входить в две линии (побеждает первая),
-// каждой линии выдаётся стабильный код и цвет.
+function validSlotIndexes(slots: unknown): number[] {
+  if (!Array.isArray(slots)) return [];
+  const unique = new Set<number>();
+  for (const slot of slots) {
+    if (Number.isSafeInteger(slot) && slot >= 0) unique.add(slot);
+  }
+  return [...unique].sort((a, b) => a - b);
+}
+
+function sameSlotMembers(
+  a: Record<string, number[]> | undefined,
+  b: Record<string, number[]> | undefined
+): boolean {
+  const left = a ?? {};
+  const right = b ?? {};
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => {
+    const mine = left[key];
+    const other = right[key];
+    return (
+      Array.isArray(other) &&
+      mine.length === other.length &&
+      mine.every((slot, index) => slot === other[index])
+    );
+  });
+}
+
+// Нормализация: слот прибора не может входить в две линии (побеждает
+// первая), повтор id внутри линии убирается. Каждой линии выдаётся
+// стабильный код и цвет.
 export function normalizeLineAssignments(panel: ElectricalPanel): ElectricalPanel {
-  const seen = new Set<string>();
+  const wholeDevices = new Set<string>();
+  const claimedSlots = new Map<string, Set<number>>();
   const usedColors = new Set<number>();
   panel.lines.forEach((line, index) => {
     usedColors.add(line.colorIndex ?? index);
@@ -250,14 +473,55 @@ export function normalizeLineAssignments(panel: ElectricalPanel): ElectricalPane
       changed = true;
     }
 
-    const deviceIds = line.deviceIds.filter((deviceId) => {
-      if (seen.has(deviceId)) return false;
-      seen.add(deviceId);
-      return true;
-    });
-    if (deviceIds.length !== line.deviceIds.length) {
-      next = { ...next, deviceIds };
+    const localSeen = new Set<string>();
+    const deviceIds: string[] = [];
+    const slotMembers: Record<string, number[]> = {};
+    for (const deviceId of line.deviceIds) {
+      if (localSeen.has(deviceId)) {
+        changed = true;
+        continue;
+      }
+      localSeen.add(deviceId);
+      const explicit = line.slotMembers?.[deviceId];
+      if (explicit === undefined) {
+        const alreadyClaimed =
+          wholeDevices.has(deviceId) || (claimedSlots.get(deviceId)?.size ?? 0) > 0;
+        if (alreadyClaimed) {
+          changed = true;
+          continue;
+        }
+        wholeDevices.add(deviceId);
+        deviceIds.push(deviceId);
+        continue;
+      }
+      const slots = validSlotIndexes(explicit);
+      const taken = claimedSlots.get(deviceId) ?? new Set<number>();
+      const free = slots.filter((slot) => !taken.has(slot));
+      if (free.length === 0) {
+        changed = true;
+        continue;
+      }
+      if (free.length !== explicit.length) changed = true;
+      for (const slot of free) taken.add(slot);
+      claimedSlots.set(deviceId, taken);
+      deviceIds.push(deviceId);
+      slotMembers[deviceId] = free;
+    }
+
+    const hasSlotMembers = Object.keys(slotMembers).length > 0;
+    // Сравниваем по содержимому, чтобы не плодить новые объекты без нужды.
+    if (
+      deviceIds.length !== line.deviceIds.length ||
+      deviceIds.some((deviceId, index) => deviceId !== line.deviceIds[index])
+    ) {
       changed = true;
+      next = { ...next, deviceIds };
+    }
+    if (!sameSlotMembers(hasSlotMembers ? slotMembers : undefined, line.slotMembers)) {
+      changed = true;
+      next = { ...next };
+      if (hasSlotMembers) next.slotMembers = slotMembers;
+      else delete next.slotMembers;
     }
 
     return next;
@@ -266,102 +530,129 @@ export function normalizeLineAssignments(panel: ElectricalPanel): ElectricalPane
   return changed ? { ...panel, lines } : panel;
 }
 
-// Назначить приборы линии. Из прежних линий они удаляются автоматически.
+// Назначить линии конкретные слоты приборов. Из прежних линий эти слоты
+// убираются: у линии с целым прибором остаток становится явными слотами.
+export function assignDeviceSlots(
+  panel: ElectricalPanel,
+  lineId: string,
+  refs: DeviceSlotRef[],
+  ctx: LineOpsContext
+): ElectricalPanel {
+  if (!panel.lines.some((line) => line.id === lineId)) return panel;
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const moving = normalizeRefs(refs, byId);
+  if (moving.length === 0) return panel;
+
+  let changed = false;
+  const lines = panel.lines.map((line) => {
+    const current = membershipOfLine(line, byId);
+    if (line.id === lineId) {
+      const next = normalizeRefs([...current, ...moving], byId);
+      if (sameRefs(next, current)) return line;
+      changed = true;
+      return withComposition(line, next, ctx);
+    }
+    const reduced = withoutRefs(current, moving, byId);
+    if (!reduced.changed) return line;
+    changed = true;
+    return withComposition(line, reduced.refs, ctx);
+  });
+
+  return changed ? { ...panel, lines } : panel;
+}
+
+// Назначить приборы линии целиком. Из прежних линий они удаляются.
 export function assignDevices(
   panel: ElectricalPanel,
   lineId: string,
   deviceIds: string[],
   ctx: LineOpsContext
 ): ElectricalPanel {
-  if (!panel.lines.some((line) => line.id === lineId)) return panel;
-  const ids = new Set(deviceIds.filter((id) => ctx.devices.some((d) => d.id === id)));
-  if (ids.size === 0) return panel;
-
-  const lines = panel.lines.map((line) => {
-    if (line.id === lineId) {
-      return withComposition(line, [...line.deviceIds, ...ids], ctx);
-    }
-    if (line.deviceIds.some((id) => ids.has(id))) {
-      return withComposition(
-        line,
-        line.deviceIds.filter((id) => !ids.has(id)),
-        ctx
-      );
-    }
-    return line;
-  });
-
-  return { ...panel, lines };
+  return assignDeviceSlots(
+    panel,
+    lineId,
+    deviceIds.map((deviceId) => ({ deviceId })),
+    ctx
+  );
 }
 
-// Заменить состав линии целиком одним действием (диалог состава).
-export function setComposition(
+// Заменить состав линии целиком (диалог состава): приборы и их слоты,
+// которых нет в новом наборе, из линии уходят; входящие забираются у других.
+export function setLineComposition(
   panel: ElectricalPanel,
   lineId: string,
-  deviceIds: string[],
+  refs: DeviceSlotRef[],
   ctx: LineOpsContext
 ): ElectricalPanel {
-  if (!panel.lines.some((line) => line.id === lineId)) return panel;
-  const knownIds = new Set(ctx.devices.map((device) => device.id));
-  const ids = new Set(deviceIds.filter((id) => knownIds.has(id)));
+  const target = panel.lines.find((line) => line.id === lineId);
+  if (!target) return panel;
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const incoming = normalizeRefs(refs, byId);
+  const unchanged = sameRefs(membershipOfLine(target, byId), incoming);
 
   let changed = false;
   const lines = panel.lines.map((line) => {
     if (line.id === lineId) {
-      const next = ids.size === line.deviceIds.length
-        && line.deviceIds.every((id) => ids.has(id));
-      if (next) return line;
+      if (unchanged) return line;
       changed = true;
-      return withComposition(line, [...ids], ctx);
+      return withComposition(line, incoming, ctx);
     }
-    if (line.deviceIds.some((id) => ids.has(id))) {
-      changed = true;
-      return withComposition(
-        line,
-        line.deviceIds.filter((id) => !ids.has(id)),
-        ctx
-      );
-    }
-    return line;
+    const reduced = withoutRefs(membershipOfLine(line, byId), incoming, byId);
+    if (!reduced.changed) return line;
+    changed = true;
+    return withComposition(line, reduced.refs, ctx);
   });
 
   return changed ? { ...panel, lines } : panel;
 }
 
-// Убрать приборы из всех линий — они станут «вне линий».
+// Убрать выбранные слоты из всех линий — они станут свободными.
+export function unassignDeviceSlots(
+  panel: ElectricalPanel,
+  refs: DeviceSlotRef[],
+  ctx: LineOpsContext
+): ElectricalPanel {
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const moving = normalizeRefs(refs, byId);
+  if (moving.length === 0) return panel;
+
+  let changed = false;
+  const lines = panel.lines.map((line) => {
+    const reduced = withoutRefs(membershipOfLine(line, byId), moving, byId);
+    if (!reduced.changed) return line;
+    changed = true;
+    return withComposition(line, reduced.refs, ctx);
+  });
+
+  return changed ? { ...panel, lines } : panel;
+}
+
+// Убрать приборы из всех линий целиком.
 export function unassignDevices(
   panel: ElectricalPanel,
   deviceIds: string[],
   ctx: LineOpsContext
 ): ElectricalPanel {
-  const ids = new Set(deviceIds);
-  if (ids.size === 0) return panel;
-
-  let changed = false;
-  const lines = panel.lines.map((line) => {
-    if (!line.deviceIds.some((id) => ids.has(id))) return line;
-    changed = true;
-    return withComposition(
-      line,
-      line.deviceIds.filter((id) => !ids.has(id)),
-      ctx
-    );
-  });
-
-  return changed ? { ...panel, lines } : panel;
+  return unassignDeviceSlots(
+    panel,
+    deviceIds.map((deviceId) => ({ deviceId })),
+    ctx
+  );
 }
 
-// Новая линия из выбранных приборов. Приборы забираются из прежних линий.
-export function createLineFromDevices(
+// Новая линия из выбранных слотов. Эти слоты забираются из прежних линий,
+// остальные слоты приборов остаются где были.
+export function createLineFromSlots(
   panel: ElectricalPanel,
-  deviceIds: string[],
+  refs: DeviceSlotRef[],
   options: LineCreateOptions,
   ctx: LineOpsContext
 ): LineCreateResult {
-  const knownIds = new Set(ctx.devices.map((device) => device.id));
-  const ids = unique(deviceIds.filter((id) => knownIds.has(id)));
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const members = normalizeRefs(refs, byId);
+  const deviceIds = members.map((ref) => ref.deviceId);
   const preset = LINE_PRESETS[options.purpose];
-  const roomIds = roomsForDevices(ids, ctx);
+  const roomIds = roomsForDevices(deviceIds, ctx);
   const fallbackName = defaultLineName(options.purpose, roomIds, ctx);
 
   const base = options.template
@@ -371,6 +662,7 @@ export function createLineFromDevices(
         code: nextLineCode(panel),
         name: uniqueLineName(panel, options.name ?? options.template.name),
         deviceIds: [],
+        slotMembers: undefined,
         roomIds,
         colorIndex: nextColorIndex(panel),
         loadW: preset.loadW,
@@ -398,14 +690,12 @@ export function createLineFromDevices(
         trace: options.trace ?? 'none',
       };
 
-  const idSet = new Set(ids);
-  const lines = panel.lines.map((line) =>
-    line.deviceIds.some((id) => idSet.has(id))
-      ? withComposition(line, line.deviceIds.filter((id) => !idSet.has(id)), ctx)
-      : line
-  );
+  const lines = panel.lines.map((line) => {
+    const reduced = withoutRefs(membershipOfLine(line, byId), members, byId);
+    return reduced.changed ? withComposition(line, reduced.refs, ctx) : line;
+  });
 
-  let line = withComposition(base, ids, ctx);
+  let line = withComposition(base, members, ctx);
   if (options.applyStrategy) {
     line = applyStrategyProtection(line, panel.strategy, ctx.rooms);
   }
@@ -416,23 +706,38 @@ export function createLineFromDevices(
   };
 }
 
-// Деление: выбранные приборы уходят в новую линию, защита копируется
-// с исходной и пересчитывается по новой нагрузке.
-export function splitLine(
+export function createLineFromDevices(
+  panel: ElectricalPanel,
+  deviceIds: string[],
+  options: LineCreateOptions,
+  ctx: LineOpsContext
+): LineCreateResult {
+  return createLineFromSlots(
+    panel,
+    deviceIds.map((deviceId) => ({ deviceId })),
+    options,
+    ctx
+  );
+}
+
+// Деление: выбранные слоты уходят в новую линию, остаток состава остаётся
+// у исходной. Защита копируется с исходной и пересчитывается по нагрузке.
+export function splitLineSlots(
   panel: ElectricalPanel,
   lineId: string,
-  deviceIds: string[],
+  refs: DeviceSlotRef[],
   ctx: LineOpsContext,
   newPurpose?: LinePurpose
 ): LineCreateResult | null {
   const source = panel.lines.find((line) => line.id === lineId);
   if (!source) return null;
-
-  const moving = source.deviceIds.filter((id) => deviceIds.includes(id));
-  if (moving.length === 0 || moving.length === source.deviceIds.length) return null;
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const current = membershipOfLine(source, byId);
+  const moving = intersectRefs(current, normalizeRefs(refs, byId), byId);
+  if (moving.length === 0 || sameRefs(moving, current)) return null;
 
   const purpose = newPurpose ?? source.purpose;
-  return createLineFromDevices(
+  return createLineFromSlots(
     panel,
     moving,
     {
@@ -443,6 +748,22 @@ export function splitLine(
       trace: source.trace === 'none' ? 'none' : 'auto',
     },
     ctx
+  );
+}
+
+export function splitLine(
+  panel: ElectricalPanel,
+  lineId: string,
+  deviceIds: string[],
+  ctx: LineOpsContext,
+  newPurpose?: LinePurpose
+): LineCreateResult | null {
+  return splitLineSlots(
+    panel,
+    lineId,
+    deviceIds.map((deviceId) => ({ deviceId })),
+    ctx,
+    newPurpose
   );
 }
 
@@ -460,11 +781,15 @@ export function mergeLines(
   const sources = panel.lines.filter((line) => ids.includes(line.id));
   if (sources.length < 2) return null;
 
-  const deviceIds = unique(sources.flatMap((line) => line.deviceIds));
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const members = normalizeRefs(
+    sources.flatMap((line) => membershipOfLine(line, byId)),
+    byId
+  );
   const lines = panel.lines
     .filter((line) => !ids.includes(line.id) || line.id === target.id)
     .map((line) =>
-      line.id === target.id ? withComposition(line, deviceIds, ctx) : line
+      line.id === target.id ? withComposition(line, members, ctx) : line
     );
 
   return {
@@ -473,53 +798,76 @@ export function mergeLines(
   };
 }
 
-// «Дособрать»: приборы вне линий группируются по комнате и назначению и
-// добавляются только в подходящие существующие линии. Новые линии не
-// создаются — их заводит пользователь кнопкой «Создать линию».
+// «Дособрать»: приборы вне линий и свободные слоты частично назначенных
+// приборов группируются по комнате и назначению и добавляются только в
+// подходящие существующие линии. Новые линии не создаются.
 export function appendUnassignedDevices(
   panel: ElectricalPanel,
   ctx: LineOpsContext
 ): AppendDevicesResult {
-  const assignedIds = new Set(panel.lines.flatMap((line) => line.deviceIds));
-  const unassigned = ctx.devices.filter((device) => !assignedIds.has(device.id));
-  if (unassigned.length === 0) {
-    return { panel, assigned: 0 };
+  const byId = new Map(ctx.devices.map((device) => [device.id, device]));
+  const whole = new Set<string>();
+  const claimedSlots = new Map<string, Set<number>>();
+  for (const line of panel.lines) {
+    for (const ref of membershipOfLine(line, byId)) {
+      if (ref.slots === undefined) {
+        whole.add(ref.deviceId);
+        continue;
+      }
+      const taken = claimedSlots.get(ref.deviceId) ?? new Set<number>();
+      for (const slot of ref.slots) taken.add(slot);
+      claimedSlots.set(ref.deviceId, taken);
+    }
   }
+
+  const freeRef = (device: ElectricalDevice): DeviceSlotRef | null => {
+    if (whole.has(device.id)) return null;
+    const count = deviceLineSlotCount(device);
+    if (count <= 0) return { deviceId: device.id };
+    const taken = claimedSlots.get(device.id) ?? new Set<number>();
+    const free = deviceWholeSlots(device).filter((slot) => !taken.has(slot));
+    if (free.length === 0) return null;
+    return free.length === count
+      ? { deviceId: device.id }
+      : { deviceId: device.id, slots: free };
+  };
 
   const groups = new Map<
     string,
-    { roomId: string; purpose: LinePurpose; devices: ElectricalDevice[] }
+    { roomId: string; purpose: LinePurpose; refs: DeviceSlotRef[] }
   >();
 
-  for (const device of unassigned) {
+  for (const device of ctx.devices) {
+    const ref = freeRef(device);
+    if (!ref) continue;
     const roomId = deviceRoomId(device, ctx.rooms, ctx.partitions);
     if (!roomId) continue;
     const room = ctx.rooms.find((candidate) => candidate.id === roomId)!;
     const purpose = linePurposeFor(device, room);
     const key = `${roomId}:${purpose}`;
     const group = groups.get(key);
-    if (group) {
-      group.devices.push(device);
-    } else {
-      groups.set(key, { roomId, purpose, devices: [device] });
-    }
+    if (group) group.refs.push(ref);
+    else groups.set(key, { roomId, purpose, refs: [ref] });
   }
+
+  if (groups.size === 0) return { panel, assigned: 0 };
 
   let lines = panel.lines;
   let assigned = 0;
 
   for (const group of groups.values()) {
-    const deviceIds = group.devices.map((device) => device.id);
     const existing = lines.find(
       (line) => line.purpose === group.purpose && line.roomIds.includes(group.roomId)
     );
     if (!existing) continue;
-    lines = lines.map((line) =>
-      line.id === existing.id
-        ? withComposition(line, [...line.deviceIds, ...deviceIds], ctx)
-        : line
+    const next = normalizeRefs(
+      [...membershipOfLine(existing, byId), ...group.refs],
+      byId
     );
-    assigned += deviceIds.length;
+    lines = lines.map((line) =>
+      line.id === existing.id ? withComposition(line, next, ctx) : line
+    );
+    assigned += group.refs.length;
   }
 
   return { panel: { ...panel, lines }, assigned };
@@ -530,6 +878,9 @@ export interface LineCompositionWarning {
   severity: 'error' | 'warning' | 'info';
   message: string;
   lineId?: string;
+  /** Прибор, к которому относится находка: для подсветки его клеммы на плане. */
+  deviceId?: string;
+  slot?: number;
 }
 
 function isLightingDevice(device: ElectricalDevice): boolean {
@@ -579,6 +930,35 @@ export function collectLineCompositionWarnings(
           lineId: line.id,
         });
       }
+    }
+  }
+
+  // Клавиши с общим входом (проходные выключатели) в разных линиях:
+  // встречное питание даёт сквозной ток через механизм.
+  const sharedSeen = new Set<string>();
+  for (const line of panel.lines) {
+    for (const deviceId of line.deviceIds) {
+      if (sharedSeen.has(deviceId)) continue;
+      const device = byId.get(deviceId);
+      if (!device) continue;
+      const catalog = DEVICE_CATALOG[device.type];
+      if (!catalog || catalog.slotCanShareFeed !== false) continue;
+      if (deviceLineSlotCount(device) < 2) continue;
+      const owners = linesOfDevice(panel, device);
+      if (new Set(owners.map((membership) => membership.line.id)).size < 2) continue;
+      sharedSeen.add(deviceId);
+      const labels = owners
+        .flatMap((membership) =>
+          membership.slots.map((slot) => `${deviceSlotLabel(device, slot)} → «${membership.line.name}»`)
+        )
+        .join(', ');
+      warnings.push({
+        id: `shared-feed-${deviceId}`,
+        severity: 'warning',
+        message: `«${device.name}»: клавиши с общим входом стоят в разных линиях (${labels}). При встречном питании возможен сквозной ток через механизм — держите их в одной линии.`,
+        lineId: line.id,
+        deviceId,
+      });
     }
   }
 

@@ -60,9 +60,12 @@ import {
 } from '../core/geometry/autoLayout';
 import {
   DEVICE_CATALOG,
+  deviceLineSlotCount,
+  deviceTerminalPoint,
   isMechanismType,
   normalizeDeviceNote,
   resolveDevice,
+  type DevicePose,
 } from '../core/electrical/devices';
 import {
   clampFrameOffset,
@@ -105,13 +108,16 @@ import {
 import {
   appendUnassignedDevices as appendUnassignedDevicesOp,
   assignDevices,
-  createLineFromDevices,
+  assignDeviceSlots,
+  createLineFromSlots,
   mergeLines,
   nextColorIndex,
   nextLineCode,
   normalizeLineAssignments,
-  splitLine,
+  splitLineSlots,
   unassignDevices,
+  unassignDeviceSlots,
+  type DeviceSlotRef,
 } from '../core/electrical/lineOps';
 import {
   autoPlanSheetName,
@@ -187,6 +193,9 @@ interface ProjectState {
   lineAssignStartPanel: ElectricalPanel | null;
   // Линия, у которой редактируется ручная трасса на плане (UI-режим)
   routeEditLineId: string | null;
+  // Точечная подсветка клеммы из замечаний щитка (кнопка «Показать»);
+  // без slot — центр условного символа прибора
+  warningFocus: { deviceId: string; slot?: number } | null;
 
   // Настройки
   settings: ProjectSettings;
@@ -292,6 +301,7 @@ interface ProjectState {
   setActiveStep: (step: ProjectStep) => void;
   setPanelStep: (step: PanelStep) => void;
   setHighlightedLine: (id: string | null) => void;
+  setWarningFocus: (focus: { deviceId: string; slot?: number } | null) => void;
   placePanel: (anchor: PanelWallAnchor) => void;
   deletePanel: () => void;
   updatePanel: (updates: Partial<Omit<ElectricalPanel, 'id' | 'lines' | 'supply'>>) => void;
@@ -320,6 +330,17 @@ interface ProjectState {
     newPurpose?: LinePurpose
   ) => string | null;
   mergePanelLines: (lineIds: string[]) => string | null;
+  assignDeviceSlotsToLine: (lineId: string, refs: DeviceSlotRef[]) => void;
+  unassignDeviceSlotsFromLines: (refs: DeviceSlotRef[]) => void;
+  createPanelLineFromSlots: (
+    refs: DeviceSlotRef[],
+    purpose: LinePurpose
+  ) => string | null;
+  splitPanelLineSlots: (
+    lineId: string,
+    refs: DeviceSlotRef[],
+    newPurpose?: LinePurpose
+  ) => string | null;
   setRouteEditLine: (id: string | null) => void;
   moveLineRouteNode: (
     lineId: string,
@@ -446,6 +467,26 @@ function reconnectManualRoutes(
   };
 }
 
+// Переезд прибора двигает и общий якорь трассы, и каждую клемму клавиши.
+function deviceRouteAnchorMoves(
+  device: ElectricalDevice,
+  pose: DevicePose
+): ManualRouteAnchorMove[] {
+  const moves: ManualRouteAnchorMove[] = [
+    { kind: 'device', deviceId: device.id, point: pose.position },
+  ];
+  const count = deviceLineSlotCount(device);
+  for (let slot = 0; slot < count; slot += 1) {
+    moves.push({
+      kind: 'device',
+      deviceId: device.id,
+      slot,
+      point: deviceTerminalPoint(pose, slot, count),
+    });
+  }
+  return moves;
+}
+
 const DEFAULT_SETTINGS: ProjectSettings = {
   defaultWallThicknessMm: 120,    // Межкомнатные стены 120 мм
   exteriorWallThicknessMm: 250,   // Наружные стены 250 мм
@@ -561,6 +602,7 @@ export const useProjectStore = create<ProjectState>()(
       lineAssignLineId: null,
       lineAssignStartPanel: null,
       routeEditLineId: null,
+      warningFocus: null,
 
       settings: DEFAULT_SETTINGS,
 
@@ -1747,9 +1789,10 @@ export const useProjectStore = create<ProjectState>()(
           return false;
         }
         const device: ElectricalDevice = { ...candidate, shared: resolved.isShared };
-        const { panel, failed } = reconnectManualRoutes(state.panel, [
-          { kind: 'device', deviceId: id, point },
-        ]);
+        const { panel, failed } = reconnectManualRoutes(
+          state.panel,
+          deviceRouteAnchorMoves(device, resolved.poses[0])
+        );
         set({
           devices: state.devices.map((item) => (item.id === id ? device : item)),
           panel,
@@ -1936,9 +1979,9 @@ export const useProjectStore = create<ProjectState>()(
             );
             return false;
           }
-          const point = resolved.poses[0]?.position;
-          if (point) {
-            moves.push({ kind: 'device', deviceId: device.id, point });
+          const pose = resolved.poses[0];
+          if (pose) {
+            moves.push(...deviceRouteAnchorMoves(anchored, pose));
           }
           nextDevices.push({ ...anchored, shared: resolved.isShared });
         }
@@ -2172,6 +2215,7 @@ export const useProjectStore = create<ProjectState>()(
           designMode: step === 'plan' ? 'architecture' : 'electrical',
           lineAssignLineId: null,
           routeEditLineId: null,
+          warningFocus: null,
           activeTool: 'select',
           draftVertices: [],
           dynamicInput: DEFAULT_DYNAMIC_INPUT,
@@ -2192,6 +2236,14 @@ export const useProjectStore = create<ProjectState>()(
           return;
         }
         set({ highlightedLineId: id });
+      },
+
+      setWarningFocus: (focus) => {
+        if (focus && !get().devices.some((device) => device.id === focus.deviceId)) {
+          set({ warningFocus: null });
+          return;
+        }
+        set({ warningFocus: focus });
       },
 
       placePanel: (anchor) => {
@@ -2491,9 +2543,16 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       assignDevicesToLine: (lineId, deviceIds) => {
+        get().assignDeviceSlotsToLine(
+          lineId,
+          deviceIds.map((deviceId) => ({ deviceId }))
+        );
+      },
+
+      assignDeviceSlotsToLine: (lineId, refs) => {
         const state = get();
-        if (!state.panel) return;
-        const panel = assignDevices(state.panel, lineId, deviceIds, {
+        if (!state.panel || refs.length === 0) return;
+        const panel = assignDeviceSlots(state.panel, lineId, refs, {
           devices: state.devices,
           rooms: state.rooms,
           partitions: state.freePartitions,
@@ -2502,28 +2561,40 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       unassignDevicesFromLines: (deviceIds) => {
+        get().unassignDeviceSlotsFromLines(
+          deviceIds.map((deviceId) => ({ deviceId }))
+        );
+      },
+
+      unassignDeviceSlotsFromLines: (refs) => {
         const state = get();
-        if (!state.panel) return;
-        const panel = unassignDevices(state.panel, deviceIds, {
+        if (!state.panel || refs.length === 0) return;
+        const panel = unassignDeviceSlots(state.panel, refs, {
           devices: state.devices,
           rooms: state.rooms,
           partitions: state.freePartitions,
         });
         if (panel !== state.panel) {
           set({ panel });
-          state.addToast(
-            `Снято с линий приборов: ${deviceIds.length}.`,
-            'info'
-          );
+          const count = new Set(refs.map((ref) => ref.deviceId)).size;
+          state.addToast(`Снято с линий приборов: ${count}.`, 'info');
         }
       },
 
       createPanelLineFromDevices: (deviceIds, purpose) => {
+        if (deviceIds.length === 0) return null;
+        return get().createPanelLineFromSlots(
+          deviceIds.map((deviceId) => ({ deviceId })),
+          purpose
+        );
+      },
+
+      createPanelLineFromSlots: (refs, purpose) => {
         const state = get();
-        if (!state.panel || deviceIds.length === 0) return null;
-        const result = createLineFromDevices(
+        if (!state.panel || refs.length === 0) return null;
+        const result = createLineFromSlots(
           state.panel,
-          deviceIds,
+          refs,
           { purpose, routing: state.settings.defaultRouting, trace: 'none' },
           {
             devices: state.devices,
@@ -2540,12 +2611,20 @@ export const useProjectStore = create<ProjectState>()(
       },
 
       splitPanelLine: (lineId, deviceIds, newPurpose) => {
+        return get().splitPanelLineSlots(
+          lineId,
+          deviceIds.map((deviceId) => ({ deviceId })),
+          newPurpose
+        );
+      },
+
+      splitPanelLineSlots: (lineId, refs, newPurpose) => {
         const state = get();
         if (!state.panel) return null;
-        const result = splitLine(
+        const result = splitLineSlots(
           state.panel,
           lineId,
-          deviceIds,
+          refs,
           {
             devices: state.devices,
             rooms: state.rooms,
@@ -2555,7 +2634,7 @@ export const useProjectStore = create<ProjectState>()(
         );
         if (!result) {
           state.addToast(
-            'Для деления выберите часть приборов линии — не все и не ни одного.',
+            'Для деления выберите часть приборов или клавиш линии — не все и не ни одного.',
             'error'
           );
           return null;

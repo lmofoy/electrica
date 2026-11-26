@@ -3,9 +3,13 @@ import { useProjectStore } from '../../store/useProjectStore';
 import {
   DEVICE_CATALOG,
   DEVICE_NOTE_MAX_CHARS,
+  deviceLineSlotCount,
+  deviceSlotLabel,
+  deviceWholeSlots,
   resolveDevice,
   type ResolvedDevice,
 } from '../../core/electrical/devices';
+import { slotOwner } from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { Plug, Repeat2, SquareDashed, Trash2 } from 'lucide-react';
 
@@ -64,6 +68,8 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
     setHighlightedLine,
     assignDevicesToLine,
     unassignDevicesFromLines,
+    assignDeviceSlotsToLine,
+    unassignDeviceSlotsFromLines,
     setDeviceNote,
     deleteDevice,
   } = useProjectStore();
@@ -92,6 +98,8 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
   const selectedLine =
     panel?.lines.find((line) => line.deviceIds.includes(selected.device.id)) ??
     null;
+  const slotCount = deviceLineSlotCount(selected.device);
+  const multiSlot = slotCount > 1;
 
   const selectedRoomNames = selected.roomIds
     .map((roomId) => rooms.find((room) => room.id === roomId)?.name)
@@ -177,51 +185,117 @@ export const DevicePassport: React.FC<DevicePassportProps> = ({
       />
 
       {panel && panel.lines.length > 0 ? (
-        <label className="block">
-          <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
-            Линия прибора
-            {selectedLine && (
-              <span
-                className="w-2 h-2 rounded-full"
-                style={{
-                  backgroundColor: lineColors.get(selectedLine.id) ?? '#38bdf8',
-                }}
-              />
-            )}
-          </span>
-          <select
-            value={selectedLine?.id ?? ''}
-            onChange={(e) => {
-              const value = e.target.value;
-              if (!value) {
-                unassignDevicesFromLines([selected.device.id]);
-                setHighlightedLine(null);
-                return;
-              }
-              const targetLine = panel.lines.find((line) => line.id === value);
-              if (
-                selectedLine &&
-                targetLine &&
-                selectedLine.id !== value &&
-                !confirm(
-                  `Перенести «${selected.device.name}» из линии «${selectedLine.name}» в «${targetLine.name}»? Прибор будет удалён из старой линии.`
-                )
-              ) {
-                return;
-              }
-              assignDevicesToLine(value, [selected.device.id]);
-              setHighlightedLine(value);
-            }}
-            className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
-          >
-            <option value="">Без линии</option>
-            {panel.lines.map((line) => (
-              <option key={line.id} value={line.id}>
-                {line.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        multiSlot ? (
+          <div className="space-y-1">
+            <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+              Линии по клавишам
+            </span>
+            {deviceWholeSlots(selected.device).map((slot) => {
+              const owner = slotOwner(panel, selected.device, slot);
+              const label = deviceSlotLabel(selected.device, slot);
+              return (
+                <label key={slot} className="flex items-center gap-1.5">
+                  <span className="w-[62px] shrink-0 text-[10px] text-slate-500">
+                    {label}
+                  </span>
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{
+                      backgroundColor: owner
+                        ? lineColors.get(owner.id) ?? '#38bdf8'
+                        : '#334155',
+                    }}
+                  />
+                  <select
+                    value={owner?.id ?? ''}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      if (!value) {
+                        unassignDeviceSlotsFromLines([
+                          { deviceId: selected.device.id, slots: [slot] },
+                        ]);
+                        setHighlightedLine(null);
+                        return;
+                      }
+                      const targetLine = panel.lines.find((line) => line.id === value);
+                      if (
+                        owner &&
+                        targetLine &&
+                        owner.id !== value &&
+                        !confirm(
+                          `«${label}» прибора «${selected.device.name}» будет снята с линии «${owner.name}» и добавлена в «${targetLine.name}».`
+                        )
+                      ) {
+                        return;
+                      }
+                      assignDeviceSlotsToLine(value, [
+                        { deviceId: selected.device.id, slots: [slot] },
+                      ]);
+                      setHighlightedLine(value);
+                    }}
+                    className="min-w-0 flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="">Без линии</option>
+                    {panel.lines.map((line) => (
+                      <option key={line.id} value={line.id}>
+                        {line.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              );
+            })}
+            <span className="block text-[9px] text-slate-500 leading-snug">
+              Клавиша входит только в одну линию: перенос снимает её со старой.
+            </span>
+          </div>
+        ) : (
+          <label className="block">
+            <span className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+              Линия прибора
+              {selectedLine && (
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{
+                    backgroundColor: lineColors.get(selectedLine.id) ?? '#38bdf8',
+                  }}
+                />
+              )}
+            </span>
+            <select
+              value={selectedLine?.id ?? ''}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (!value) {
+                  unassignDevicesFromLines([selected.device.id]);
+                  setHighlightedLine(null);
+                  return;
+                }
+                const targetLine = panel.lines.find((line) => line.id === value);
+                if (
+                  selectedLine &&
+                  targetLine &&
+                  selectedLine.id !== value &&
+                  !confirm(
+                    `Перенести «${selected.device.name}» из линии «${selectedLine.name}» в «${targetLine.name}»? Прибор будет удалён из старой линии.`
+                  )
+                ) {
+                  return;
+                }
+                assignDevicesToLine(value, [selected.device.id]);
+                setHighlightedLine(value);
+              }}
+              className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
+            >
+              <option value="">Без линии</option>
+              {panel.lines.map((line) => (
+                <option key={line.id} value={line.id}>
+                  {line.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )
       ) : (
         <p className="text-[10px] text-slate-500 leading-snug">
           {panel

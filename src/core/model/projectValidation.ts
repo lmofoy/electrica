@@ -121,7 +121,6 @@ function device(value: Entity): boolean {
     anchor(value.anchor, true) && nonnegative(value.heightFromFloorMm) &&
     nonnegative(value.powerWatts) && typeof value.shared === 'boolean' &&
     (value.note === undefined || typeof value.note === 'string') &&
-    (value.circuitId === undefined || id(value.circuitId)) &&
     // Ссылка на место в рамке: либо обе части, либо ни одной (старые проекты).
     (value.frameId === undefined) === (value.seatIndex === undefined) &&
     (value.frameId === undefined || id(value.frameId)) &&
@@ -151,6 +150,18 @@ function rcd(value: unknown): boolean {
     (value.selective === undefined || typeof value.selective === 'boolean'));
 }
 
+// Структура распределения по слотам проверяется на границе; существование
+// приборов, диапазон слотов и дубли чистит prunePanelRefs.
+function slotMembers(value: unknown): boolean {
+  if (!record(value)) return false;
+  return Object.entries(value).every(
+    ([deviceId, slots]) =>
+      id(deviceId) &&
+      Array.isArray(slots) &&
+      slots.every((slot) => Number.isSafeInteger(slot) && (slot as number) >= 0)
+  );
+}
+
 function line(value: Entity): boolean {
   // sanitizeLines discards these entries before any nested data is consumed.
   if (!nonnegative(value.loadW)) return true;
@@ -158,6 +169,7 @@ function line(value: Entity): boolean {
     Object.hasOwn(LINE_PRESETS, value.purpose) &&
     (value.roomIds == null || ids(value.roomIds)) &&
     (value.deviceIds == null || ids(value.deviceIds)) &&
+    (value.slotMembers == null || slotMembers(value.slotMembers)) &&
     cable(value.cable) && breaker(value.breaker) && rcd(value.rcd);
   // routing, colorIndex, manualRoute and waypoints are deliberately left to
   // sanitizeLines; stale/duplicate assignment references are pruned/normalized

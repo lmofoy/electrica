@@ -3,11 +3,23 @@ import { useProjectStore } from '../../store/useProjectStore';
 import {
   DEVICE_CATALOG,
   DEVICE_TYPES,
+  deviceLineSlotCount,
+  deviceSlotLabel,
   isMechanismType,
 } from '../../core/electrical/devices';
+import {
+  freeDeviceSlots,
+  linesOfDevice,
+} from '../../core/electrical/lineAssignment';
+import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { FRAME_POSTS_OPTIONS } from '../../core/electrical/frames';
 import { SquareDashed, Trash2 } from 'lucide-react';
-import type { DeviceType, FramePosts } from '../../types';
+import type {
+  DeviceType,
+  ElectricalDevice,
+  ElectricalPanel,
+  FramePosts,
+} from '../../types';
 
 interface FramePassportProps {
   frameId: string;
@@ -24,6 +36,56 @@ const mechanismTypesByGroup = (group: 'socket' | 'switch'): DeviceType[] =>
   DEVICE_TYPES.filter(
     (type) => isMechanismType(type) && DEVICE_CATALOG[type].group === group
   );
+
+/** Линии механизма: имя линии и, у многоклавишных, конкретные клавиши. */
+const SeatLines: React.FC<{
+  device: ElectricalDevice;
+  panel: ElectricalPanel | null;
+  lineColors: Map<string, string>;
+}> = ({ device, panel, lineColors }) => {
+  const memberships = linesOfDevice(panel, device);
+  const slotCount = deviceLineSlotCount(device);
+  const free = slotCount > 1 ? freeDeviceSlots(panel, device) : [];
+  const partial = (slots: number[]) =>
+    slotCount > 1 && slots.length > 0 && slots.length < slotCount;
+
+  return (
+    <div className="ml-5 flex flex-wrap items-center gap-1 text-[9px] leading-tight">
+      {memberships.length === 0 && (
+        <span className="rounded border border-dashed border-slate-700 bg-slate-900 px-1 py-0.5 text-slate-500">
+          Без линии
+        </span>
+      )}
+      {memberships.map(({ line, slots }) => (
+        <span
+          key={line.id}
+          className="inline-flex max-w-full items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1 py-0.5 text-slate-400"
+          title={`Линия «${line.name}»${
+            partial(slots)
+              ? `: ${slots.map((slot) => deviceSlotLabel(device, slot)).join(', ')}`
+              : ''
+          }`}
+        >
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: lineColors.get(line.id) ?? '#38bdf8' }}
+          />
+          <span className="max-w-[96px] truncate">{line.name}</span>
+          {partial(slots) && (
+            <span className="text-slate-500">
+              · {slots.map((slot) => deviceSlotLabel(device, slot)).join(', ')}
+            </span>
+          )}
+        </span>
+      ))}
+      {free.length > 0 && (
+        <span className="rounded border border-dashed border-slate-700 bg-slate-900 px-1 py-0.5 text-slate-500">
+          свободна: {free.map((slot) => deviceSlotLabel(device, slot)).join(', ')}
+        </span>
+      )}
+    </div>
+  );
+};
 
 const FrameHeightField: React.FC<{
   frameId: string;
@@ -68,6 +130,7 @@ export const FramePassport: React.FC<FramePassportProps> = ({
   const {
     frames,
     devices,
+    panel,
     setFramePosts,
     setFrameMounting,
     setFrameHeight,
@@ -76,6 +139,7 @@ export const FramePassport: React.FC<FramePassportProps> = ({
   } = useProjectStore();
 
   const frame = frames.find((candidate) => candidate.id === frameId) ?? null;
+  const lineColors = useMemo(() => buildLineColorMap(panel), [panel]);
 
   const seats = useMemo(() => {
     if (!frame) return [];
@@ -182,38 +246,43 @@ export const FramePassport: React.FC<FramePassportProps> = ({
           Места
         </span>
         {seats.map(({ seatIndex, device }) => (
-          <div key={seatIndex} className="flex items-center gap-1.5">
-            <span className="w-4 shrink-0 text-center font-mono text-[10px] text-slate-500">
-              {seatIndex + 1}
-            </span>
-            <select
-              value={device?.type ?? ''}
-              onChange={(event) => {
-                const value = event.target.value;
-                setFrameSeatType(
-                  frame.id,
-                  seatIndex,
-                  value ? (value as DeviceType) : null
-                );
-              }}
-              className="min-w-0 flex-1 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
-              title={device ? device.name : 'Место свободно'}
-            >
-              <option value="">Заглушка</option>
-              {SEAT_GROUPS.map((group) => {
-                const types = group.id === 'socket' ? socketTypes : switchTypes;
-                if (types.length === 0) return null;
-                return (
-                  <optgroup key={group.id} label={group.label}>
-                    {types.map((type) => (
-                      <option key={type} value={type}>
-                        {DEVICE_CATALOG[type].label}
-                      </option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
+          <div key={seatIndex} className="space-y-0.5">
+            <div className="flex items-center gap-1.5">
+              <span className="w-4 shrink-0 text-center font-mono text-[10px] text-slate-500">
+                {seatIndex + 1}
+              </span>
+              <select
+                value={device?.type ?? ''}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setFrameSeatType(
+                    frame.id,
+                    seatIndex,
+                    value ? (value as DeviceType) : null
+                  );
+                }}
+                className="min-w-0 flex-1 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-sky-500"
+                title={device ? device.name : 'Место свободно'}
+              >
+                <option value="">Заглушка</option>
+                {SEAT_GROUPS.map((group) => {
+                  const types = group.id === 'socket' ? socketTypes : switchTypes;
+                  if (types.length === 0) return null;
+                  return (
+                    <optgroup key={group.id} label={group.label}>
+                      {types.map((type) => (
+                        <option key={type} value={type}>
+                          {DEVICE_CATALOG[type].label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            </div>
+            {device && (
+              <SeatLines device={device} panel={panel} lineColors={lineColors} />
+            )}
           </div>
         ))}
       </div>

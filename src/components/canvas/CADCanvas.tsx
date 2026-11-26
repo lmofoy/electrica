@@ -21,13 +21,18 @@ import { buildAutoLayout } from '../../core/geometry/autoLayout';
 import {
   DEVICE_CATALOG,
   buildPlacementDimensions,
+  deviceLineSlotCount,
   findDevicePlacement,
   resolveDevice,
   type ResolvedDevice,
 } from '../../core/electrical/devices';
 import { resolvePanelPose } from '../../core/electrical/panel';
 import { findFramePlacement } from '../../core/electrical/frames';
-import { buildDeviceLineMap } from '../../core/electrical/lineAssignment';
+import {
+  buildDeviceLineMap,
+  freeDeviceSlots,
+  linesOfDevice,
+} from '../../core/electrical/lineAssignment';
 import { buildLineColorMap } from '../../core/electrical/lineColors';
 import { computeLineRoutes, materializeRouteForLine } from '../../core/electrical/routing';
 import {
@@ -93,6 +98,7 @@ export const CADCanvas: React.FC = () => {
     selection,
     highlightedLineId,
     lineAssignLineId,
+    warningFocus,
     settings,
     designMode,
     activeTool,
@@ -115,10 +121,12 @@ export const CADCanvas: React.FC = () => {
     setSelection,
     setActiveTool,
     setHighlightedLine,
+    setWarningFocus,
     setLineAssignLine,
     cancelLineAssignment,
     assignDevicesToLine,
-    unassignDevicesFromLines,
+    assignDeviceSlotsToLine,
+    unassignDeviceSlotsFromLines,
     setActiveSnap,
     addDraftVertex,
     popDraftVertex,
@@ -204,6 +212,7 @@ export const CADCanvas: React.FC = () => {
   // Перенос прибора чужой линии: мини-карточка у места клика, не модальное окно.
   const [transferPrompt, setTransferPrompt] = useState<{
     deviceId: string;
+    slot?: number;
     fromLineId: string;
     toLineId: string;
     left: number;
@@ -262,6 +271,22 @@ export const CADCanvas: React.FC = () => {
       ),
     [deviceLineMap]
   );
+  // Владелец каждой клеммы многоклавишного прибора — для точек на плане.
+  const deviceSlotLines = useMemo(() => {
+    const map = new Map<string, (string | null)[]>();
+    for (const device of devices) {
+      const count = deviceLineSlotCount(device);
+      if (count < 2) continue;
+      const owners: (string | null)[] = Array.from({ length: count }, () => null);
+      for (const membership of linesOfDevice(panel, device)) {
+        for (const slot of membership.slots) {
+          if (slot >= 0 && slot < count) owners[slot] = membership.line.id;
+        }
+      }
+      map.set(device.id, owners);
+    }
+    return map;
+  }, [panel, devices]);
 
   const assignLine = useMemo(
     () => panel?.lines.find((line) => line.id === lineAssignLineId) ?? null,
@@ -443,31 +468,81 @@ export const CADCanvas: React.FC = () => {
   }, [setRouteEditLine]);
 
   const toggleDeviceAssignment = useCallback(
-    (deviceId: string) => {
-      if (!assignLine) return;
-      if (assignLine.deviceIds.includes(deviceId)) {
-        unassignDevicesFromLines([deviceId]);
+    (deviceId: string, slot?: number) => {
+      if (!assignLine || !panel) return;
+      const device = devices.find((candidate) => candidate.id === deviceId);
+      if (!device) return;
+      const memberships = linesOfDevice(panel, device);
+      const pointer = stageRef.current?.getPointerPosition();
+      const promptPosition = {
+        left: Math.min(Math.max(pointer?.x ?? dimensions.width / 2, 160), dimensions.width - 160),
+        top: Math.min(Math.max((pointer?.y ?? 96) + 14, 48), dimensions.height - 140),
+      };
+
+      // Клик по клемме: меняем только эту клавишу, не трогая соседние.
+      if (slot !== undefined) {
+        const owner = memberships.find((member) => member.slots.includes(slot));
+        if (owner?.line.id === assignLine.id) {
+          unassignDeviceSlotsFromLines([{ deviceId, slots: [slot] }]);
+          return;
+        }
+        if (owner) {
+          setTransferPrompt({
+            deviceId,
+            slot,
+            fromLineId: owner.line.id,
+            toLineId: assignLine.id,
+            ...promptPosition,
+          });
+          return;
+        }
+        assignDeviceSlotsToLine(assignLine.id, [{ deviceId, slots: [slot] }]);
         return;
       }
-      const owner = deviceLineMap.get(deviceId);
-      if (owner && owner.id !== assignLine.id) {
-        const pointer = stageRef.current?.getPointerPosition();
-        setTransferPrompt({
-          deviceId,
-          fromLineId: owner.id,
-          toLineId: assignLine.id,
-          left: Math.min(Math.max(pointer?.x ?? dimensions.width / 2, 160), dimensions.width - 160),
-          top: Math.min(Math.max((pointer?.y ?? 96) + 14, 48), dimensions.height - 140),
-        });
+
+      const current = memberships.find((member) => member.line.id === assignLine.id);
+      if (current) {
+        // Снимаем только слоты этой линии, другие линии и клавиши не трогаем.
+        unassignDeviceSlotsFromLines([
+          current.slots.length > 0
+            ? { deviceId, slots: current.slots }
+            : { deviceId },
+        ]);
         return;
       }
-      assignDevicesToLine(assignLine.id, [deviceId]);
+
+      const free = freeDeviceSlots(panel, device);
+      if (deviceLineSlotCount(device) > 1 && free.length > 0) {
+        assignDeviceSlotsToLine(assignLine.id, [{ deviceId, slots: free }]);
+        return;
+      }
+      if (memberships.length === 0) {
+        assignDevicesToLine(assignLine.id, [deviceId]);
+        return;
+      }
+      if (memberships.length > 1) {
+        addToast(
+          'Все клавиши прибора уже распределены по линиям. Освободите клавишу в паспорте прибора.',
+          'info'
+        );
+        return;
+      }
+
+      setTransferPrompt({
+        deviceId,
+        fromLineId: memberships[0].line.id,
+        toLineId: assignLine.id,
+        ...promptPosition,
+      });
     },
     [
       assignLine,
+      panel,
+      devices,
+      addToast,
       assignDevicesToLine,
-      unassignDevicesFromLines,
-      deviceLineMap,
+      assignDeviceSlotsToLine,
+      unassignDeviceSlotsFromLines,
       dimensions.width,
       dimensions.height,
     ]
@@ -482,13 +557,30 @@ export const CADCanvas: React.FC = () => {
       setTransferPrompt(null);
       return;
     }
-    assignDevicesToLine(toLine.id, [transferPrompt.deviceId]);
-    addToast(
-      `«${device?.name ?? 'Прибор'}» перенесён из «${fromLine?.name ?? 'линии'}» в «${toLine.name}».`,
-      'success'
-    );
+    if (transferPrompt.slot !== undefined) {
+      assignDeviceSlotsToLine(toLine.id, [
+        { deviceId: transferPrompt.deviceId, slots: [transferPrompt.slot] },
+      ]);
+      addToast(
+        `Клавиша ${transferPrompt.slot + 1} прибора «${device?.name ?? 'Прибор'}» перенесена из «${fromLine?.name ?? 'линии'}» в «${toLine.name}».`,
+        'success'
+      );
+    } else {
+      assignDevicesToLine(toLine.id, [transferPrompt.deviceId]);
+      addToast(
+        `«${device?.name ?? 'Прибор'}» перенесён из «${fromLine?.name ?? 'линии'}» в «${toLine.name}».`,
+        'success'
+      );
+    }
     setTransferPrompt(null);
-  }, [transferPrompt, panel, devices, assignDevicesToLine, addToast]);
+  }, [
+    transferPrompt,
+    panel,
+    devices,
+    assignDevicesToLine,
+    assignDeviceSlotsToLine,
+    addToast,
+  ]);
 
   const devicePreview = useMemo<{ resolved: ResolvedDevice | null; error: string | null }>(() => {
     if (activeTool !== 'place_device') return { resolved: null, error: null };
@@ -934,6 +1026,7 @@ export const CADCanvas: React.FC = () => {
   );
 
   useEffect(() => {
+    if (selection !== null) setWarningFocus(null);
     if (routeEditLine) {
       setHighlightedLine(routeEditLine.id);
       return;
@@ -943,7 +1036,7 @@ export const CADCanvas: React.FC = () => {
       return;
     }
     if (selection !== null) setHighlightedLine(null);
-  }, [selection, deviceLineMap, routeEditLine, setHighlightedLine]);
+  }, [selection, deviceLineMap, routeEditLine, setHighlightedLine, setWarningFocus]);
 
   const panelPreview = useMemo<{
     position: Point2D;
@@ -1184,6 +1277,7 @@ export const CADCanvas: React.FC = () => {
       if (e.target === stage && !assignLine) {
         setSelection(null);
         setHighlightedLine(null);
+        setWarningFocus(null);
       }
       return;
     }
@@ -1400,6 +1494,7 @@ export const CADCanvas: React.FC = () => {
           useProjectStore.getState().setActiveTool('select');
           setSelection(null);
           setHighlightedLine(null);
+          setWarningFocus(null);
         }
         return;
       }
@@ -1507,6 +1602,7 @@ export const CADCanvas: React.FC = () => {
     finishDraft,
     setSelection,
     setHighlightedLine,
+    setWarningFocus,
     selection,
     lineAssignLineId,
     setLineAssignLine,
@@ -1646,7 +1742,7 @@ export const CADCanvas: React.FC = () => {
           }
           onSelect={(next) => {
             if (assignLine && next.kind === 'device') {
-              toggleDeviceAssignment(next.id);
+              toggleDeviceAssignment(next.id, next.slot);
               return;
             }
             setSelection(next);
@@ -1661,6 +1757,7 @@ export const CADCanvas: React.FC = () => {
           panel={panel}
           panelPose={panelPose}
           deviceLineIds={deviceLineIds}
+          deviceSlotLines={deviceSlotLines}
           lineColors={lineColorMap}
           highlightedLineId={highlightedLineId}
           assignLineId={lineAssignLineId}
@@ -1672,6 +1769,7 @@ export const CADCanvas: React.FC = () => {
           framePreview={framePreview.preview}
           frameDragPreview={elementDrag.frame}
           deviceDragPreview={elementDrag.device}
+          warningFocus={warningFocus}
           panelPreview={
             panelPreview && !panelPreview.error
               ? { position: panelPreview.position, rotationDeg: panelPreview.rotationDeg }
@@ -1751,7 +1849,11 @@ export const CADCanvas: React.FC = () => {
           }}
         >
           <div className="text-[11px] text-slate-200 leading-snug">
-            «{devices.find((d) => d.id === activeTransferPrompt.deviceId)?.name ?? 'Прибор'}» уже в линии «
+            «{devices.find((d) => d.id === activeTransferPrompt.deviceId)?.name ?? 'Прибор'}»
+            {activeTransferPrompt.slot !== undefined
+              ? `, клавиша ${activeTransferPrompt.slot + 1},`
+              : ''}{' '}
+            уже в линии «
             {panel?.lines.find((line) => line.id === activeTransferPrompt.fromLineId)?.name ?? 'другой'}».
             Перенести в «{assignLine.name}»?
           </div>

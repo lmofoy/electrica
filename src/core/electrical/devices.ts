@@ -111,6 +111,14 @@ export interface DeviceCatalogEntry {
   glyph: DeviceGlyphKind;
   outlets?: 1 | 2 | 3;
   keys?: 1 | 2 | 3;
+  // Независимые электрические слоты, которые можно назначить разным линиям:
+  // 0 — механизма нет (закладная), 1 — обычный прибор, 2–3 — клавиши/каналы.
+  lineSlots?: 0 | 1 | 2 | 3;
+  // Разные слоты допустимо питать от разных линий. false — общий ввод
+  // (двухклавишный выключатель с одной фазой): при разводке по двум линиям
+  // выдаётся предупреждение, но назначение не запрещается.
+  slotCanShareFeed?: boolean;
+  slotLabels?: string[];
   isStub?: boolean;
 }
 
@@ -438,6 +446,9 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceCatalogEntry> = {
     badge: '2',
     glyph: 'switch_key',
     keys: 2,
+    lineSlots: 2,
+    slotCanShareFeed: false,
+    slotLabels: ['Клавиша 1', 'Клавиша 2'],
   },
   switch_3k: {
     label: 'Выключатель трёхклавишный',
@@ -459,6 +470,9 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceCatalogEntry> = {
     badge: '3',
     glyph: 'switch_key',
     keys: 3,
+    lineSlots: 3,
+    slotCanShareFeed: false,
+    slotLabels: ['Клавиша 1', 'Клавиша 2', 'Клавиша 3'],
   },
 
   // --- Выключатели: проходные --------------------------------
@@ -503,6 +517,9 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceCatalogEntry> = {
     badge: 'Прох. 2',
     glyph: 'switch_pass',
     keys: 2,
+    lineSlots: 2,
+    slotCanShareFeed: true,
+    slotLabels: ['Канал 1', 'Канал 2'],
   },
   switch_cross: {
     label: 'Выключатель перекрёстный',
@@ -629,6 +646,7 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceCatalogEntry> = {
     description: 'Вывод провода под будущий выключатель без установленного механизма.',
     badge: 'Закладная',
     glyph: 'switch_provision',
+    lineSlots: 0,
   },
 
   // --- Освещение: потолочные ---------------------------------
@@ -819,10 +837,109 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceCatalogEntry> = {
     description: 'Вывод провода под будущий светильник без установленного прибора.',
     badge: 'Закладная',
     glyph: 'light_provision',
+    lineSlots: 0,
   },
 };
 
 export const DEVICE_TYPES: DeviceType[] = Object.keys(DEVICE_CATALOG) as DeviceType[];
+
+// Один независимый слот линии — обычный прибор. Закладные (0) в линии
+// попадают целиком, но собственных слотов у них нет.
+export const DEFAULT_LINE_SLOTS = 1;
+
+export function deviceLineSlotCount(device: Pick<ElectricalDevice, 'type'>): number {
+  return DEVICE_CATALOG[device.type]?.lineSlots ?? DEFAULT_LINE_SLOTS;
+}
+
+export function deviceWholeSlots(device: Pick<ElectricalDevice, 'type'>): number[] {
+  const count = deviceLineSlotCount(device);
+  return Array.from({ length: count }, (_, slot) => slot);
+}
+
+export function deviceSlotLabel(
+  device: Pick<ElectricalDevice, 'type'>,
+  slot: number
+): string {
+  return DEVICE_CATALOG[device.type]?.slotLabels?.[slot] ?? `Слот ${slot + 1}`;
+}
+
+// Мощность прибора делится между его слотами: линия получает только
+// назначенную ей долю. Выключатели (0 Вт) и сквозные приборы не меняются.
+export function deviceSlotsPowerW(
+  device: Pick<ElectricalDevice, 'type' | 'powerWatts'>,
+  slots: number[]
+): number {
+  const count = deviceLineSlotCount(device);
+  if (count <= 0 || slots.length === 0) return 0;
+  const unique = new Set(
+    slots.filter(
+      (slot) => Number.isSafeInteger(slot) && slot >= 0 && slot < count
+    )
+  );
+  return (device.powerWatts * unique.size) / count;
+}
+
+// Видимые клеммы многоклавишных приборов. Символ на плане рисуется
+// постоянного экранного размера, поэтому запас в комнату взят с расчётом на
+// рабочий масштаб ~12 %: клеммы ложатся сразу за контуром символа.
+export const DEVICE_TERMINAL_SPACING_MM = 26;
+export const DEVICE_TERMINAL_LIFT_MM = 120;
+
+// Смещение клеммы в локальных координатах прибора (ось −Y смотрит в комнату).
+export function deviceTerminalOffset(slot: number, slotCount: number): Point2D {
+  if (slotCount <= 1) return { x: 0, y: 0 };
+  const clamped = Math.max(0, Math.min(slotCount - 1, slot));
+  return {
+    x: (clamped - (slotCount - 1) / 2) * DEVICE_TERMINAL_SPACING_MM,
+    y: -DEVICE_TERMINAL_LIFT_MM,
+  };
+}
+
+export function deviceTerminalPoint(
+  pose: DevicePose,
+  slot: number,
+  slotCount: number
+): Point2D {
+  const offset = deviceTerminalOffset(slot, slotCount);
+  const rad = (pose.rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return {
+    x: pose.position.x + offset.x * cos - offset.y * sin,
+    y: pose.position.y + offset.x * sin + offset.y * cos,
+  };
+}
+
+/** Клеммы всех слотов позы; для однозначных приборов пусто. */
+export function deviceSlotTerminalPoints(
+  device: Pick<ElectricalDevice, 'type'>,
+  pose: DevicePose
+): Point2D[] {
+  const count = deviceLineSlotCount(device);
+  if (count <= 1) return [];
+  return Array.from({ length: count }, (_, slot) =>
+    deviceTerminalPoint(pose, slot, count)
+  );
+}
+
+// Куда подходит кабель линии: при неполном наборе клавиш — к клеммам,
+// при всём приборе — к общему центру символа (один кабель на прибор).
+export function deviceRoutePoint(
+  device: Pick<ElectricalDevice, 'type'>,
+  pose: DevicePose,
+  slots: number[] | null | undefined
+): Point2D {
+  const count = deviceLineSlotCount(device);
+  if (count <= 1 || !slots || slots.length === 0 || slots.length >= count) {
+    return pose.position;
+  }
+  const points = slots.map((slot) => deviceTerminalPoint(pose, slot, count));
+  if (points.length === 1) return points[0];
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
 
 // Механизмы (розетки и выключатели) монтируются только в рамки.
 // Светильники к рамкам не относятся: у них своя привязка к стене или потолку.

@@ -12,6 +12,10 @@ import type {
 import type { ResolvedDevice } from '../../core/electrical/devices';
 import type { DevicePose } from '../../core/electrical/devices';
 import {
+  deviceLineSlotCount,
+  deviceTerminalPoint,
+} from '../../core/electrical/devices';
+import {
   PANEL_SYMBOL_DEPTH_MM,
   PANEL_SYMBOL_WIDTH_MM,
 } from '../../core/electrical/panel';
@@ -270,8 +274,8 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
       {devices.map((resolved) => (
         <React.Fragment key={resolved.device.id}>
           {resolved.poses.map((pose, index) => (
+            <React.Fragment key={`${resolved.device.id}-hit-${index}`}>
             <Circle
-              key={`${resolved.device.id}-hit-${index}`}
               x={pose.position.x}
               y={pose.position.y}
               radius={14 / zoom}
@@ -305,6 +309,30 @@ export const SelectionLayer: React.FC<SelectionLayerProps> = ({
                   : undefined
               }
             />
+            {(() => {
+              const slotCount = deviceLineSlotCount(resolved.device);
+              if (slotCount < 2) return null;
+              return Array.from({ length: slotCount }, (_, slot) => {
+                const point = deviceTerminalPoint(pose, slot, slotCount);
+                return (
+                  <Circle
+                    key={`${resolved.device.id}-terminal-${index}-${slot}`}
+                    x={point.x}
+                    y={point.y}
+                    radius={7 / zoom}
+                    fill="rgba(2, 6, 23, 0.001)"
+                    onClick={(e) =>
+                      handleHitClick(e, {
+                        kind: 'device',
+                        id: resolved.device.id,
+                        slot,
+                      })
+                    }
+                  />
+                );
+              });
+            })()}
+            </React.Fragment>
           ))}
         </React.Fragment>
       ))}

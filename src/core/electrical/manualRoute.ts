@@ -26,7 +26,7 @@ export type ManualRouteInsertResult =
 
 export interface MaterializeManualRouteOptions {
   panelPoint?: Point2D;
-  devicePoints?: { deviceId: string; point: Point2D }[];
+  devicePoints?: { deviceId: string; point: Point2D; slot?: number }[];
   junctionPoints?: Point2D[];
 }
 
@@ -113,9 +113,20 @@ function normalizeAnchors(
     ) {
       continue;
     }
+    const slot =
+      anchor.kind === 'device' &&
+      Number.isSafeInteger(anchor.slot) &&
+      (anchor.slot as number) >= 0
+        ? anchor.slot
+        : undefined;
     list.push(
       anchor.kind === 'device'
-        ? { nodeIndex: anchor.nodeIndex, kind: 'device', deviceId: anchor.deviceId }
+        ? {
+            nodeIndex: anchor.nodeIndex,
+            kind: 'device',
+            deviceId: anchor.deviceId,
+            ...(slot !== undefined ? { slot } : {}),
+          }
         : { nodeIndex: anchor.nodeIndex, kind: anchor.kind }
     );
     byNode.set(anchor.nodeIndex, list);
@@ -127,10 +138,11 @@ function normalizeAnchors(
       result.push({ nodeIndex, kind: 'panel' });
       continue;
     }
+    // Одна клемма на пару «прибор + слот»: разные клавиши — разные якоря.
     const devices = new Map<string, ManualRouteAnchor>();
     for (const anchor of list) {
       if (anchor.kind === 'device' && anchor.deviceId) {
-        devices.set(anchor.deviceId, anchor);
+        devices.set(`${anchor.deviceId}#${anchor.slot ?? ''}`, anchor);
       }
     }
     if (devices.size > 0) {
@@ -146,7 +158,8 @@ function normalizeAnchors(
     (a, b) =>
       a.nodeIndex - b.nodeIndex ||
       ANCHOR_PRIORITY[a.kind] - ANCHOR_PRIORITY[b.kind] ||
-      (a.deviceId ?? '').localeCompare(b.deviceId ?? '')
+      (a.deviceId ?? '').localeCompare(b.deviceId ?? '') ||
+      (a.slot ?? -1) - (b.slot ?? -1)
   );
   return result;
 }
@@ -419,12 +432,15 @@ export function isManualRouteOrthogonal(route: ManualRoute): boolean {
 export function manualRouteAnchorNode(
   route: ManualRoute,
   kind: ManualRouteAnchorKind,
-  deviceId?: string
+  deviceId?: string,
+  slot?: number
 ): number | null {
   const anchor = route.anchors.find(
     (candidate) =>
       candidate.kind === kind &&
-      (kind !== 'device' || candidate.deviceId === deviceId)
+      (kind !== 'device' ||
+        (candidate.deviceId === deviceId &&
+          (slot === undefined || candidate.slot === slot)))
   );
   return anchor ? anchor.nodeIndex : null;
 }
@@ -505,7 +521,14 @@ export function sanitizeManualRoute(raw: unknown): ManualRoute | undefined {
       if (typeof anchor.deviceId !== 'string' || anchor.deviceId.length === 0) {
         continue;
       }
-      anchors.push({ nodeIndex, kind: 'device', deviceId: anchor.deviceId });
+      anchors.push({
+        nodeIndex,
+        kind: 'device',
+        deviceId: anchor.deviceId,
+        ...(Number.isSafeInteger(anchor.slot) && (anchor.slot as number) >= 0
+          ? { slot: anchor.slot }
+          : {}),
+      });
     } else {
       anchors.push({ nodeIndex, kind: anchor.kind });
     }
@@ -588,7 +611,14 @@ export function materializeManualRoute(
     if (!device.deviceId) continue;
     const index = nodeAt(device.point);
     if (index !== null) {
-      pushAnchor({ nodeIndex: index, kind: 'device', deviceId: device.deviceId });
+      pushAnchor({
+        nodeIndex: index,
+        kind: 'device',
+        deviceId: device.deviceId,
+        ...(Number.isSafeInteger(device.slot) && (device.slot as number) >= 0
+          ? { slot: device.slot }
+          : {}),
+      });
     }
   }
   for (const point of options.junctionPoints ?? []) {
@@ -638,7 +668,7 @@ export type ManualRouteMoveResult =
 
 export type ManualRouteAnchorMove =
   | { kind: 'panel'; point: Point2D }
-  | { kind: 'device'; deviceId: string; point: Point2D };
+  | { kind: 'device'; deviceId: string; point: Point2D; slot?: number };
 
 export type ManualRouteAnchorsMoveResult =
   | { ok: true; route: ManualRoute }
@@ -931,7 +961,19 @@ export function moveManualRouteAnchors(
       if (!move.deviceId) {
         return { ok: false, error: 'У прибора не задан идентификатор для трассы.' };
       }
-      nodeIndex = manualRouteAnchorNode(clean, 'device', move.deviceId);
+      // Перемещение без слота относится только к общему якорю прибора,
+      // со слотом — только к клемме этой клавиши.
+      if (move.slot === undefined) {
+        const whole = clean.anchors.find(
+          (anchor) =>
+            anchor.kind === 'device' &&
+            anchor.deviceId === move.deviceId &&
+            anchor.slot === undefined
+        );
+        nodeIndex = whole ? whole.nodeIndex : null;
+      } else {
+        nodeIndex = manualRouteAnchorNode(clean, 'device', move.deviceId, move.slot);
+      }
     }
     if (nodeIndex === null) continue;
     if (!isPhysicalAnchorNode(clean, nodeIndex)) continue;
@@ -1158,7 +1200,19 @@ export function moveManualRouteAnchors(
     }
     const movedIndex =
       originalAnchor.kind === 'device'
-        ? manualRouteAnchorNode(moved, 'device', originalAnchor.deviceId)
+        ? originalAnchor.slot === undefined
+          ? moved.anchors.find(
+              (anchor) =>
+                anchor.kind === 'device' &&
+                anchor.deviceId === originalAnchor.deviceId &&
+                anchor.slot === undefined
+            )?.nodeIndex ?? null
+          : manualRouteAnchorNode(
+              moved,
+              'device',
+              originalAnchor.deviceId,
+              originalAnchor.slot
+            )
         : manualRouteAnchorNode(moved, originalAnchor.kind);
     if (movedIndex === null || !samePoint(moved.nodes[movedIndex], to)) {
       return {
@@ -1571,6 +1625,7 @@ export interface ManualRouteStop {
   nodeIndex: number;
   kind: ManualRouteStopKind;
   deviceId?: string;
+  slot?: number;
 }
 
 export interface ManualRouteBranch {
@@ -1731,7 +1786,12 @@ function routeStopList(
     }
     const anchor = anchorByNode.get(nodeIndex);
     if (anchor?.kind === 'device' && anchor.deviceId) {
-      stops.push({ nodeIndex, kind: 'device', deviceId: anchor.deviceId });
+      stops.push({
+        nodeIndex,
+        kind: 'device',
+        deviceId: anchor.deviceId,
+        ...(anchor.slot !== undefined ? { slot: anchor.slot } : {}),
+      });
     } else {
       stops.push({ nodeIndex, kind: anchor ? anchor.kind : 'point' });
     }

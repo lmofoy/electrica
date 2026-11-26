@@ -12,7 +12,12 @@ import type {
   RoomZone,
 } from '../../types';
 import type { ResolvedDevice, DevicePose } from '../../core/electrical/devices';
-import { DEVICE_CATALOG, isMechanismType } from '../../core/electrical/devices';
+import {
+  DEVICE_CATALOG,
+  deviceLineSlotCount,
+  deviceTerminalOffset,
+  isMechanismType,
+} from '../../core/electrical/devices';
 import {
   PANEL_SYMBOL_DEPTH_MM,
   PANEL_SYMBOL_WIDTH_MM,
@@ -41,6 +46,8 @@ interface ElectricalLayerProps {
   panelPose: DevicePose | null;
   panelPreview: { position: { x: number; y: number }; rotationDeg: number } | null;
   deviceLineIds: Map<string, string>;
+  // Владелец каждой клеммы многоклавишного прибора: lineId или null.
+  deviceSlotLines: Map<string, (string | null)[]>;
   lineColors: Map<string, string>;
   highlightedLineId: string | null;
   assignLineId: string | null;
@@ -52,6 +59,8 @@ interface ElectricalLayerProps {
   framePreview: FramePreview | null;
   frameDragPreview?: FramePreview | null;
   deviceDragPreview?: ResolvedDevice | null;
+  // Точечная подсветка клеммы/прибора из замечаний щитка.
+  warningFocus?: { deviceId: string; slot?: number } | null;
 }
 
 const GROUP_COLORS: Record<'socket' | 'switch' | 'light', string> = {
@@ -390,8 +399,32 @@ const DeviceSymbol: React.FC<{
   lineHighlighted: boolean;
   dimmed: boolean;
   assignHint: boolean;
-}> = ({ resolved, zoom, selected, lineColor, lineHighlighted, dimmed, assignHint }) => {
+  slotLines: (string | null)[] | undefined;
+  lineColors: Map<string, string>;
+  highlightedLineId: string | null;
+  // undefined — прибор не в фокусе; null — подсветить центр символа;
+  // число — подсветить конкретную клемму (слот).
+  focusSlot?: number | null;
+}> = ({
+  resolved,
+  zoom,
+  selected,
+  lineColor,
+  lineHighlighted,
+  dimmed,
+  assignHint,
+  slotLines,
+  lineColors,
+  highlightedLineId,
+  focusSlot,
+}) => {
   const color = deviceColor(resolved.device.type);
+  const slotCount = deviceLineSlotCount(resolved.device);
+  const focused = focusSlot !== undefined;
+  const focusTerminal =
+    focused && typeof focusSlot === 'number' && focusSlot < slotCount
+      ? deviceTerminalOffset(focusSlot, slotCount)
+      : null;
 
   return (
     <Group>
@@ -431,6 +464,67 @@ const DeviceSymbol: React.FC<{
             />
           )}
           <DeviceGlyph type={resolved.device.type} zoom={zoom} color={color} highlighted={selected} />
+          {focused && index === 0 && (
+            <Circle
+              x={focusTerminal?.x ?? 0}
+              y={focusTerminal?.y ?? 0}
+              radius={(focusTerminal ? 6.5 : 15) / zoom}
+              stroke="#f0abfc"
+              strokeWidth={2 / zoom}
+              dash={[4 / zoom, 3 / zoom]}
+              shadowColor="#f0abfc"
+              shadowBlur={8 / zoom}
+              listening={false}
+            />
+          )}
+          {slotCount >= 2 &&
+            Array.from({ length: slotCount }, (_, slot) => {
+              const offset = deviceTerminalOffset(slot, slotCount);
+              const ownerId = slotLines?.[slot] ?? null;
+              const ownerHighlighted = Boolean(
+                ownerId && highlightedLineId === ownerId
+              );
+              const terminalColor = ownerId
+                ? lineColors.get(ownerId) ?? '#94a3b8'
+                : assignHint
+                  ? '#a3e635'
+                  : '#94a3b8';
+              return (
+                <Group key={`terminal-${slot}`}>
+                  <Circle
+                    x={offset.x}
+                    y={offset.y}
+                    radius={(ownerHighlighted ? 4.4 : 3.4) / zoom}
+                    fill={ownerId ? terminalColor : '#0f172a'}
+                    stroke={terminalColor}
+                    strokeWidth={1.4 / zoom}
+                    opacity={dimmed && !ownerHighlighted ? 0.4 : 1}
+                    shadowColor={terminalColor}
+                    shadowBlur={ownerHighlighted ? 8 / zoom : 0}
+                  />
+                  <Group
+                    x={offset.x}
+                    y={offset.y - 8.5 / zoom}
+                    rotation={-pose.rotationDeg}
+                  >
+                    <Text
+                      text={String(slot + 1)}
+                      width={10 / zoom}
+                      height={10 / zoom}
+                      offsetX={5 / zoom}
+                      offsetY={5 / zoom}
+                      align="center"
+                      verticalAlign="middle"
+                      fontSize={8 / zoom}
+                      fontStyle="bold"
+                      fontFamily="Arial"
+                      fill={ownerId ? terminalColor : '#cbd5e1'}
+                      listening={false}
+                    />
+                  </Group>
+                </Group>
+              );
+            })}
         </Group>
       ))}
     </Group>
@@ -545,6 +639,7 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
   panelPose,
   panelPreview,
   deviceLineIds,
+  deviceSlotLines,
   lineColors,
   highlightedLineId,
   assignLineId,
@@ -556,6 +651,7 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
   framePreview,
   frameDragPreview = null,
   deviceDragPreview = null,
+  warningFocus = null,
 }) => {
   const focusLineId = assignLineId ?? highlightedLineId;
 
@@ -674,6 +770,14 @@ export const ElectricalLayer: React.FC<ElectricalLayerProps> = ({
             lineHighlighted={lineId !== null && lineId === focusLineId}
             dimmed={focusLineId !== null && lineId !== focusLineId}
             assignHint={assignLineId !== null && lineId === null}
+            slotLines={deviceSlotLines.get(resolved.device.id)}
+            lineColors={lineColors}
+            highlightedLineId={focusLineId}
+            focusSlot={
+              warningFocus?.deviceId === resolved.device.id
+                ? warningFocus.slot ?? null
+                : undefined
+            }
           />
         );
       })}

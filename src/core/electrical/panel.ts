@@ -206,6 +206,7 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
             : undefined,
         roomIds: line.roomIds ?? [],
         deviceIds: line.deviceIds ?? [],
+        slotMembers: sanitizeSlotMembers(line.slotMembers),
         colorIndex:
           Number.isInteger(line.colorIndex) && (line.colorIndex as number) >= 0
             ? line.colorIndex
@@ -218,6 +219,22 @@ function sanitizeLines(lines: CircuitLine[]): CircuitLine[] {
         trace: line.trace === 'none' ? 'none' : line.trace === 'auto' ? 'auto' : undefined,
       };
     });
+}
+
+function sanitizeSlotMembers(
+  members: CircuitLine['slotMembers']
+): Record<string, number[]> | undefined {
+  if (!members || typeof members !== 'object' || Array.isArray(members)) return undefined;
+  const result: Record<string, number[]> = {};
+  for (const [deviceId, slots] of Object.entries(members)) {
+    if (!deviceId.trim() || !Array.isArray(slots)) continue;
+    const unique = new Set<number>();
+    for (const slot of slots) {
+      if (Number.isSafeInteger(slot) && slot >= 0) unique.add(slot);
+    }
+    if (unique.size > 0) result[deviceId] = [...unique].sort((a, b) => a - b);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function sanitizeWaypoints(waypoints: CircuitLine['waypoints']): Point2D[] | undefined {

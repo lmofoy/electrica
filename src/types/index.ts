@@ -84,7 +84,7 @@ export type Selection =
   | { kind: 'room'; id: string }
   | { kind: 'opening'; id: string }
   | { kind: 'partition'; id: string }
-  | { kind: 'device'; id: string }
+  | { kind: 'device'; id: string; slot?: number }
   | { kind: 'frame'; id: string }
   | { kind: 'panel'; id: string };
 
@@ -238,7 +238,6 @@ export interface ElectricalDevice {
   powerWatts: number;
   shared: boolean; // сквозное устройство: принадлежит двум смежным комнатам
   note?: string; // заметка для печатного плана, с выноской у прибора
-  circuitId?: string;
   // Механизм (розетка, выключатель и т. п.) всегда стоит в рамке:
   // frameId — рамка, seatIndex — место 0…posts-1.
   frameId?: string;
@@ -323,6 +322,8 @@ export interface ManualRouteAnchor {
   nodeIndex: number; // индекс вершины в ManualRoute.nodes
   kind: ManualRouteAnchorKind;
   deviceId?: string; // только для kind === 'device'
+  // Клемма (клавиша/место) прибора. Без поля — весь прибор целиком.
+  slot?: number;
 }
 
 // Ручная трасса линии: снимок геометрии, который пользователь редактирует
@@ -345,6 +346,12 @@ export interface CircuitLine {
   purpose: LinePurpose;
   roomIds: string[];
   deviceIds: string[]; // фактический состав линии для подсветки и трассировки
+  // Какие электрические слоты прибора (клавиша выключателя, канал)
+  // принадлежат этой линии. Ключ — id прибора, значение — индексы слотов
+  // (0-based). Нет записи — к линии относится весь прибор. Один слот
+  // принадлежит только одной линии; прибор попадает в несколько линий
+  // лишь разными слотами.
+  slotMembers?: Record<string, number[]>;
   // Постоянный код группы: выдаётся при создании, не меняется при удалении
   // и перестановке соседних линий. Совпадает с номером автомата QF<code>;
   // QF1 зарезервирован за вводным автоматом, поэтому первая группа — 2.

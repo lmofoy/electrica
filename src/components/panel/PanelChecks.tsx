@@ -29,9 +29,13 @@ export const PanelChecks: React.FC = () => {
   const { checks, errors, warnings } = usePanelDiagnostics();
   const setHighlightedLine = useProjectStore((state) => state.setHighlightedLine);
   const setPanelStep = useProjectStore((state) => state.setPanelStep);
+  const setWarningFocus = useProjectStore((state) => state.setWarningFocus);
 
   const showCheck = (item: PanelCheckItem) => {
     if (item.lineId) setHighlightedLine(item.lineId);
+    setWarningFocus(
+      item.deviceId ? { deviceId: item.deviceId, slot: item.slot } : null
+    );
     setPanelStep(item.step);
     requestAnimationFrame(() => {
       document

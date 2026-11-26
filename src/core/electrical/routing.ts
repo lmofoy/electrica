@@ -12,7 +12,16 @@ import type {
   Wall,
 } from '../../types';
 import { distance, isPointInPolygon, projectPointOnSegment } from '../geometry/math';
-import { DEVICE_CATALOG, resolveDevice, type ResolvedDevice } from './devices';
+import {
+  DEVICE_CATALOG,
+  deviceLineSlotCount,
+  deviceRoutePoint,
+  deviceSlotLabel,
+  deviceTerminalPoint,
+  resolveDevice,
+  type DevicePose,
+  type ResolvedDevice,
+} from './devices';
 import {
   MANUAL_ROUTE_ANCHOR_TOLERANCE_MM,
   manualRouteAnchorNode,
@@ -549,10 +558,25 @@ function manualRoutePaths(route: ManualRoute): Point2D[][] {
   );
 }
 
+// Клеммы линии у прибора: для неполного набора клавиш — конкретные слоты,
+// иначе весь прибор целиком одним кабелем.
+function lineSlotsForDevice(
+  line: CircuitLine,
+  device: Pick<ElectricalDevice, 'id' | 'type'>
+): number[] | null {
+  const count = deviceLineSlotCount(device);
+  const members = line.slotMembers?.[device.id];
+  if (count < 2 || !members || members.length === 0 || members.length >= count) {
+    return null;
+  }
+  return members;
+}
+
 // Ручная трасса — снимок геометрии. Если щиток или прибор переехал,
 // трасса остаётся на плане, но предупреждает о рассинхронизации.
 function manualRouteWarnings(
   route: ManualRoute,
+  line: CircuitLine,
   lineDevices: ResolvedDevice[],
   missingDeviceCount: number,
   panelPoint: Point2D
@@ -577,47 +601,91 @@ function manualRouteWarnings(
   }
 
   const connected = manualRouteConnectedDeviceIds(route);
-  const disconnectedNames: string[] = [];
+  const disconnectedLabels: string[] = [];
   let deviceMismatch = false;
+  const lineSlots = new Map(
+    lineDevices.map((resolved) => [
+      resolved.device.id,
+      lineSlotsForDevice(line, resolved.device),
+    ])
+  );
   for (const resolved of lineDevices) {
     const pose = resolved.poses[0];
-    const node = manualRouteAnchorNode(route, 'device', resolved.device.id);
-    if (node === null) {
-      disconnectedNames.push(resolved.device.name);
-      continue;
-    }
-    if (
-      !pose ||
-      distance(route.nodes[node], pose.position) >
-        MANUAL_ROUTE_ANCHOR_TOLERANCE_MM
-    ) {
+    const count = deviceLineSlotCount(resolved.device);
+    const slots = lineSlots.get(resolved.device.id) ?? null;
+    const anchors = route.anchors.filter(
+      (anchor) =>
+        anchor.kind === 'device' && anchor.deviceId === resolved.device.id
+    );
+    const targets: { point: Point2D; slot: number | null }[] = [];
+    if (!pose) {
       deviceMismatch = true;
       continue;
     }
-    if (!connected.has(resolved.device.id)) {
-      disconnectedNames.push(resolved.device.name);
+    if (slots && count >= 2) {
+      for (const slot of slots) {
+        targets.push({ point: deviceTerminalPoint(pose, slot, count), slot });
+      }
+    } else {
+      targets.push({ point: pose.position, slot: null });
+    }
+    let deviceDisconnected = false;
+    const keyLabels: string[] = [];
+    const labelFor = (slot: number | null) => {
+      if (slot === null) return resolved.device.name;
+      const raw = deviceSlotLabel(resolved.device, slot);
+      return `${resolved.device.name} (${raw.charAt(0).toLowerCase()}${raw.slice(1)})`;
+    };
+    for (const target of targets) {
+      const anchor =
+        target.slot === null
+          ? anchors.find((candidate) => candidate.slot === undefined) ??
+            anchors[0]
+          : anchors.find((candidate) => candidate.slot === target.slot) ??
+            anchors.find((candidate) => candidate.slot === undefined);
+      if (!anchor) {
+        deviceDisconnected = true;
+        keyLabels.push(labelFor(target.slot));
+        continue;
+      }
+      // Старый общий якорь остаётся у центра символа: трассу не ломаем,
+      // пока пользователь сам не переподключит её к клеммам.
+      const expected =
+        anchor.slot === undefined ? pose.position : target.point;
+      if (distance(route.nodes[anchor.nodeIndex], expected) > MANUAL_ROUTE_ANCHOR_TOLERANCE_MM) {
+        deviceMismatch = true;
+      }
+    }
+    if (deviceDisconnected || !connected.has(resolved.device.id)) {
+      const list =
+        keyLabels.length > 0 ? keyLabels : targets.map((target) => labelFor(target.slot));
+      for (const label of list) {
+        if (!disconnectedLabels.includes(label)) disconnectedLabels.push(label);
+      }
     }
   }
   if (!deviceMismatch) {
     const lineDeviceIds = new Set(
       lineDevices.map((resolved) => resolved.device.id)
     );
-    deviceMismatch = route.anchors.some(
-      (anchor) =>
-        anchor.kind === 'device' &&
-        (!anchor.deviceId || !lineDeviceIds.has(anchor.deviceId))
-    );
+    deviceMismatch = route.anchors.some((anchor) => {
+      if (anchor.kind !== 'device') return false;
+      if (!anchor.deviceId || !lineDeviceIds.has(anchor.deviceId)) return true;
+      if (anchor.slot === undefined) return false;
+      const slots = lineSlots.get(anchor.deviceId) ?? null;
+      return slots !== null ? !slots.includes(anchor.slot) : false;
+    });
   }
   if (deviceMismatch) {
     warnings.push(
       'Ручная трасса не привязана к приборам линии — соедините прибор с трассой заново.'
     );
   }
-  if (disconnectedNames.length > 0) {
+  if (disconnectedLabels.length > 0) {
     warnings.push(
-      disconnectedNames.length === 1
-        ? `Прибор не подключён к щитку: ${disconnectedNames[0]}.`
-        : `Приборы не подключены к щитку: ${disconnectedNames.join(', ')}.`
+      disconnectedLabels.length === 1
+        ? `Прибор не подключён к щитку: ${disconnectedLabels[0]}.`
+        : `Приборы не подключены к щитку: ${disconnectedLabels.join(', ')}.`
     );
   }
 
@@ -644,7 +712,16 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
   ];
   for (const resolved of resolvedDevices.values()) {
     const pose = resolved.poses[0];
-    if (pose) attachments.push({ key: `device:${resolved.device.id}`, point: pose.position });
+    if (!pose) continue;
+    attachments.push({ key: `device:${resolved.device.id}`, point: pose.position });
+    const count = deviceLineSlotCount(resolved.device);
+    if (count < 2) continue;
+    for (let slot = 0; slot < count; slot += 1) {
+      attachments.push({
+        key: `device:${resolved.device.id}:${slot}`,
+        point: deviceTerminalPoint(pose, slot, count),
+      });
+    }
   }
 
   const graph = buildRouteGraph(
@@ -742,6 +819,7 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
           paths: manualRoutePaths(manual),
           warning: manualRouteWarnings(
             manual,
+            line,
             lineDevices,
             line.deviceIds.length - lineDevices.length,
             panelPose.position
@@ -778,34 +856,61 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
       planLengthMm += appendPath(paths, connector);
     }
 
-    const queue = [...lineDevices];
-    const ordered: ResolvedDevice[] = [];
+    // Точки подключения линии: каждая назначенная клавиша — отдельная
+    // клемма. Весь прибор по-прежнему подходит к центру символа одним кабелем.
+    interface LineStop {
+      resolved: ResolvedDevice;
+      pose: DevicePose;
+      key: string;
+      target: Point2D;
+    }
+    const stops: LineStop[] = [];
+    for (const resolved of lineDevices) {
+      const pose = resolved.poses[0];
+      if (!pose) continue;
+      const slots = lineSlotsForDevice(line, resolved.device);
+      if (slots) {
+        const count = deviceLineSlotCount(resolved.device);
+        for (const slot of slots) {
+          stops.push({
+            resolved,
+            pose,
+            key: `device:${resolved.device.id}:${slot}`,
+            target: deviceTerminalPoint(pose, slot, count),
+          });
+        }
+      } else {
+        stops.push({
+          resolved,
+          pose,
+          key: `device:${resolved.device.id}`,
+          target: deviceRoutePoint(resolved.device, pose, null),
+        });
+      }
+    }
+
+    const queue = [...stops];
+    const ordered: LineStop[] = [];
     while (queue.length > 0) {
       let bestIndex = 0;
       let bestDistance = Infinity;
-      queue.forEach((resolved, index) => {
-        const pose = resolved.poses[0];
-        if (!pose) return;
-        const candidateDistance = distance(currentPoint, pose.position);
+      queue.forEach((stop, index) => {
+        const candidateDistance = distance(currentPoint, stop.target);
         if (candidateDistance < bestDistance) {
           bestDistance = candidateDistance;
           bestIndex = index;
         }
       });
-      const [nextDevice] = queue.splice(bestIndex, 1);
-      if (nextDevice) {
-        ordered.push(nextDevice);
-        const pose = nextDevice.poses[0];
-        if (pose) currentPoint = pose.position;
+      const [nextStop] = queue.splice(bestIndex, 1);
+      if (nextStop) {
+        ordered.push(nextStop);
+        currentPoint = nextStop.target;
       }
     }
 
-    for (const resolved of ordered) {
-      const pose = resolved.poses[0];
-      if (!pose) continue;
-
-      const deviceKey = `device:${resolved.device.id}`;
-      const targetNodeId = graph?.attachmentNodes.get(deviceKey) ?? null;
+    const verticalCounted = new Set<string>();
+    for (const stop of ordered) {
+      const targetNodeId = graph?.attachmentNodes.get(stop.key) ?? null;
       const targetAttachPoint = targetNodeId
         ? graph?.points.get(targetNodeId) ?? null
         : null;
@@ -817,7 +922,7 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
         } else {
           const fallback = orthogonalPath(
             currentAttachPoint,
-            targetAttachPoint ?? pose.position
+            targetAttachPoint ?? stop.target
           );
           planLengthMm += appendPath(paths, fallback);
           warning = warning ?? 'Нет непрерывного пути по стенам — часть трассы проложена напрямую.';
@@ -825,22 +930,25 @@ export function computeLineRoutes(input: LineRouteInput): Map<string, LineRoute>
       } else {
         const fallback = orthogonalPath(
           currentAttachPoint,
-          targetAttachPoint ?? pose.position
+          targetAttachPoint ?? stop.target
         );
         planLengthMm += appendPath(paths, fallback);
       }
 
       if (targetAttachPoint) {
-        const spur = orthogonalPath(targetAttachPoint, pose.position);
+        const spur = orthogonalPath(targetAttachPoint, stop.target);
         if (polylineLength(spur) > 1) {
           planLengthMm += appendPath(paths, spur);
         }
       }
 
-      verticalMm += Math.abs(deviceMountHeightMm(resolved, settings) - runHeightMm);
+      if (!verticalCounted.has(stop.resolved.device.id)) {
+        verticalCounted.add(stop.resolved.device.id);
+        verticalMm += Math.abs(deviceMountHeightMm(stop.resolved, settings) - runHeightMm);
+      }
       currentNodeId = targetNodeId;
-      currentAttachPoint = targetAttachPoint ?? pose.position;
-      currentPoint = pose.position;
+      currentAttachPoint = targetAttachPoint ?? stop.target;
+      currentPoint = stop.target;
     }
 
     const baseLength = planLengthMm + verticalMm;
@@ -890,7 +998,7 @@ export function materializeRouteForLine(
     input.partitions,
     thickness
   );
-  const devicePoints: { deviceId: string; point: Point2D }[] = [];
+  const devicePoints: { deviceId: string; point: Point2D; slot?: number }[] = [];
   for (const deviceId of line.deviceIds) {
     const device = input.devices.find((candidate) => candidate.id === deviceId);
     if (!device) continue;
@@ -901,7 +1009,20 @@ export function materializeRouteForLine(
       thickness
     );
     const pose = resolved?.poses[0];
-    if (pose) devicePoints.push({ deviceId, point: pose.position });
+    if (!pose) continue;
+    const slots = lineSlotsForDevice(line, device);
+    if (slots) {
+      const count = deviceLineSlotCount(device);
+      for (const slot of slots) {
+        devicePoints.push({
+          deviceId,
+          point: deviceTerminalPoint(pose, slot, count),
+          slot,
+        });
+      }
+    } else {
+      devicePoints.push({ deviceId, point: pose.position });
+    }
   }
 
   return materializeManualRoute(route.paths, {
