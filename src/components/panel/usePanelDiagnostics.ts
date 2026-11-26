@@ -8,6 +8,7 @@ import { buildPanelSpecification } from '../../core/electrical/specification';
 import { collectUnassignedDevices, collectDevicesWithFreeSlots } from '../../core/electrical/lineAssignment';
 import { collectLineCompositionWarnings } from '../../core/electrical/lineOps';
 import { deviceSlotLabel } from '../../core/electrical/devices';
+import { buildSheetIssues } from '../../core/electrical/sheetIssues';
 import { computeLineRoutes } from '../../core/electrical/routing';
 import type { NormativeFinding } from '../../core/electrical/panelValidation';
 import type { PanelStep } from '../../types';
@@ -271,6 +272,10 @@ export function usePanelDiagnostics() {
   const errors = checks.filter((check) => check.severity === 'error').length;
   const warnings = checks.filter((check) => check.severity === 'warning').length;
 
+  // Один общий список для экрана и печатных листов: ошибки и замечания
+  // с общей нумерацией (подсказки info на лист не выводятся).
+  const issues = useMemo(() => buildSheetIssues(checks), [checks]);
+
   const lineChecks = useMemo(() => {
     const map = new Map<string, PanelCheckItem[]>();
     for (const check of checks) {
@@ -311,6 +316,7 @@ export function usePanelDiagnostics() {
     frames,
     lineChecks,
     checks,
+    issues,
     checksByStep,
     errors,
     warnings,

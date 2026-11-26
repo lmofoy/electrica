@@ -2,6 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Printer, X, ZoomIn, ZoomOut } from 'lucide-react';
 import type { PanelSchematic } from '../../core/electrical/schematic';
+import type { NormativeSeverity } from '../../core/electrical/panelValidation';
+import type { SheetIssue } from '../../core/electrical/sheetIssues';
+import { summarizeIssues } from '../../core/electrical/sheetIssues';
 import {
   A3_HEIGHT_MM,
   A3_WIDTH_MM,
@@ -11,9 +14,12 @@ import {
   type SheetTitleBlock,
   type SheetTitleField,
 } from '../../core/electrical/sheetLayout';
+import { ISSUE_TONE } from './issueTone';
+import { SheetFindings } from './SheetFindings';
 
 interface PanelSheetProps {
   schematic: PanelSchematic;
+  issues?: SheetIssue[];
   onClose: () => void;
 }
 
@@ -26,6 +32,8 @@ const DEFAULT_ZOOM = 0.75;
 const INK = '#0f172a';
 const MUTED = '#475569';
 const FAINT = '#94a3b8';
+// Правый край поля групп — сюда ставим номерной маркер проблемы.
+const GROUP_MARKER_X = 413;
 
 const STATUS_TONE: Record<
   SheetStatus,
@@ -44,7 +52,11 @@ function cableLengthLabel(lengthMm: number): string {
   return lengthMm > 0 ? `${num(lengthMm / 1000, 1)} м` : 'длина —';
 }
 
-const GroupRow: React.FC<{ item: SheetGroup; pitch: number }> = ({ item, pitch }) => {
+const GroupRow: React.FC<{
+  item: SheetGroup;
+  pitch: number;
+  marker?: { number: number; severity: NormativeSeverity };
+}> = ({ item, pitch, marker }) => {
   const { group, breakerRect, rcdRect, rowY, combined } = item;
   const boxRight = rcdRect ? rcdRect.x + rcdRect.width : breakerRect.x + breakerRect.width;
   const phase = group.phase ?? 'L';
@@ -191,6 +203,30 @@ const GroupRow: React.FC<{ item: SheetGroup; pitch: number }> = ({ item, pitch }
       >
         {`${num(group.designPowerW / 1000, 2)} кВт · ${num(group.currentA)} А`}
       </text>
+
+      {/* Номерной маркер проблемы у групповой линии: тот же номер, что в блоке замечаний. */}
+      {marker && (
+        <g>
+          <circle
+            cx={GROUP_MARKER_X}
+            cy={rowY}
+            r={2.2}
+            fill={ISSUE_TONE[marker.severity].fill}
+            stroke={ISSUE_TONE[marker.severity].stroke}
+            strokeWidth={0.45}
+          />
+          <text
+            x={GROUP_MARKER_X}
+            y={rowY + 0.8}
+            textAnchor="middle"
+            fontSize={marker.number > 9 ? 1.8 : 2.2}
+            fontWeight={700}
+            fill={ISSUE_TONE[marker.severity].text}
+          >
+            {marker.number}
+          </text>
+        </g>
+      )}
     </g>
   );
 };
@@ -302,9 +338,32 @@ const TitleBlock: React.FC<{ block: SheetTitleBlock }> = ({ block }) => {
   );
 };
 
-export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) => {
+export const PanelSheet: React.FC<PanelSheetProps> = ({
+  schematic,
+  issues = [],
+  onClose,
+}) => {
   const layout = useMemo(() => buildPanelSheet(schematic), [schematic]);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+
+  // Маркеры на схеме: наименьший (самый важный) номер проблемы для каждой линии.
+  const markerByLine = useMemo(() => {
+    const map = new Map<string, { number: number; severity: NormativeSeverity }>();
+    for (const issue of issues) {
+      if (!issue.lineId || map.has(issue.lineId)) continue;
+      map.set(issue.lineId, { number: issue.number, severity: issue.severity });
+    }
+    return map;
+  }, [issues]);
+
+  // Статус листа берём из того же общего списка, что экран и блок замечаний.
+  const summary = summarizeIssues(issues);
+  const status: SheetStatus =
+    schematic.groups.length === 0 && summary.errors === 0 ? 'warnings' : summary.status;
+  const statusText =
+    schematic.groups.length === 0 && summary.errors === 0
+      ? 'Группы не заданы'
+      : summary.text;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -342,7 +401,7 @@ export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) =>
     : layout.frame.x;
   const notesX = layout.notesBlock.x;
   const notesY = layout.notesBlock.y;
-  const tones = STATUS_TONE[layout.status];
+  const tones = STATUS_TONE[status];
 
   return createPortal(
     <div
@@ -406,7 +465,7 @@ export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) =>
         </div>
       </div>
 
-      <div className="sheet-print-scroll flex-1 overflow-auto p-4 flex items-start justify-center">
+      <div className="sheet-print-scroll flex-1 overflow-auto p-4 flex flex-col items-start gap-6">
         <div
           className="sheet-print-page shrink-0 bg-white shadow-2xl ring-1 ring-slate-700"
           style={{
@@ -560,6 +619,7 @@ export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) =>
                 key={item.group.lineId}
                 item={item}
                 pitch={layout.groupPitch}
+                marker={markerByLine.get(item.group.lineId)}
               />
             ))}
 
@@ -592,7 +652,7 @@ export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) =>
                 fontWeight={700}
                 fill={tones.text}
               >
-                {layout.statusBox.text}
+                {statusText}
               </text>
               <text
                 x={layout.statusBox.rect.x + layout.statusBox.rect.width / 2}
@@ -601,7 +661,7 @@ export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) =>
                 fontSize={1.7}
                 fill={MUTED}
               >
-                ПУЭ-7 · СП 256
+                {issues.length > 0 ? 'подробно — лист 2' : 'ПУЭ-7 · СП 256'}
               </text>
             </g>
 
@@ -642,6 +702,14 @@ export const PanelSheet: React.FC<PanelSheetProps> = ({ schematic, onClose }) =>
             <TitleBlock block={layout.titleBlock} />
           </svg>
         </div>
+        {issues.length > 0 && (
+          <SheetFindings
+            issues={issues}
+            zoom={zoom}
+            pxPerMm={PX_PER_MM}
+            panelName={schematic.panelName}
+          />
+        )}
       </div>
     </div>,
     document.body

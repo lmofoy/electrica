@@ -80,8 +80,8 @@ body,
   html,
   body {
     width: 420mm !important;
-    height: 297mm !important;
-    overflow: hidden !important;
+    height: auto !important;
+    overflow: visible !important;
     background: #ffffff !important;
     color: #0f172a !important;
   }
@@ -95,7 +95,7 @@ body,
     position: static !important;
     display: block !important;
     width: 420mm !important;
-    height: 297mm !important;
+    height: auto !important;
     padding: 0 !important;
     background: #ffffff !important;
   }
@@ -111,7 +111,7 @@ body,
     overflow: visible !important;
     padding: 0 !important;
     width: 420mm !important;
-    height: 297mm !important;
+    height: auto !important;
   }
 
   .sheet-print-page,
@@ -120,6 +120,17 @@ body,
     height: 297mm !important;
     box-shadow: none !important;
     outline: none !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    break-after: page !important;
+    page-break-after: always !important;
+  }
+
+  /* Последний лист не оставляет пустую страницу. */
+  .sheet-print-page:last-child,
+  .calc-print-page:last-child {
+    break-after: auto !important;
+    page-break-after: auto !important;
   }
 
   .sheet-print-page svg,

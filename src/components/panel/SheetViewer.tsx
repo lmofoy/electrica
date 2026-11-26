@@ -35,6 +35,9 @@ interface SheetViewerProps {
   dialogLabel: string;
   onClose: () => void;
   children: React.ReactNode;
+  // Дополнительные печатные страницы (например, «Замечания и ошибки»).
+  // Принимают текущий масштаб, чтобы совпасть с основным листом.
+  extraPages?: (zoom: number, pxPerMm: number) => React.ReactNode;
 }
 
 export const SheetViewer: React.FC<SheetViewerProps> = ({
@@ -49,6 +52,7 @@ export const SheetViewer: React.FC<SheetViewerProps> = ({
   dialogLabel,
   onClose,
   children,
+  extraPages,
 }) => {
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
 
@@ -137,7 +141,7 @@ export const SheetViewer: React.FC<SheetViewerProps> = ({
         </div>
       </div>
 
-      <div className="sheet-print-scroll flex-1 overflow-auto p-4 flex items-start justify-center">
+      <div className="sheet-print-scroll flex-1 overflow-auto p-4 flex flex-col items-start gap-6">
         <div
           className="sheet-print-page shrink-0 bg-white shadow-2xl ring-1 ring-slate-700"
           style={{
@@ -170,6 +174,7 @@ export const SheetViewer: React.FC<SheetViewerProps> = ({
             {children}
           </svg>
         </div>
+        {extraPages?.(zoom, PX_PER_MM)}
       </div>
     </div>,
     document.body

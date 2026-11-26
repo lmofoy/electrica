@@ -8,10 +8,14 @@ import {
   type CalculationSheetLayout,
   type CalculationTone,
 } from '../../core/electrical/calculationLayout';
+import type { SheetIssue } from '../../core/electrical/sheetIssues';
+import { summarizeIssues } from '../../core/electrical/sheetIssues';
 import { A3_HEIGHT_MM, A3_WIDTH_MM } from '../../core/electrical/sheetLayout';
+import { SheetFindings } from './SheetFindings';
 
 interface PanelCalculationProps {
   calculation: PanelCalculationModel;
+  issues?: SheetIssue[];
   onClose: () => void;
 }
 
@@ -267,10 +271,27 @@ const DocumentBlock: React.FC<{ layout: CalculationSheetLayout }> = ({ layout })
 
 export const PanelCalculation: React.FC<PanelCalculationProps> = ({
   calculation,
+  issues = [],
   onClose,
 }) => {
   const layout = useMemo(() => buildCalculationSheet(calculation), [calculation]);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+
+  // Сводку «Проверка по нормам» берём из общего списка, что и экран,
+  // и блок замечаний, чтобы счётчики совпадали.
+  const summary = summarizeIssues(issues);
+  const statusText =
+    calculation.rows.length === 0 && summary.errors === 0
+      ? 'Линии не заданы'
+      : summary.text;
+  const statusTone: CalculationTone =
+    calculation.rows.length === 0 && summary.errors === 0
+      ? 'warning'
+      : summary.status === 'errors'
+        ? 'error'
+        : summary.status === 'warnings'
+          ? 'warning'
+          : 'ok';
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -315,7 +336,7 @@ export const PanelCalculation: React.FC<PanelCalculationProps> = ({
             Расчётная таблица · {calculation.panelName}
           </div>
           <div className="text-[10px] text-slate-500 truncate">
-            {layout.statusText} · {calculation.rows.length} линий · {calculation.supply.voltageLabel}
+            {statusText} · {calculation.rows.length} линий · {calculation.supply.voltageLabel}
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -364,7 +385,7 @@ export const PanelCalculation: React.FC<PanelCalculationProps> = ({
         </div>
       </div>
 
-      <div className="calc-print-scroll flex-1 overflow-auto p-4 flex items-start justify-center">
+      <div className="calc-print-scroll flex-1 overflow-auto p-4 flex flex-col items-start gap-6">
         <div
           className="calc-print-page shrink-0 bg-white shadow-2xl ring-1 ring-slate-700"
           style={{
@@ -397,7 +418,11 @@ export const PanelCalculation: React.FC<PanelCalculationProps> = ({
             </text>
 
             {layout.headerBoxes.map((box) => {
-              const tone = BOX_TONE[box.tone];
+              const isStatusBox = box.title === 'Проверка по нормам';
+              const tone = BOX_TONE[isStatusBox ? statusTone : box.tone];
+              const lines = isStatusBox
+                ? [statusText, ...box.lines.slice(1)]
+                : box.lines;
               return (
                 <g key={box.title}>
                   <rect
@@ -419,7 +444,7 @@ export const PanelCalculation: React.FC<PanelCalculationProps> = ({
                   >
                     {box.title}
                   </text>
-                  {box.lines.map((line, index) => (
+                  {lines.map((line, index) => (
                     <text
                       key={`${box.title}-${index}`}
                       x={box.rect.x + 2}
@@ -478,6 +503,14 @@ export const PanelCalculation: React.FC<PanelCalculationProps> = ({
             <DocumentBlock layout={layout} />
           </svg>
         </div>
+        {issues.length > 0 && (
+          <SheetFindings
+            issues={issues}
+            zoom={zoom}
+            pxPerMm={PX_PER_MM}
+            panelName={calculation.panelName}
+          />
+        )}
       </div>
     </div>,
     document.body

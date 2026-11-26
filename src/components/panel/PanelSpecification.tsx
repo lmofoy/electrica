@@ -6,11 +6,15 @@ import {
   type SpecificationSheetLayout,
   type SpecificationRow,
 } from '../../core/electrical/specificationLayout';
+import type { SheetIssue } from '../../core/electrical/sheetIssues';
+import { summarizeIssues } from '../../core/electrical/sheetIssues';
 import { SheetViewer } from './SheetViewer';
 import { SheetDocumentBlock } from './SheetDocumentBlock';
+import { SheetFindings } from './SheetFindings';
 
 interface PanelSpecificationProps {
   specification: PanelSpecificationModel;
+  issues?: SheetIssue[];
   onClose: () => void;
 }
 
@@ -31,10 +35,18 @@ function cellAnchorX(cell: SpecificationCell): number {
   return cell.x + cell.width / 2;
 }
 
-const HeaderBoxes: React.FC<{ layout: SpecificationSheetLayout }> = ({ layout }) => (
+const HeaderBoxes: React.FC<{
+  layout: SpecificationSheetLayout;
+  statusOverride?: { text: string; tone: 'ok' | 'warning' | 'error' };
+}> = ({ layout, statusOverride }) => (
   <g>
     {layout.headerBoxes.map((box) => {
-      const tone = BOX_TONE[box.tone];
+      const isStatusBox = box.title === 'Проверка по нормам';
+      const tone = BOX_TONE[isStatusBox && statusOverride ? statusOverride.tone : box.tone];
+      const lines =
+        isStatusBox && statusOverride
+          ? [statusOverride.text, ...box.lines.slice(1)]
+          : box.lines;
       return (
         <g key={box.title}>
           <rect
@@ -56,7 +68,7 @@ const HeaderBoxes: React.FC<{ layout: SpecificationSheetLayout }> = ({ layout })
           >
             {box.title}
           </text>
-          {box.lines.map((line, index) => (
+          {lines.map((line, index) => (
             <text
               key={`${box.title}-${index}`}
               x={box.rect.x + 2}
@@ -213,6 +225,7 @@ const Table: React.FC<{ layout: SpecificationSheetLayout }> = ({ layout }) => {
 
 export const PanelSpecification: React.FC<PanelSpecificationProps> = ({
   specification,
+  issues = [],
   onClose,
 }) => {
   const layout = useMemo(
@@ -222,17 +235,36 @@ export const PanelSpecification: React.FC<PanelSpecificationProps> = ({
   const notesX = layout.notesBlock.x;
   const notesY = layout.notesBlock.y;
 
+  const summary = summarizeIssues(issues);
+  const statusText = summary.text;
+  const statusTone: 'ok' | 'warning' | 'error' =
+    summary.status === 'errors'
+      ? 'error'
+      : summary.status === 'warnings'
+        ? 'warning'
+        : 'ok';
+
   return (
     <SheetViewer
       toolbarTitle={`Спецификация · ${specification.panelName}`}
-      toolbarSubtitle={`${specification.items.length} позиций · кабель ${specification.totals.cableMeters} м · ${specification.statusText}`}
+      toolbarSubtitle={`${specification.items.length} позиций · кабель ${specification.totals.cableMeters} м · ${statusText}`}
       sheetTitle={layout.title}
       sheetSubtitle={layout.subtitle}
       printTitle={`Спецификация ${specification.panelName} — ЭС-03`}
       dialogLabel={`Спецификация оборудования: ${specification.panelName}`}
       onClose={onClose}
+      extraPages={(zoom, pxPerMm) =>
+        issues.length > 0 ? (
+          <SheetFindings
+            issues={issues}
+            zoom={zoom}
+            pxPerMm={pxPerMm}
+            panelName={specification.panelName}
+          />
+        ) : null
+      }
     >
-      <HeaderBoxes layout={layout} />
+      <HeaderBoxes layout={layout} statusOverride={{ text: statusText, tone: statusTone }} />
       <Table layout={layout} />
 
       <rect

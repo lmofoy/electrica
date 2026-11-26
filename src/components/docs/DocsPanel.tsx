@@ -63,7 +63,7 @@ export const DocsPanel: React.FC = () => {
     savePlanSheet,
     deletePlanSheet,
   } = useProjectStore();
-  const { panel, schematic, calculation, specification, autoLayout, routes } =
+  const { panel, schematic, calculation, specification, autoLayout, routes, issues } =
     usePanelDiagnostics();
 
   const [titleOpen, setTitleOpen] = useState(false);
@@ -318,12 +318,17 @@ export const DocsPanel: React.FC = () => {
       )}
 
       {sheetOpen && schematic && (
-        <PanelSheet schematic={schematic} onClose={() => setSheetOpen(false)} />
+        <PanelSheet
+          schematic={schematic}
+          issues={issues}
+          onClose={() => setSheetOpen(false)}
+        />
       )}
 
       {calculationOpen && calculation && (
         <PanelCalculation
           calculation={calculation}
+          issues={issues}
           onClose={() => setCalculationOpen(false)}
         />
       )}
@@ -331,6 +336,7 @@ export const DocsPanel: React.FC = () => {
       {specificationOpen && specification && (
         <PanelSpecification
           specification={specification}
+          issues={issues}
           onClose={() => setSpecificationOpen(false)}
         />
       )}
